@@ -46,6 +46,9 @@ pub fn build_enroute(countries: &[CountryData]) -> Vec<EnrouteUnitDef> {
     }
     for u in &mut units {
         u.sectors.sort_by(|a, b| a.name.cmp(&b.name));
+        // A border sector can come with both neighbouring countries' downloads.
+        u.sectors
+            .dedup_by(|a, b| a.name == b.name && a.polygon == b.polygon);
     }
     units.sort_by(|a, b| {
         a.callsign
@@ -139,5 +142,13 @@ mod tests {
             sector("b", "TESTLAND CTR", 4, F1, GND),
         ]);
         assert!(build_enroute(&[d]).is_empty());
+    }
+
+    #[test]
+    fn sector_listed_by_two_countries_is_kept_once() {
+        let fis = || sector("f1", "FIS TESTLAND", 33, F1, GND);
+        let units = build_enroute(&[data(vec![fis()]), data(vec![fis()])]);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].sectors.len(), 1);
     }
 }
