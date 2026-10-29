@@ -36,8 +36,10 @@ impl AtcEngine {
     }
 
     /// The airports a flight may be cleared to; they are heard by ICAO code or name, and by
-    /// name after "direct" (Approach clears departures direct to them).
-    pub fn with_destinations(mut self, d: Vec<Destination>) -> Self {
+    /// name after "direct" (Approach clears departures direct to them). A shared slice, so
+    /// the engines of one server hold one copy of the world's airports.
+    pub fn with_destinations(mut self, d: impl Into<std::sync::Arc<[Destination]>>) -> Self {
+        let d = d.into();
         self.vocab
             .fixes
             .extend(d.iter().map(|d| direct_key(&d.name)));

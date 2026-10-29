@@ -166,6 +166,41 @@ With `data/airports/enroute.toml` present (the wizard writes it), the real FIS a
 answer on their frequencies and replace the stations' emulated adjacent units on the same
 frequencies, also when `airport` runs a single station.
 
+### Several stations
+
+With `airport` omitted in `config/server.toml` the server loads every directory of
+`data/airports` that holds a station (`station.toml` + `overrides.toml`, or `procedures.toml`);
+one that does not load is skipped with a warning naming the file. The log starts with
+`stations: EPKK, EPKT`. With `airport = "<ID>"` just that station runs.
+
+- **Frequencies.** A call is answered by the station that works the frequency. Several stations
+  that list the same callsign on the same frequency (Kraków Approach at both EPKK and EPKT,
+  121.075) are one unit: a flight that already belongs to one of them stays with it on that
+  frequency, and a new caller is taken by the station nearest the aircraft. A frequency nobody
+  works is silent.
+- **Hand-offs between stations.** When a controller tells you to contact a station or unit
+  and you read the frequency back, the flight moves there with its plan, squawk and cleared
+  level, and the next controller greets you as a flight handed over ("identified"). Calling
+  another station directly moves the flight as well.
+- **FIS and radar from `enroute.toml`.** The wizard writes `data/airports/enroute.toml` (git-ignored)
+  after every create or update: one unit per FIS or ACC sector name and frequency of the
+  OpenAIP data. A unit answers your first call with "identified, QNH ...", acknowledges what
+  you say and gives no clearances. When you leave its sector (polygon or levels) it hands you
+  to the next unit, or to the Approach (else Tower) of a station whose control zone you are in;
+  you are also handed to a staffed station when you fly into its CTR, TMA or ATZ. A station
+  with no controllers hears "change to <name> <frequency>" when it has a published frequency.
+- **Outside coverage.** Where nothing takes you over, the controller says "frequency change
+  approved" once; after that nobody answers until you call a station or unit. This also applies
+  to a station whose procedures name no adjacent FIS or ACC.
+- **Destinations.** Any airfield in the apt.dat files X-Plane loads (`xplane_root`) can be named
+  as the destination of a clearance, anywhere in the world. The scan takes a few seconds, so it
+  is cached in `data/cache/destinations.json` and rebuilt when the size or modification time of
+  one of the apt.dat files changes. Without `xplane_root` no destination is known and the
+  clearance asks "say again destination".
+- **Speech recognition.** The prompt given to Whisper comes from whoever works the frequency you
+  transmit on: the names of that station, or a unit's callsign and its nearest stations. On a
+  frequency nobody works, the station nearest your aircraft is used.
+
 ### Overrides
 
 `overrides.toml` holds top-level `Procedures` keys. Tables merge field by field; arrays (such as
@@ -278,11 +313,14 @@ The first start loads the models for a few seconds, then the log shows
 transmission shows the times `stt_ms`, `engine_ms`, `tts_ms`.
 
 The server keeps the flights in progress between runs: issued clearances, flight phase,
-expected readbacks, transponder code, ATIS letter. The snapshot is written every 2 s and on stop
-(Ctrl-C) to `data/cache/state-<ICAO>.json` (not in git). At start it is restored when it is at
-most 2 hours old and made for the same airport; the log says
+expected readbacks, transponder code, ATIS letter. The snapshot of each station is written every
+2 s and on stop (Ctrl-C) to `data/cache/state-<ICAO>.json`, and `data/cache/network.json` holds
+who controls each flight (a station or an FIS/ACC unit) and the flights the en-route units work,
+so a restart in the middle of a flight under FIS carries on where it was (all in the same save,
+not in git). At start each file is restored when it is at most 2 hours old and made for the same
+airport; an owner naming a station or unit that no longer exists is ignored. The log says
 `flights in progress restored from …` or `starting afresh (…)` with the reason. To start from a
-clean slate: `target/release/atc-server --fresh` (or delete the file).
+clean slate: `target/release/atc-server --fresh` (or delete the files in `data/cache/`).
 
 The server rejects WebSocket connections that carry an `Origin` header, so a browser cannot
 connect; this is on purpose (protection from foreign web pages). The native client sends no

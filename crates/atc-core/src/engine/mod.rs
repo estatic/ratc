@@ -183,7 +183,7 @@ pub struct AtcEngine {
     /// The airport's procedures; `None`: no IFR.
     procedure_set: Option<ProcedureSet>,
     /// Airports a flight may be cleared to.
-    destinations: Vec<Destination>,
+    destinations: std::sync::Arc<[Destination]>,
     /// Words the parser knows besides the callsigns: VFR points, procedure fixes, places.
     vocab: Vocabulary,
     /// Sim UTC time of day (s) and day of year of the latest telemetry sample that had a
@@ -223,7 +223,7 @@ impl AtcEngine {
             vehicle_orders: Vec::new(),
             next_vehicle: 0,
             procedure_set: None,
-            destinations: Vec::new(),
+            destinations: std::sync::Arc::from([]),
             vocab,
             clock: (None, None),
         }

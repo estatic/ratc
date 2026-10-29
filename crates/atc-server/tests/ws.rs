@@ -775,3 +775,52 @@ khz = 121700
         Some(Owner::Station(0))
     );
 }
+
+/// The speech-to-text prompt is the one of whoever works the frequency: a station's names, a
+/// unit's callsign; an unworked frequency gets the nearest station's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stt_prompt_follows_frequency_owner() {
+    use atc_navdata::enroute::{EnrouteKind, EnrouteUnitDef, SectorDef};
+    use atc_server::network::Network;
+
+    let zeta = r#"
+[[positions]]
+role = "Ground"
+callsign = "Zeta Ground"
+khz = 121700
+"#;
+    let alpha = EnrouteUnitDef {
+        callsign: "Alpha Information".into(),
+        khz: 120_500,
+        kind: EnrouteKind::Fis,
+        sectors: vec![SectorDef {
+            name: "FIS ALPHA".into(),
+            lower_ft: 0,
+            upper_ft: 9500,
+            polygon: vec![[9.0, 9.0], [9.0, 11.0], [9.4, 11.0], [9.4, 9.0]],
+        }],
+    };
+    let network = Network::new(vec![
+        fixture_station("ZZZY", ""),
+        fixture_station("ZZZZ", zeta),
+    ])
+    .with_units(vec![alpha]);
+    let noise = (0..4).map(|_| transcript("uh", 0.1)).collect();
+    let srv = start_network_with(network, noise, Arc::new(FakeTts::default()), true).await;
+    let mut c = Client::hello(&srv.url, "SP-AAA").await;
+    c.send(ClientMsg::Weather(weather())).await;
+    c.send(ClientMsg::Telemetry(parked_at(121_700, 10.0012, 10.0)))
+        .await;
+    for freq in [121_700, 118_500, 120_500, 121_500] {
+        ptt(&mut c, freq).await;
+        c.recv_until(is_transcript).await;
+    }
+    let prompts = srv.stt.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 4, "{prompts:?}");
+    let (zeta, testville) = ("Zeta Ground", "Testville Tower");
+    assert!(prompts[0].contains(zeta) && !prompts[0].contains(testville));
+    assert!(prompts[1].contains(testville) && !prompts[1].contains(zeta));
+    assert!(prompts[2].contains("Alpha Information"), "{prompts:?}");
+    // Nobody works 121.500: the station nearest the aircraft speaks for it.
+    assert!(prompts[3].contains(zeta) && !prompts[3].contains(testville));
+}

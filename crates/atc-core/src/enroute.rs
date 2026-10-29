@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use atc_geo::{LatLon, point_in_polygon};
 use atc_navdata::enroute::EnrouteUnitDef;
 use atc_phraseology::{AtcItem, Callsign, Lang, PilotIntent, PilotMessage, parse_pilot_known};
+use serde::{Deserialize, Serialize};
 
 use crate::handover::FlightHandover;
 use crate::state::SimTime;
@@ -135,6 +136,15 @@ fn asks(msg: &PilotMessage) -> bool {
     )
 }
 
+/// What a restart keeps of a flight a unit works: its data (with the level last assigned),
+/// the language it speaks and whether the unit has identified it already.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UnitFlightState {
+    pub data: FlightHandover,
+    pub lang: Lang,
+    pub identified: bool,
+}
+
 pub struct EnrouteUnit {
     def: EnrouteUnitDef,
     flights: HashMap<Callsign, EnrouteFlight>,
@@ -167,6 +177,35 @@ impl EnrouteUnit {
     /// The language the flight last spoke to the unit in (English before).
     pub fn lang_of(&self, cs: &Callsign) -> Lang {
         self.flights.get(cs).map_or(Lang::En, |f| f.lang)
+    }
+
+    /// The flights the unit works (not those released), by callsign, for [`restore_flights`]
+    /// after a restart. A hand-off in progress is not kept: the unit hands the flight on again.
+    ///
+    /// [`restore_flights`]: EnrouteUnit::restore_flights
+    pub fn flight_states(&self) -> Vec<UnitFlightState> {
+        let mut out: Vec<UnitFlightState> = self
+            .flights
+            .values()
+            .filter(|f| !f.released())
+            .map(|f| UnitFlightState {
+                data: f.data.clone(),
+                lang: f.lang,
+                identified: f.identified,
+            })
+            .collect();
+        out.sort_by(|a, b| a.data.callsign.0.cmp(&b.data.callsign.0));
+        out
+    }
+
+    /// Takes the flights of [`EnrouteUnit::flight_states`] back into service.
+    pub fn restore_flights(&mut self, flights: Vec<UnitFlightState>) {
+        for st in flights {
+            let mut f = EnrouteFlight::new(st.data);
+            f.lang = st.lang;
+            f.identified = st.identified;
+            self.flights.insert(f.data.callsign.clone(), f);
+        }
     }
 
     /// Takes in a flight handed over by a station or another unit (replacing any flight of

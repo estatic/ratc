@@ -72,7 +72,7 @@ async fn voice(
     let (mode, session) = (network.language(), network.pilot_lang(&cs, freq_khz));
     let (stt, prompt) = (
         server.state.stt.clone(),
-        server.stt_prompt(freq_khz, session),
+        server.stt_prompt(freq_khz, session, &cs),
     );
     let pcm = Pcm {
         sample_rate: PILOT_RATE,

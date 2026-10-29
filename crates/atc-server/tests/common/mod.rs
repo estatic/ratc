@@ -12,7 +12,7 @@ use atc_navdata::model::{Airport, Destination};
 use atc_navdata::parse_apt_dat;
 use atc_navdata::procedures::{Procedures, parse_procedures};
 use atc_proto::{AudioFrame, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame, WeatherFrame};
-use atc_server::app::{AppState, StationMap, SttPrompts, router};
+use atc_server::app::{AppState, OwnerPrompts, StationMap, SttPrompts, router};
 use atc_server::hub::Hub;
 use atc_server::network::Network;
 use atc_server::stations::LoadedStation;
@@ -159,7 +159,17 @@ pub async fn start_network(
     stt: Vec<Transcript>,
     tts: Arc<dyn TextToSpeech>,
 ) -> TestServer {
-    let network = Network::new(stations);
+    start_network_with(Network::new(stations), stt, tts, false).await
+}
+
+/// Like [`start_network`] for a prepared `network`; with `per_owner`, every station and unit
+/// has its own speech-to-text prompt as in the real server (the fixed one stays the fallback).
+pub async fn start_network_with(
+    network: Network,
+    stt: Vec<Transcript>,
+    tts: Arc<dyn TextToSpeech>,
+    per_owner: bool,
+) -> TestServer {
     let stations = StationMap::union(network.stations().iter().map(|s| &s.procs));
     let fake_stt = Arc::new(FakeStt::default());
     fake_stt
@@ -167,8 +177,9 @@ pub async fn start_network(
         .lock()
         .unwrap()
         .extend(stt.into_iter().map(Ok));
+    let state_network = Arc::new(network);
     let state = AppState {
-        network: Arc::new(network),
+        network: state_network.clone(),
         hub: Arc::new(Mutex::new(Hub::default())),
         stt: fake_stt.clone(),
         tts,
@@ -176,6 +187,11 @@ pub async fn start_network(
         stt_prompts: SttPrompts {
             en: "Kraków Ground".into(),
             pl: "Kraków, lotnisko".into(),
+        },
+        owner_prompts: if per_owner {
+            OwnerPrompts::for_network(&state_network)
+        } else {
+            OwnerPrompts::default()
         },
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

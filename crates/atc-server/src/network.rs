@@ -28,12 +28,12 @@
 //! Locking: `owners` is held for a whole dispatch, engines and units are locked one at a time
 //! inside it and never the other way round; `pilots` and `qnh` are leaf locks.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 
 use atc_core::atis::Weather;
 use atc_core::engine::{AtcEngine, AtcOutput, EngineSnapshot, LanguageMode, VehicleOrder};
-use atc_core::enroute::{EnrouteEvent, EnrouteUnit, HandOff, unit_covers};
+use atc_core::enroute::{EnrouteEvent, EnrouteUnit, HandOff, UnitFlightState, unit_covers};
 use atc_core::state::{AircraftState, SimTime};
 use atc_core::strip::{PilotProfile, Role};
 use atc_geo::{LatLon, distance_m, point_in_polygon};
@@ -41,6 +41,7 @@ use atc_navdata::enroute::EnrouteUnitDef;
 use atc_navdata::model::{Airport, FreqKind};
 use atc_navdata::procedures::AirspaceKind;
 use atc_phraseology::{AtcItem, AtcMessage, Callsign, Lang, render};
+use serde::{Deserialize, Serialize};
 
 #[cfg(doc)]
 use atc_core::handover::FlightHandover;
@@ -68,6 +69,35 @@ impl Owner {
             Owner::Unit(_) => None,
         }
     }
+}
+
+/// Who works a flight, by name: what survives a restart of [`Owner`], which is an index.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OwnerRef {
+    /// The id of the station (its directory in `data_dir`).
+    Station(String),
+    /// `<callsign>@<khz>` of the en-route unit.
+    Unit(String),
+}
+
+/// The flights an en-route unit works, saved with its key (`<callsign>@<khz>`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UnitState {
+    pub unit: String,
+    pub flights: Vec<UnitFlightState>,
+}
+
+/// What the network keeps across a restart besides the engines' snapshots: who owns which
+/// flight and what the en-route units know of theirs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetworkState {
+    pub owners: BTreeMap<String, OwnerRef>,
+    pub units: Vec<UnitState>,
+}
+
+fn unit_key(def: &EnrouteUnitDef) -> String {
+    format!("{}@{}", def.callsign, def.khz)
 }
 
 #[derive(Default)]
@@ -420,11 +450,74 @@ impl Network {
     /// Each station's id and engine snapshot, taken under the ownership lock so that no
     /// flight is half-way between two engines (and the owners -> engine lock order holds).
     pub fn snapshots(&self) -> Vec<(String, EngineSnapshot)> {
-        let _owners = self.owners.lock().unwrap();
-        self.stations
+        self.persisted().0
+    }
+
+    /// [`Network::snapshots`] together with the [`NetworkState`], all taken under the one
+    /// ownership lock, so that the files written from them agree with each other.
+    pub fn persisted(&self) -> (Vec<(String, EngineSnapshot)>, NetworkState) {
+        let owners = self.owners.lock().unwrap();
+        let snapshots = self
+            .stations
             .iter()
             .map(|s| (s.id.clone(), s.engine.lock().unwrap().snapshot()))
-            .collect()
+            .collect();
+        let state = NetworkState {
+            owners: owners
+                .iter()
+                .map(|(cs, o)| (cs.0.clone(), self.owner_ref(*o)))
+                .collect(),
+            units: self
+                .units
+                .iter()
+                .zip(&self.unit_defs)
+                .map(|(unit, def)| UnitState {
+                    unit: unit_key(def),
+                    flights: unit.lock().unwrap().flight_states(),
+                })
+                .filter(|u| !u.flights.is_empty())
+                .collect(),
+        };
+        (snapshots, state)
+    }
+
+    fn owner_ref(&self, o: Owner) -> OwnerRef {
+        match o {
+            Owner::Station(i) => OwnerRef::Station(self.stations[i].id.clone()),
+            Owner::Unit(k) => OwnerRef::Unit(unit_key(&self.unit_defs[k])),
+        }
+    }
+
+    /// Takes back a [`NetworkState`] saved by an earlier run. Entries naming a station or unit
+    /// that no longer exists are ignored (and logged).
+    pub fn restore_state(&self, state: NetworkState) {
+        let mut owners = self.owners.lock().unwrap();
+        for (cs, o) in state.owners {
+            let found = match &o {
+                OwnerRef::Station(id) => self
+                    .stations
+                    .iter()
+                    .position(|s| s.id == *id)
+                    .map(Owner::Station),
+                OwnerRef::Unit(key) => self
+                    .unit_defs
+                    .iter()
+                    .position(|d| unit_key(d) == *key)
+                    .map(Owner::Unit),
+            };
+            match found {
+                Some(owner) => {
+                    owners.insert(Callsign::new(&cs), owner);
+                }
+                None => tracing::warn!(callsign = %cs, owner = ?o, "saved owner no longer exists"),
+            }
+        }
+        for u in state.units {
+            match self.unit_defs.iter().position(|d| unit_key(d) == u.unit) {
+                Some(k) => self.units[k].lock().unwrap().restore_flights(u.flights),
+                None => tracing::warn!(unit = %u.unit, "saved en-route unit no longer exists"),
+            }
+        }
     }
 
     /// The vehicle orders of every engine, drained. Taking non-owners' orders too is right:
@@ -437,6 +530,26 @@ impl Network {
             .iter()
             .flat_map(|s| s.engine.lock().unwrap().take_vehicle_orders())
             .collect()
+    }
+
+    /// The last position the aircraft reported.
+    pub fn pilot_pos(&self, cs: &Callsign) -> Option<LatLon> {
+        self.pos(cs)
+    }
+
+    /// The `n` stations nearest `pos`, nearest first (station order without a position).
+    pub fn nearest_stations(&self, pos: Option<LatLon>, n: usize) -> Vec<usize> {
+        let mut all: Vec<usize> = (0..self.stations.len()).collect();
+        all.sort_by(|&a, &b| self.dist(a, pos).total_cmp(&self.dist(b, pos)));
+        all.truncate(n);
+        all
+    }
+
+    fn dist(&self, i: usize, pos: Option<LatLon>) -> f64 {
+        match (self.refs[i], pos) {
+            (Some(r), Some(p)) => distance_m(r, p),
+            _ => f64::INFINITY,
+        }
     }
 
     fn pos(&self, cs: &Callsign) -> Option<LatLon> {
@@ -492,11 +605,7 @@ impl Network {
         candidates: impl Iterator<Item = usize>,
         pos: Option<LatLon>,
     ) -> Option<usize> {
-        let dist = |i: usize| match (self.refs[i], pos) {
-            (Some(r), Some(p)) => distance_m(r, p),
-            _ => f64::INFINITY,
-        };
-        candidates.min_by(|&a, &b| dist(a).total_cmp(&dist(b)))
+        candidates.min_by(|&a, &b| self.dist(a, pos).total_cmp(&self.dist(b, pos)))
     }
 
     /// Hands flight `cs` from `from` to `to` (stations or units).

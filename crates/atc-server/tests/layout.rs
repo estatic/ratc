@@ -2,7 +2,7 @@ use std::path::Path;
 
 use atc_navdata::procedures::parse_procedures;
 use atc_server::layout::{
-    adjacent_names, load_airport, load_destinations_near, load_procedure_set_for, taxiway_names,
+    adjacent_names, load_airport, load_all_destinations, load_procedure_set_for, taxiway_names,
 };
 
 const XP: &str = concat!(
@@ -64,13 +64,13 @@ fn adjacent_towers_give_destination_names() {
 }
 
 #[test]
-fn destinations_come_from_the_install_and_are_empty_without_it() {
-    let ap = load_airport(Some(Path::new(XPLANE)), Path::new("/nonexistent"), "ZZZZ").unwrap();
+fn destinations_come_from_the_install() {
     let names = [("ZZZY".to_string(), "Testville".to_string())];
-    let list = load_destinations_near(Some(Path::new(XPLANE)), &ap, &names);
+    let cache = std::env::temp_dir().join(format!("atc-layout-dest-{}.json", std::process::id()));
+    let list = load_all_destinations(Path::new(XPLANE), &cache, &names);
+    let _ = std::fs::remove_file(&cache);
     assert!(
         list.iter()
             .any(|d| d.icao == "ZZZY" && d.name == "Testville")
     );
-    assert!(load_destinations_near(None, &ap, &names).is_empty());
 }

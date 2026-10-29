@@ -1072,3 +1072,166 @@ fn boundary_hover_does_not_ping_pong() {
     assert!(heard.is_empty(), "{heard:?}");
     assert_eq!(net.owner(&c), Some(Owner::Unit(0)));
 }
+
+// Persistence: every station's snapshot, the owners and the units' flights.
+
+mod restart {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+
+    use atc_server::network::OwnerRef;
+    use atc_server::persist;
+
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("atc-restart-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn net() -> Network {
+        let net = Network::new(vec![fixture_station("ZZZY", ""), zeta_with_testville()])
+            .with_units(vec![alpha()]);
+        net.on_weather(Weather {
+            wind: Wind {
+                dir_deg: 90,
+                speed_kt: 5,
+                calm: false,
+            },
+            visibility_m: 10_000,
+            clouds: vec![],
+            temp_c: 15,
+            dewpoint_c: 10,
+            qnh_hpa: 1013,
+        });
+        net
+    }
+
+    /// SPONE works with Testville Tower; SPTST (IFR to Testville, 2000 ft) with Alpha.
+    fn in_flight(net: &Network) -> (Callsign, Callsign) {
+        let one = join(net, "SPONE");
+        net.on_telemetry(sample(&one, 0.0, at(10.5), 0.0, 0.0, TESTVILLE_TWR));
+        net.on_transmission(
+            &one,
+            TESTVILLE_TWR,
+            "Testville Tower, SPONE, request radio check",
+            Lang::En,
+            SimTime(1.0),
+        );
+        assert_eq!(net.owner(&one), Some(Owner::Station(ZZZY)));
+        let c = join(net, "SPTST");
+        net.stations()[ZZZZ]
+            .engine
+            .lock()
+            .unwrap()
+            .import_flight(ifr_to_testville(&c));
+        net.on_telemetry(sample(&c, 0.0, at(10.2), 2000.0, 150.0, ZETA_APP));
+        net.on_transmission(
+            &c,
+            ZETA_APP,
+            "Zeta Approach, SPTST, two thousand feet",
+            Lang::En,
+            SimTime(1.0),
+        );
+        net.on_transmission(
+            &c,
+            ALPHA,
+            "Alpha Information, SPTST, two thousand feet",
+            Lang::En,
+            SimTime(2.0),
+        );
+        assert_eq!(net.owner(&c), Some(Owner::Unit(0)));
+        (one, c)
+    }
+
+    #[test]
+    fn restart_restores_every_station_and_owner() {
+        let d = dir("all");
+        let before = net();
+        let (one, c) = in_flight(&before);
+        persist::save_all_in(&d, &before, &mut HashMap::new());
+        assert!(d.join("state-ZZZY.json").is_file());
+        assert!(d.join("state-ZZZZ.json").is_file());
+        assert!(d.join("network.json").is_file());
+        assert!(!d.join("network.json.tmp").exists());
+
+        let after = net();
+        persist::restore_all_in(&d, &after, false, SystemTime::now());
+        assert_eq!(after.owner(&one), Some(Owner::Station(ZZZY)));
+        assert_eq!(after.owner(&c), Some(Owner::Unit(0)));
+        assert!(registered(&after, ZZZY, &one));
+        // The unit keeps the flight with its plan and level, and has identified it already.
+        let state = after.persisted().1;
+        let flight = &state.units[0].flights[0];
+        assert_eq!(flight.data.cleared_ft, Some(2000));
+        assert_eq!(flight.data.plan.as_ref().unwrap().destination, "ZZZY");
+        assert!(flight.identified);
+        let out = after.on_transmission(
+            &c,
+            ALPHA,
+            "Alpha Information, SPTST, request radio check",
+            Lang::En,
+            SimTime(3.0),
+        );
+        assert!(
+            !items_of(&out).contains(&AtcItem::Identified),
+            "identified again: {out:?}"
+        );
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn restore_ignores_vanished_stations_units_and_stale_files() {
+        let d = dir("gone");
+        let before = net();
+        let (one, c) = in_flight(&before);
+        persist::save_all_in(&d, &before, &mut HashMap::new());
+        let mut state = before.persisted().1;
+        state
+            .owners
+            .insert("SPGONE".into(), OwnerRef::Station("ZZZX".into()));
+        state.owners.insert(
+            "SPGON2".into(),
+            OwnerRef::Unit("Nobody Radar@123450".into()),
+        );
+        std::fs::write(
+            d.join("network.json"),
+            serde_json::to_string(&state).unwrap(),
+        )
+        .unwrap();
+
+        let after = net();
+        persist::restore_all_in(&d, &after, false, SystemTime::now());
+        assert_eq!(after.owner(&cs("SPGONE")), None);
+        assert_eq!(after.owner(&cs("SPGON2")), None);
+        assert_eq!(after.owner(&c), Some(Owner::Unit(0)));
+
+        // Older than the maximum age, or --fresh: nothing comes back.
+        let late = SystemTime::now() + persist::MAX_AGE + Duration::from_secs(60);
+        for (fresh, now) in [(false, late), (true, SystemTime::now())] {
+            let again = net();
+            persist::restore_all_in(&d, &again, fresh, now);
+            assert_eq!(again.owner(&one), None);
+            assert_eq!(again.owner(&c), None);
+            assert!(!registered(&again, ZZZY, &one));
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn unchanged_state_is_not_rewritten() {
+        let d = dir("same");
+        let n = net();
+        in_flight(&n);
+        let mut last = HashMap::new();
+        persist::save_all_in(&d, &n, &mut last);
+        let json = d.join("network.json");
+        std::fs::remove_file(&json).unwrap();
+        persist::save_all_in(&d, &n, &mut last);
+        assert!(!json.exists(), "rewritten although nothing changed");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+}
