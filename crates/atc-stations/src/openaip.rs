@@ -403,6 +403,7 @@ pub mod fake {
         reporting_points: RefCell<HashMap<String, Vec<OaReportingPoint>>>,
         failures: RefCell<HashMap<Endpoint, ApiError>>,
         calls: RefCell<Vec<Call>>,
+        versions: RefCell<HashMap<String, String>>,
     }
 
     impl FakeApi {
@@ -420,6 +421,14 @@ pub mod fake {
             self.reporting_points
                 .borrow_mut()
                 .insert(country.into(), items);
+        }
+        /// Marks the canned data of `country` as last changed at `version` (ISO UTC):
+        /// `changed_count` then answers 0 when `updated_after >= version`. Without a version
+        /// it always answers the number of canned items.
+        pub fn set_version(&self, country: &str, version: &str) {
+            self.versions
+                .borrow_mut()
+                .insert(country.into(), version.into());
         }
         /// Makes every call to `endpoint` fail with `err`.
         pub fn fail(&self, endpoint: Endpoint, err: ApiError) {
@@ -479,6 +488,14 @@ pub mod fake {
             updated_after: &str,
         ) -> Result<u64, ApiError> {
             self.record(endpoint, country, Some(updated_after))?;
+            if self
+                .versions
+                .borrow()
+                .get(country)
+                .is_some_and(|v| updated_after >= v.as_str())
+            {
+                return Ok(0);
+            }
             let n = match endpoint {
                 Endpoint::Airports => self.airports.borrow().get(country).map_or(0, |v| v.len()),
                 Endpoint::Airspaces => self.airspaces.borrow().get(country).map_or(0, |v| v.len()),
@@ -705,5 +722,27 @@ mod tests {
         assert!(f.airports("ZZ", None).unwrap().is_empty());
         assert_eq!(f.calls()[0].updated_after.as_deref(), Some("t"));
         let _dynref: &dyn OpenAipApi = &f;
+    }
+
+    #[test]
+    fn fake_changed_count_honours_version() {
+        let f = FakeApi::new();
+        f.set_airports("ZZ", vec![airport()]);
+        assert_eq!(
+            f.changed_count(Endpoint::Airports, "ZZ", "2026-01-01")
+                .unwrap(),
+            1
+        );
+        f.set_version("ZZ", "2026-01-01");
+        assert_eq!(
+            f.changed_count(Endpoint::Airports, "ZZ", "2025-12-31")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            f.changed_count(Endpoint::Airports, "ZZ", "2026-01-01")
+                .unwrap(),
+            0
+        );
     }
 }

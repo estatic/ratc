@@ -39,6 +39,7 @@ const STATION: &str = "station.toml";
 const OVERRIDES: &str = "overrides.toml";
 const META: &str = "wizard.toml";
 const APT_DAT: &str = "apt.dat";
+const PROCEDURES: &str = "procedures.toml";
 /// Country queried to check a new key: any valid code works, the answer is only auth.
 const KEY_CHECK_COUNTRY: &str = "PL";
 

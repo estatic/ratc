@@ -63,9 +63,14 @@ impl<R: BufRead, W: Write> Prompt<R, W> {
         }
         let mut s = String::new();
         match self.input.read_line(&mut s) {
-            Ok(0) | Err(_) => {
+            Ok(0) => {
                 self.eof = true;
                 self.put("\n");
+                None
+            }
+            Err(_) => {
+                self.put("\nCould not read input; quitting.\n");
+                self.eof = true;
                 None
             }
             Ok(_) => Some(s.trim().to_string()),
@@ -245,5 +250,21 @@ mod tests {
         assert_eq!(p.pick_some("T", &items, &[], &[true, false]), [0]);
         let out = String::from_utf8(p.into_output()).unwrap();
         assert!(out.contains("2 cannot be picked."));
+    }
+
+    struct Broken;
+    impl std::io::Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("broken"))
+        }
+    }
+
+    #[test]
+    fn read_error_quits_with_a_message() {
+        let mut p = Prompt::new(std::io::BufReader::new(Broken), Vec::new());
+        assert_eq!(p.menu("T", &["a"]), 0);
+        assert!(p.eof());
+        let out = String::from_utf8(p.into_output()).unwrap();
+        assert!(out.contains("Could not read input; quitting."), "{out}");
     }
 }

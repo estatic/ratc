@@ -9,7 +9,8 @@ use atc_navdata::xplane::{ResolvedAirport, load_destinations, resolve_airport};
 
 use super::values::value_screen;
 use super::{
-    APT_DAT, Meta, Prompt, STATION, WizardEnv, combined, fetched_on, lat_lon, mhz, write_meta,
+    APT_DAT, Meta, OVERRIDES, PROCEDURES, Prompt, STATION, WizardEnv, combined, fetched_on,
+    lat_lon, mhz, write_meta,
 };
 use crate::generate::{Choice, StationDoc, generate, offered_positions, write_station};
 use crate::openaip::{OaAirport, OpenAipApi, khz};
@@ -139,10 +140,15 @@ fn ensure_country<R: BufRead, W: Write>(
         .store
         .fetch_country(api, cc, &env.now())
         .map_err(|e| e.to_string())?;
-    if d.airports.is_empty() {
-        p.say(format!("OpenAIP has no airfields for {cc}."));
+    if d.airports.is_empty() && d.airspaces.is_empty() && d.points.is_empty() {
+        p.say(format!("OpenAIP has no data for {cc}."));
     }
     Ok(())
+}
+
+/// A station id is a directory name: 1-8 ASCII letters or digits.
+fn valid_id(id: &str) -> bool {
+    (1..=8).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 fn create_one<R: BufRead, W: Write>(
@@ -173,10 +179,24 @@ fn create_one<R: BufRead, W: Write>(
             return;
         }
     };
+    if !valid_id(&id) {
+        p.say(format!("Skipping {name}: unusable station id \"{id}\"."));
+        return;
+    }
     let dir = env.data_dir.join(&id);
-    if dir.join(STATION).exists()
-        && !p.confirm(
+    if dir.join(STATION).exists() {
+        if !p.confirm(
             &format!("Station {id} exists. Replace its {STATION} (your overrides are kept)?"),
+            false,
+        ) {
+            return;
+        }
+    } else if dir.join(PROCEDURES).is_file()
+        && !p.confirm(
+            &format!(
+                "{id} has a hand-made {PROCEDURES}; a generated {STATION} will be used instead \
+                 of it at runtime (Remove restores it). Continue?"
+            ),
             false,
         )
     {
@@ -209,7 +229,7 @@ fn create_one<R: BufRead, W: Write>(
         &Choice { positions },
         &fetched_on(&env.store, &ap.country, &env.now()),
     );
-    let mut ov = match Overrides::load(&dir) {
+    let loaded = match Overrides::load(&dir) {
         Ok(o) => o,
         Err(e) => {
             p.say(format!("{id}: {e}; nothing created."));
@@ -223,6 +243,7 @@ fn create_one<R: BufRead, W: Write>(
             return;
         }
     };
+    let mut ov = loaded.clone();
     if !value_screen(p, &id, &base, &doc.provenance, &mut ov) {
         return;
     }
@@ -231,7 +252,9 @@ fn create_one<R: BufRead, W: Write>(
         country: ap.country.to_uppercase(),
         positions_khz: doc.procs.positions.iter().map(|x| x.khz).collect(),
     };
-    match write_new_station(&dir, &id, &doc, &ov, &resolved, &meta) {
+    // A hand-edited overrides.toml is rewritten only when the user changed something.
+    let save_ov = (ov != loaded || !dir.join(OVERRIDES).is_file()).then_some(&ov);
+    match write_new_station(&dir, &id, &doc, save_ov, &resolved, &meta) {
         Ok(()) => p.say(format!("Created {id} in {}.", dir.display())),
         Err(e) => p.say(format!("{id}: could not write the station: {e}")),
     }
@@ -241,13 +264,15 @@ fn write_new_station(
     dir: &Path,
     id: &str,
     doc: &StationDoc,
-    ov: &Overrides,
+    ov: Option<&Overrides>,
     resolved: &ResolvedAirport,
     meta: &Meta,
 ) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     write_station(doc, &dir.join(STATION)).map_err(|e| e.to_string())?;
-    ov.save(dir).map_err(|e| e.to_string())?;
+    if let Some(ov) = ov {
+        ov.save(dir).map_err(|e| e.to_string())?;
+    }
     let apt = dir.join(APT_DAT);
     if !apt.exists() {
         std::fs::write(&apt, apt_dat_text(resolved, id)).map_err(|e| e.to_string())?;
@@ -372,6 +397,16 @@ mod tests {
 
     use atc_navdata::apt::parse_apt_dat;
     use std::path::PathBuf;
+
+    #[test]
+    fn station_ids_are_safe_directory_names() {
+        for ok in ["EPKK", "XZ01", "K1", "ABCDEFGH"] {
+            assert!(valid_id(ok), "{ok}");
+        }
+        for bad in ["", "..", "A/B", "A\\B", "ABCDEFGHI", "EP KK", "ÉPKK", "C:"] {
+            assert!(!valid_id(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn apt_dat_header_takes_the_station_id() {

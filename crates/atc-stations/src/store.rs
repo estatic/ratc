@@ -71,7 +71,8 @@ impl Store {
     }
 
     /// Downloads all three endpoints and replaces the stored files. Nothing is
-    /// written unless every request succeeded.
+    /// written unless every request succeeded, nor when all three lists are empty (an unknown
+    /// country code, which would otherwise be re-checked forever).
     pub fn fetch_country(
         &self,
         api: &dyn OpenAipApi,
@@ -88,6 +89,9 @@ impl Store {
             points,
             synced_at: now_utc.to_string(),
         };
+        if data.airports.is_empty() && data.airspaces.is_empty() && data.points.is_empty() {
+            return Ok(data);
+        }
 
         let dir = self.dir(&cc);
         std::fs::create_dir_all(&dir).map_err(io_err(&dir))?;
@@ -405,5 +409,25 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
             assert_eq!(load_key_from(&dir).as_deref(), Some("other\"key"));
         }
+    }
+
+    #[test]
+    fn empty_country_is_not_stored() {
+        let root = std::env::temp_dir().join(format!(
+            "vatc-store-empty-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = Store::at(&root);
+        let d = store
+            .fetch_country(&FakeApi::new(), "QQ", "2026-02-02T10:00:00Z")
+            .unwrap();
+        assert!(d.airports.is_empty());
+        assert!(store.countries().is_empty());
+        assert!(store.load_country("QQ").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

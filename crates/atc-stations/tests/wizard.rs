@@ -310,8 +310,15 @@ fn update_skips_stations_not_made_by_the_wizard() {
     let hand = c.station("EPZZ");
     std::fs::create_dir_all(&hand).unwrap();
     std::fs::write(hand.join("procedures.toml"), "").unwrap();
-    let out = c.run("n\n2\n6\n");
-    assert!(out.contains("Skipping EPZZ"), "{out}");
+    // A second stored country: both update, the note still comes once per run.
+    c.api.set_airspaces("YY", airspaces());
+    c.env
+        .store
+        .fetch_country(&*c.api, "YY", "2026-10-01T00:00:00Z")
+        .unwrap();
+    let out = c.run("n\nn\n2\n6\n");
+    assert_eq!(out.matches("Skipping EPZZ").count(), 1, "{out}");
+    assert_eq!(out.matches("Updated ZZZZ").count(), 1, "{out}");
     assert!(out.contains("Updated ZZZZ"), "{out}");
 }
 
@@ -420,4 +427,74 @@ fn edit_changes_only_overrides() {
     assert_eq!(before, after);
     let p = atc_navdata::station::load_station(&c.station("ZZZZ")).unwrap();
     assert_eq!(p.transition_altitude_ft, 7000);
+}
+
+#[test]
+fn hand_made_procedures_needs_confirmation() {
+    let c = ctx("handwarn").with_key();
+    let dir = c.station("ZZZZ");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("procedures.toml"), "").unwrap();
+    let warning = "ZZZZ has a hand-made procedures.toml; a generated station.toml will be used \
+                   instead of it at runtime (Remove restores it). Continue? [y/N]";
+    let out = c.run(&format!("{CREATE_ZZZZ}\n6\n"));
+    assert!(out.contains(warning), "{out}");
+    assert!(!dir.join("station.toml").exists(), "default is No: {out}");
+
+    let out = c.run(&format!("n\n{CREATE_ZZZZ}y\n\n1\n6\n"));
+    assert!(out.contains(warning), "{out}");
+    assert!(dir.join("station.toml").is_file(), "{out}");
+    assert!(dir.join("procedures.toml").is_file());
+}
+
+#[test]
+fn hand_edited_overrides_are_not_rewritten() {
+    let c = ctx("ovkeep").with_key();
+    let dir = c.station("ZZZZ");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "# my notes\npreferred_runway = \"09\"\n";
+    std::fs::write(dir.join("overrides.toml"), text).unwrap();
+    let out = c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    assert!(out.contains("preferred_runway = \"09\"   [user]"), "{out}");
+    assert!(dir.join("station.toml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("overrides.toml")).unwrap(),
+        text
+    );
+}
+
+#[test]
+fn unknown_neighbour_country_is_not_stored() {
+    let c = ctx("emptycc").with_key();
+    let out = c.run("1\nZZZZ\n1\nQQ\nnone\n6\n");
+    assert!(out.contains("OpenAIP has no data for QQ."), "{out}");
+    assert_eq!(c.env.store.countries(), ["ZZ"]);
+}
+
+#[test]
+fn unchanged_store_does_not_prompt() {
+    let c = ctx("unchanged").with_key();
+    let synced = "2026-10-01T00:00:00Z";
+    c.env.store.fetch_country(&*c.api, "ZZ", synced).unwrap();
+    c.api.set_version("ZZ", "2026-09-01T00:00:00Z");
+    let out = c.run("6\n");
+    assert!(!out.contains("Updates available"), "{out}");
+    // The check asks OpenAIP for changes since the stored sync time.
+    let checks: Vec<_> = c
+        .api
+        .calls()
+        .into_iter()
+        .filter(|x| x.country == "ZZ" && x.updated_after.is_some())
+        .collect();
+    assert_eq!(checks.len(), 3, "{checks:?}");
+    assert!(
+        checks
+            .iter()
+            .all(|x| x.updated_after.as_deref() == Some(synced))
+    );
+
+    // Newer upstream data is offered.
+    c.api.set_version("ZZ", "2026-10-15T00:00:00Z");
+    let out = c.run("n\n6\n");
+    assert!(out.contains("Updates available for ZZ"), "{out}");
 }

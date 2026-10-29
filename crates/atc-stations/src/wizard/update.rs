@@ -10,8 +10,8 @@ use atc_navdata::procedures::{PositionDef, Procedures};
 use atc_navdata::xplane::resolve_airport;
 
 use super::{
-    APT_DAT, META, Meta, Prompt, STATION, StationDir, WizardEnv, combined, date_of, mhz, stations,
-    write_meta,
+    APT_DAT, META, Meta, PROCEDURES, Prompt, STATION, StationDir, WizardEnv, combined, fetched_on,
+    mhz, stations, write_meta,
 };
 use crate::generate::{Choice, generate, offered_positions, write_station};
 use crate::openaip::OpenAipApi;
@@ -23,6 +23,7 @@ pub(super) fn startup_check<R: BufRead, W: Write>(
     api: &dyn OpenAipApi,
     p: &mut Prompt<R, W>,
 ) {
+    let mut updated = false;
     for cc in env.store.countries() {
         match env.store.changes(api, &cc) {
             Ok(Some(c)) if c.airports + c.airspaces + c.points > 0 => {
@@ -32,18 +33,21 @@ pub(super) fn startup_check<R: BufRead, W: Write>(
                     c.airports, c.airspaces, c.points
                 );
                 if p.confirm(&q, true) {
-                    update_country(env, api, &cc, p);
+                    updated |= download(env, api, &cc, p);
                 }
                 if p.eof() {
-                    return;
+                    break;
                 }
             }
             Ok(_) => {}
             Err(e) => {
                 p.say(format!("Could not check OpenAIP for updates: {e}"));
-                return;
+                break;
             }
         }
+    }
+    if updated {
+        regenerate_all(env, p);
     }
 }
 
@@ -57,59 +61,66 @@ pub(super) fn update_all<R: BufRead, W: Write>(
         p.say("No OpenAIP data downloaded yet; create a station first (menu 1).");
         return;
     }
-    let mut any = false;
+    let (mut changed, mut updated) = (false, false);
     for cc in countries {
         match env.store.changes(api, &cc) {
             Ok(Some(c)) if c.airports + c.airspaces + c.points > 0 => {
-                any = true;
+                changed = true;
                 p.say(format!(
                     "Updating {cc}: {} airports, {} airspaces, {} reporting points changed.",
                     c.airports, c.airspaces, c.points
                 ));
-                update_country(env, api, &cc, p);
+                updated |= download(env, api, &cc, p);
             }
             Ok(_) => {}
             Err(e) => {
                 p.say(format!("Could not check OpenAIP for updates: {e}"));
-                return;
+                break;
             }
         }
     }
-    if !any {
+    if updated {
+        regenerate_all(env, p);
+    } else if !changed {
         p.say("All OpenAIP data is up to date.");
     }
 }
 
-/// Downloads `cc` and regenerates every wizard station of that country.
-fn update_country<R: BufRead, W: Write>(
+/// Downloads `cc` into the store; `false` when it failed (the previous data is kept).
+fn download<R: BufRead, W: Write>(
     env: &WizardEnv,
     api: &dyn OpenAipApi,
     cc: &str,
     p: &mut Prompt<R, W>,
-) {
-    let fetched = match env.store.fetch_country(api, cc, &env.now()) {
-        Ok(d) => d,
+) -> bool {
+    match env.store.fetch_country(api, cc, &env.now()) {
+        Ok(_) => true,
         Err(e) => {
             p.say(format!(
                 "Download of {cc} failed: {e}; the previous data is kept."
             ));
-            return;
+            false
         }
-    };
+    }
+}
+
+/// Regenerates every wizard station: generation uses all stored countries, so a change in
+/// one country can touch stations of another (adjacent towers, airspaces).
+fn regenerate_all<R: BufRead, W: Write>(env: &WizardEnv, p: &mut Prompt<R, W>) {
     let all = combined(&env.store);
-    let fetched_on = date_of(&fetched.synced_at);
     for st in stations(&env.data_dir) {
         match &st.meta {
-            None if st.dir.join(STATION).is_file() || st.dir.join("procedures.toml").is_file() => {
+            None if st.dir.join(STATION).is_file() || st.dir.join(PROCEDURES).is_file() => {
                 p.say(format!(
                     "Skipping {}: not made by the wizard (no {META}).",
                     st.id
                 ));
             }
-            Some(m) if m.country.eq_ignore_ascii_case(cc) => {
-                regenerate(env, &all, &st, m, &fetched_on, p);
+            Some(m) => {
+                let on = fetched_on(&env.store, &m.country, &env.now());
+                regenerate(env, &all, &st, m, &on, p);
             }
-            _ => {}
+            None => {}
         }
     }
 }
