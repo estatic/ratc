@@ -23,6 +23,17 @@ use crate::state::SimTime;
 /// A hand-off not read back is taken this long after the instruction anyway.
 pub const HANDOFF_TIMEOUT_S: f64 = 30.0;
 
+/// Hysteresis at the edge of the unit's coverage: a sample is outside only when no sector
+/// contains the position with the altitude within its limits widened by this margin, and
+/// the flight has left after [`LEAVE_SAMPLES`] such samples in a row (a flight hovering on a
+/// boundary or a level limit is not handed to and fro).
+pub const LEAVE_MARGIN_FT: f64 = 100.0;
+/// Consecutive outside samples before [`EnrouteEvent::LeftSector`].
+pub const LEAVE_SAMPLES: u8 = 3;
+/// A released flight is forgotten this long after its release
+/// ([`EnrouteUnit::prune_released`]).
+pub const RELEASED_KEPT_S: f64 = 600.0;
+
 /// What the unit reports from a telemetry sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnrouteEvent {
@@ -50,8 +61,11 @@ enum Service {
         since: f64,
         read_back: bool,
     },
-    /// Out of the unit's service; it stays silent until the pilot asks something.
-    Released,
+    /// Out of the unit's service since `since`; it stays silent until the pilot asks
+    /// something.
+    Released {
+        since: f64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +75,8 @@ struct EnrouteFlight {
     identified: bool,
     last_items: Vec<AtcItem>,
     service: Service,
+    /// Consecutive samples outside the unit's coverage (with the margin).
+    outside: u8,
 }
 
 impl EnrouteFlight {
@@ -71,8 +87,22 @@ impl EnrouteFlight {
             identified: false,
             last_items: Vec::new(),
             service: Service::Active,
+            outside: 0,
         }
     }
+
+    fn released(&self) -> bool {
+        matches!(self.service, Service::Released { .. })
+    }
+}
+
+/// [`unit_covers`] with the level limits widened by [`LEAVE_MARGIN_FT`].
+fn covers_with_margin(def: &EnrouteUnitDef, pos: LatLon, alt_ft: f64) -> bool {
+    def.sectors.iter().any(|s| {
+        (f64::from(s.lower_ft) - LEAVE_MARGIN_FT..=f64::from(s.upper_ft) + LEAVE_MARGIN_FT)
+            .contains(&alt_ft)
+            && point_in_polygon([pos.lat, pos.lon], &s.polygon)
+    })
 }
 
 /// `true` when a sector of `def` contains the aircraft (position and altitude, limits
@@ -124,9 +154,7 @@ impl EnrouteUnit {
 
     /// `true` while the unit works flight `cs` (not released, not handed away).
     pub fn serves(&self, cs: &Callsign) -> bool {
-        self.flights
-            .get(cs)
-            .is_some_and(|f| f.service != Service::Released)
+        self.flights.get(cs).is_some_and(|f| !f.released())
     }
 
     /// `true` while the unit works flight `cs` with no hand-off in progress.
@@ -182,7 +210,7 @@ impl EnrouteUnit {
         f.lang = lang;
         let repeat = msg.intent == PilotIntent::SayAgain && !f.last_items.is_empty();
         let items = match &mut f.service {
-            Service::Released => {
+            Service::Released { .. } => {
                 if !asks(&msg) && !msg.station_called {
                     return Vec::new();
                 }
@@ -226,28 +254,29 @@ impl EnrouteUnit {
         }
     }
 
-    /// A telemetry sample of flight `cs`: [`EnrouteEvent::LeftSector`] the first time a
-    /// flight the unit works is outside all its sectors (not again while it is handed on).
+    /// A telemetry sample of flight `cs`: [`EnrouteEvent::LeftSector`] once a flight the
+    /// unit works (no hand-off in progress) has been outside all its sectors for
+    /// [`LEAVE_SAMPLES`] samples in a row, with the [`LEAVE_MARGIN_FT`] level margin.
     pub fn on_telemetry(
         &mut self,
         cs: &Callsign,
         pos: LatLon,
         alt_ft: f64,
     ) -> Option<EnrouteEvent> {
-        let f = self.flights.get(cs)?;
-        (f.service == Service::Active && !unit_covers(&self.def, pos, alt_ft))
-            .then_some(EnrouteEvent::LeftSector)
+        let f = self.flights.get_mut(cs)?;
+        if f.service != Service::Active || covers_with_margin(&self.def, pos, alt_ft) {
+            f.outside = 0;
+            return None;
+        }
+        f.outside = f.outside.saturating_add(1);
+        (f.outside >= LEAVE_SAMPLES).then_some(EnrouteEvent::LeftSector)
     }
 
     /// Hands flight `cs` on at sim time `t`: the items the unit says. `Contact` waits for the
     /// readback ([`EnrouteUnit::handoff_target`]); `ChangeTo` and `Release` end the unit's
     /// service at once. Nothing for a flight the unit does not work.
     pub fn hand_off(&mut self, cs: &Callsign, to: HandOff, t: SimTime) -> Vec<AtcItem> {
-        let Some(f) = self
-            .flights
-            .get_mut(cs)
-            .filter(|f| f.service != Service::Released)
-        else {
+        let Some(f) = self.flights.get_mut(cs).filter(|f| !f.released()) else {
             return Vec::new();
         };
         let items = match to {
@@ -260,11 +289,11 @@ impl EnrouteUnit {
                 vec![AtcItem::Contact { station, khz }]
             }
             HandOff::ChangeTo { station, khz } => {
-                f.service = Service::Released;
+                f.service = Service::Released { since: t.0 };
                 vec![AtcItem::ChangeTo { station, khz }]
             }
             HandOff::Release => {
-                f.service = Service::Released;
+                f.service = Service::Released { since: t.0 };
                 vec![AtcItem::FrequencyChangeApproved]
             }
         };
@@ -285,11 +314,32 @@ impl EnrouteUnit {
         }
     }
 
-    /// Ends the unit's service of flight `cs` without a word (the hand-off target is gone).
-    pub fn release(&mut self, cs: &Callsign) {
+    /// Ends the unit's service of flight `cs` at `t` without a word (the hand-off target is
+    /// gone).
+    pub fn release(&mut self, cs: &Callsign, t: SimTime) {
         if let Some(f) = self.flights.get_mut(cs) {
-            f.service = Service::Released;
+            f.service = Service::Released { since: t.0 };
         }
+    }
+
+    /// Forgets the flights released [`RELEASED_KEPT_S`] or more before `now`.
+    pub fn prune_released(&mut self, now: SimTime) {
+        self.flights.retain(|_, f| match f.service {
+            Service::Released { since } => now.0 - since < RELEASED_KEPT_S,
+            _ => true,
+        });
+    }
+
+    /// Forgets flight `cs` if the unit released it (someone else took it).
+    pub fn forget_released(&mut self, cs: &Callsign) {
+        if self.flights.get(cs).is_some_and(EnrouteFlight::released) {
+            self.flights.remove(cs);
+        }
+    }
+
+    /// `true` when the unit still remembers flight `cs` (in service or released).
+    pub fn knows(&self, cs: &Callsign) -> bool {
+        self.flights.contains_key(cs)
     }
 }
 
@@ -388,10 +438,22 @@ mod tests {
         let mut u = unit();
         u.import_flight(handover(None));
         assert_eq!(u.on_telemetry(&cs(), pos(50.5, 20.5), 4500.0), None);
+        // Within the 100 ft margin above the upper limit: still covered.
+        for _ in 0..5 {
+            assert_eq!(u.on_telemetry(&cs(), pos(50.5, 20.5), 9590.0), None);
+        }
+        // More than 100 ft above, three samples in a row.
+        assert_eq!(u.on_telemetry(&cs(), pos(50.5, 20.5), 9700.0), None);
+        assert_eq!(u.on_telemetry(&cs(), pos(50.5, 20.5), 9700.0), None);
         assert_eq!(
-            u.on_telemetry(&cs(), pos(50.5, 20.5), 9600.0),
+            u.on_telemetry(&cs(), pos(50.5, 20.5), 9700.0),
             Some(EnrouteEvent::LeftSector)
         );
+        // Laterally outside: the same three samples.
+        let mut u = unit();
+        u.import_flight(handover(None));
+        assert_eq!(u.on_telemetry(&cs(), pos(51.2, 20.5), 4500.0), None);
+        assert_eq!(u.on_telemetry(&cs(), pos(51.2, 20.5), 4500.0), None);
         assert_eq!(
             u.on_telemetry(&cs(), pos(51.2, 20.5), 4500.0),
             Some(EnrouteEvent::LeftSector)
@@ -399,12 +461,43 @@ mod tests {
         let items = u.hand_off(&cs(), HandOff::Release, SimTime(10.0));
         assert_eq!(items, vec![AtcItem::FrequencyChangeApproved]);
         assert!(!u.serves(&cs()));
-        assert_eq!(u.on_telemetry(&cs(), pos(51.2, 20.5), 4500.0), None);
+        for _ in 0..5 {
+            assert_eq!(u.on_telemetry(&cs(), pos(51.2, 20.5), 4500.0), None);
+        }
         // Unknown flights report nothing.
         assert_eq!(
             u.on_telemetry(&Callsign::new("SPXYZ"), pos(52.0, 20.5), 4500.0),
             None
         );
+    }
+
+    /// Hovering on the boundary (out, in, out, ...) never leaves.
+    #[test]
+    fn boundary_hover_does_not_leave() {
+        let mut u = unit();
+        u.import_flight(handover(None));
+        for k in 0..20 {
+            let lat = if k % 2 == 0 { 51.001 } else { 50.999 };
+            assert_eq!(u.on_telemetry(&cs(), pos(lat, 20.5), 4500.0), None, "{k}");
+        }
+    }
+
+    #[test]
+    fn released_flights_are_pruned_after_ten_minutes() {
+        let mut u = unit();
+        u.import_flight(handover(None));
+        u.hand_off(&cs(), HandOff::Release, SimTime(100.0));
+        u.prune_released(SimTime(699.0));
+        assert!(u.knows(&cs()));
+        u.prune_released(SimTime(700.0));
+        assert!(!u.knows(&cs()));
+        // Taken elsewhere: forgotten at once; a flight in service is kept.
+        u.import_flight(handover(None));
+        u.forget_released(&cs());
+        assert!(u.knows(&cs()));
+        u.release(&cs(), SimTime(800.0));
+        u.forget_released(&cs());
+        assert!(!u.knows(&cs()));
     }
 
     #[test]

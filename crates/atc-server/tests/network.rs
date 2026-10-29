@@ -1017,3 +1017,58 @@ fn departure_imported_inside_tma_is_not_handed_back() {
     assert!(heard.is_empty(), "{heard:?}");
     assert_eq!(net.owner(&c), Some(Owner::Unit(0)));
 }
+
+/// Testville with an ATZ and no controller: a VFR flight under the wide FIS crossing it stays
+/// with the FIS and hears nothing.
+#[test]
+fn crossing_unstaffed_atz_keeps_flight_with_unit() {
+    let atz = TESTVILLE_TMA.replace("\"Tma\"", "\"Atz\"");
+    let mut testville = fixture_station("ZZZY", &atz);
+    testville.procs.positions = vec![PositionDef {
+        role: FreqKind::Unicom,
+        callsign: "Testville Radio".into(),
+        khz: 122_800,
+    }];
+    let net = Network::new(vec![testville, fixture_station("ZZZZ", ZZZZ_EXTRA)])
+        .with_units(vec![wide_alpha()]);
+    net.on_weather(Weather {
+        wind: Wind {
+            dir_deg: 90,
+            speed_kt: 5,
+            calm: false,
+        },
+        visibility_m: 10_000,
+        clouds: vec![],
+        temp_c: 15,
+        dewpoint_c: 10,
+        qnh_hpa: 1013,
+    });
+    let c = join(&net, "SPTST");
+    identified_by_alpha(&net, &c, 10.2);
+    let mut heard = Vec::new();
+    let (mut lat, mut t) = (10.2, 1.0);
+    for _ in 0..30 {
+        lat += 0.02;
+        t += 10.0;
+        heard.extend(net.on_telemetry(sample(&c, t, at(lat), 2000.0, 100.0, ALPHA)));
+    }
+    assert!(lat > 10.65 && lat < 11.0);
+    assert!(heard.is_empty(), "{heard:?}");
+    assert_eq!(net.owner(&c), Some(Owner::Unit(0)));
+}
+
+/// On the shared Alpha/Bravo boundary, in and out every sample: no hand-off either way.
+#[test]
+fn boundary_hover_does_not_ping_pong() {
+    let net = network("", ZZZZ_EXTRA).with_units(vec![alpha(), bravo()]);
+    let c = join(&net, "SPTST");
+    identified_by_alpha(&net, &c, 10.39);
+    let mut heard = Vec::new();
+    for k in 0..20 {
+        let lat = if k % 2 == 0 { 10.401 } else { 10.399 };
+        let t = 2.0 + 10.0 * f64::from(k);
+        heard.extend(net.on_telemetry(sample(&c, t, at(lat), 4000.0, 150.0, ALPHA)));
+    }
+    assert!(heard.is_empty(), "{heard:?}");
+    assert_eq!(net.owner(&c), Some(Owner::Unit(0)));
+}

@@ -162,6 +162,10 @@ Precedence: `station.toml` + `overrides.toml` win over `procedures.toml`. The se
 or the other, not a merge of both. To fly at an airport set `airport = "<ID>"` in
 `config/server.toml`.
 
+With `data/airports/enroute.toml` present (the wizard writes it), the real FIS and ACC units in it
+answer on their frequencies and replace the stations' emulated adjacent units on the same
+frequencies, also when `airport` runs a single station.
+
 ### Overrides
 
 `overrides.toml` holds top-level `Procedures` keys. Tables merge field by field; arrays (such as

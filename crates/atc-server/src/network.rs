@@ -13,10 +13,11 @@
 //!    that does (the flight moves). A real en-route unit on that frequency wins (rule 1);
 //! 3. otherwise nobody answers.
 //!
-//! En-route units ([`EnrouteUnit`]): when a flight a unit works enters a station's CTR, TMA
-//! or ATZ (outside at the previous sample, inside now, within its level limits), the unit
-//! hands it to that station even inside its own sector. When the flight leaves all the
-//! unit's sectors, the unit hands it to the next unit containing the aircraft, else to the
+//! En-route units ([`EnrouteUnit`]): when a flight a unit works enters a staffed station's
+//! CTR, TMA or ATZ (outside at the previous sample, inside now, within its level limits),
+//! the unit hands it to that station even inside its own sector; an unstaffed station's area
+//! changes nothing. When the flight leaves all the unit's sectors (with the hysteresis of
+//! [`atc_core::enroute::LEAVE_SAMPLES`] and [`atc_core::enroute::LEAVE_MARGIN_FT`]), the unit hands it to the next unit containing the aircraft, else to the
 //! station whose CTR, TMA or ATZ contains it (its Approach, else Tower, else another staffed position: "contact"), a
 //! station without controllers hears "change to" its published frequency, and with nobody
 //! next the flight is released ("frequency change approved"). A "contact" moves the flight
@@ -304,6 +305,7 @@ impl Network {
         let out = match target {
             Owner::Station(i) => {
                 owners.insert(from.clone(), target);
+                self.forget_released(from, None);
                 // The pilot calls it: in contact again even if it handed the flight away.
                 if let Some(p) = self.pilots.lock().unwrap().get_mut(from) {
                     p.handed_away.remove(&i);
@@ -317,6 +319,7 @@ impl Network {
                 let qnh = *self.qnh.lock().unwrap();
                 let (items, serves) = {
                     let mut unit = self.units[k].lock().unwrap();
+                    unit.prune_released(t);
                     let items = unit.on_transmission(from, text, lang, qnh);
                     (items, unit.serves(from))
                 };
@@ -522,9 +525,19 @@ impl Network {
             h.aircraft_type = aircraft_type.unwrap_or_default();
         }
         tracing::info!(callsign = %cs.0, from = %self.owner_name(from), to = %self.owner_name(to), "flight handed over");
+        self.forget_released(cs, Some(to));
         match to {
             Owner::Station(j) => self.stations[j].engine.lock().unwrap().import_flight(h),
             Owner::Unit(k) => self.units[k].lock().unwrap().import_flight(h),
+        }
+    }
+
+    /// Every unit but `except` forgets flight `cs` if it released it: someone else has it.
+    fn forget_released(&self, cs: &Callsign, except: Option<Owner>) {
+        for (k, unit) in self.units.iter().enumerate() {
+            if except != Some(Owner::Unit(k)) {
+                unit.lock().unwrap().forget_released(cs);
+            }
         }
     }
 
@@ -570,7 +583,7 @@ impl Network {
                     .and_then(|at| self.taker(at, pos))
                     .filter(|&o| o != from);
                 if to.is_none() {
-                    self.units[k].lock().unwrap().release(cs);
+                    self.units[k].lock().unwrap().release(cs, t);
                     owners.remove(cs);
                 }
                 to
@@ -593,6 +606,7 @@ impl Network {
         let cs = &s.callsign;
         let (event, active) = {
             let mut unit = self.units[k].lock().unwrap();
+            unit.prune_released(s.t);
             (unit.on_telemetry(cs, s.pos, s.alt_ft_msl), unit.active(cs))
         };
         let now: Vec<usize> = (0..self.stations.len())
@@ -608,12 +622,19 @@ impl Network {
             .replace(now.clone());
         let entered: Option<Vec<usize>> =
             before.map(|b| now.iter().copied().filter(|i| !b.contains(i)).collect());
+        // An area entered while a hand-off is pending changes nothing: the flight is already
+        // on its way to the next owner (or released after the timeout if nobody works it).
+        // Only a staffed station takes a flight on entry; an unstaffed one leaves it with the
+        // unit ("change to" and releases are for leaving the unit's sectors).
+        let entered_staffed = entered.filter(|_| active).and_then(|e| {
+            let staffed = e
+                .into_iter()
+                .filter(|&i| matches!(self.station_handoff(i), HandOff::Contact { .. }));
+            self.nearest(staffed, Some(s.pos))
+        });
         let to = if event == Some(EnrouteEvent::LeftSector) {
             self.next_after(k, s.pos, s.alt_ft_msl)
-        } else if let Some(i) = entered
-            .filter(|_| active)
-            .and_then(|e| self.nearest(e.into_iter(), Some(s.pos)))
-        {
+        } else if let Some(i) = entered_staffed {
             self.station_handoff(i)
         } else {
             return Vec::new();
