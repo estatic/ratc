@@ -61,12 +61,14 @@ use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::{Airport, Destination};
 use atc_navdata::procedures::{PositionDef, Procedures};
 use atc_phraseology::{
-    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, Lang, PilotIntent,
-    PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_with, render,
+    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
+    PilotIntent, PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_with,
+    render,
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
 use crate::compliance::{ComplianceMonitor, Deviation, hold_line_cross_m};
+use crate::handover::FlightHandover;
 use crate::phase::{FlightPhase, PhaseTracker};
 use crate::readback::{ReadbackResult, Strictness, check_readback, correction};
 use crate::runway::RunwayResource;
@@ -238,6 +240,98 @@ impl AtcEngine {
         }
         self.strips.push(strip);
         self.pilots.push(p);
+    }
+
+    /// Drops aircraft `cs` and everything the engine keeps about it (strip, surveillance,
+    /// radio memory, greetings, runway claims, its broken-off transmission); a follow-me car
+    /// leading it is cancelled ([`AtcEngine::take_vehicle_orders`]). Registered again, it
+    /// starts afresh. `false`: not registered.
+    pub fn remove_pilot(&mut self, cs: &Callsign) -> bool {
+        let Some(i) = self.strip_index(cs) else {
+            return false;
+        };
+        self.cancel_follow_me(i);
+        let lang = self.strips[i].lang;
+        if self
+            .fragment
+            .as_ref()
+            .is_some_and(|(_, text, _)| self.heard(text, lang).1 == Some(i))
+        {
+            self.fragment = None;
+        }
+        self.strips.remove(i);
+        self.pilots.retain(|p| &p.callsign != cs);
+        self.tracks.remove(cs);
+        self.last_told.remove(cs);
+        self.last_sent.retain(|(c, _), _| c != cs);
+        self.last_addressed.retain(|_, c| c != cs);
+        self.greeted.retain(|(c, _)| c != cs);
+        self.runway.release(cs);
+        true
+    }
+
+    /// Hands flight `cs` out of this engine: its data for the next station, then the flight
+    /// is removed completely ([`AtcEngine::remove_pilot`]). `None`: not registered.
+    pub fn export_flight(&mut self, cs: &Callsign) -> Option<FlightHandover> {
+        let strip = self.strip(cs)?;
+        let plan = strip.plan.clone();
+        let h = FlightHandover {
+            callsign: cs.clone(),
+            aircraft_type: self
+                .pilots
+                .iter()
+                .find(|p| &p.callsign == cs)
+                .map(|p| p.aircraft_type.clone())
+                .unwrap_or_default(),
+            cleared_ft: plan.as_ref().map(|p| p.cleared_ft).filter(|&ft| ft > 0),
+            rules: plan.as_ref().map(|p| {
+                if p.ifr {
+                    FlightRules::Ifr
+                } else {
+                    FlightRules::Vfr
+                }
+            }),
+            squawk: strip.squawk,
+            plan,
+        };
+        self.remove_pilot(cs);
+        Some(h)
+    }
+
+    /// Takes in a flight handed over by another station: registered afresh (replacing any
+    /// strip of the same callsign) with its plan, cleared level and transponder code, owned
+    /// by Approach (IFR) or Tower; its first call is answered as a flight handed over
+    /// ([`Strip::handed_in`]).
+    pub fn import_flight(&mut self, h: FlightHandover) {
+        self.remove_pilot(&h.callsign);
+        self.register_pilot(PilotProfile {
+            callsign: h.callsign.clone(),
+            aircraft_type: h.aircraft_type,
+        });
+        let i = self.strip_index(&h.callsign).expect("registered above");
+        let strip = &mut self.strips[i];
+        let mut plan = h.plan;
+        if let (Some(p), Some(ft)) = (plan.as_mut(), h.cleared_ft) {
+            p.cleared_ft = ft;
+        }
+        let ifr = plan
+            .as_ref()
+            .map_or(h.rules == Some(FlightRules::Ifr), |p| p.ifr);
+        strip.owner = if ifr { Role::Approach } else { Role::Tower };
+        strip.plan = plan;
+        strip.squawk = h.squawk;
+        strip.handed_in = true;
+    }
+
+    /// The frequency (kHz) of the adjacent unit flight `cs` was handed off to, once it has
+    /// read the hand-off back: the flight is to be taken by the station working that
+    /// frequency. `None` before, for handovers between this engine's own positions, for a
+    /// release without a unit, and once the flight was taken (exported).
+    pub fn handoff_target(&self, cs: &Callsign) -> Option<u32> {
+        let strip = self.strip(cs)?;
+        strip
+            .handed_off_khz
+            .filter(|_| strip.handed_off.is_some() && strip.pending_readback.is_none())
     }
 
     /// New weather: issues the first ATIS, or a new letter on a significant change.
@@ -461,6 +555,11 @@ impl AtcEngine {
             Some(to) if to == role => strip.readback_complete(),
             Some(_) => {}
             None => strip.owner = role,
+        }
+        // A flight handed in is answered as handed over by Approach; elsewhere its call is
+        // served as it is.
+        if role != Role::Approach {
+            strip.handed_in = false;
         }
         // Taxi help replaces an open taxi clearance with the route from where it is now; a
         // follow-me request and an on-stand report are answered whatever is open.

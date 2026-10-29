@@ -289,6 +289,7 @@ impl AtcEngine {
                 khz: unit.khz,
             });
             strip.handed_off = Some(unit.callsign);
+            strip.handed_off_khz = Some(unit.khz);
         }
         strip.expect_readback(&items, self.cfg.strictness);
         items
