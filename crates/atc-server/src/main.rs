@@ -16,6 +16,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, bail};
 use atc_core::engine::{AtcEngine, EngineConfig};
 use atc_core::readback::Strictness;
+use atc_navdata::enroute::{EnrouteUnitDef, load_enroute};
 use atc_phraseology::{Lang, station_name};
 use atc_server::config::{ServerConfig, StrictnessSetting, check_models, load_config};
 use atc_server::hub::Hub;
@@ -119,6 +120,24 @@ fn restore_state(engine: &Mutex<AtcEngine>, path: &Path, fresh: bool) {
     }
 }
 
+/// The en-route units of `data_dir/enroute.toml` (written by the airport wizard); none
+/// without the file, and none with a warning when it does not load.
+fn load_units(data_dir: &Path) -> Vec<EnrouteUnitDef> {
+    match load_enroute(&data_dir.join("enroute.toml")) {
+        Ok(units) => {
+            if !units.is_empty() {
+                let names: Vec<&str> = units.iter().map(|u| u.callsign.as_str()).collect();
+                tracing::info!("en-route units: {}", names.join(", "));
+            }
+            units
+        }
+        Err(e) => {
+            tracing::warn!("en-route units skipped: {e}");
+            Vec::new()
+        }
+    }
+}
+
 fn build_state(cfg: &ServerConfig) -> Result<AppState> {
     let strictness = match cfg.strictness {
         StrictnessSetting::Standard => Strictness::Standard,
@@ -136,7 +155,8 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
     )?;
     let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();
     tracing::info!("stations: {}", ids.join(", "));
-    let stations = StationMap::union(loaded.iter().map(|s| &s.procs));
+    let units = load_units(&cfg.data_dir);
+    let stations = StationMap::union_with_units(loaded.iter().map(|s| &s.procs), &units);
     // The prompt is in the language the aircraft speaks, with the stations as said in it
     // (every station's for now).
     let prompt_in = |lang: Lang, code: &str| {
@@ -144,7 +164,9 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
         let names: Vec<String> = loaded
             .iter()
             .flat_map(|s| &s.procs.positions)
-            .map(|p| station_name(&p.callsign, lang))
+            .map(|p| p.callsign.as_str())
+            .chain(units.iter().map(|u| u.callsign.as_str()))
+            .map(|c| station_name(c, lang))
             .collect();
         initial_prompt(&airports.join(", "), &names, &[], code)
     };
@@ -160,7 +182,7 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
     let voices = load_voices_config(&voices_text, Path::new("."))?;
     let tts = PiperTts::new(cfg.piper.bin.clone(), voices).context("load piper")?;
     let state = AppState {
-        network: Arc::new(Network::new(loaded)),
+        network: Arc::new(Network::new(loaded).with_units(units)),
         hub: Arc::new(Mutex::new(Hub::default())),
         stt: Arc::new(stt),
         tts: Arc::new(tts),

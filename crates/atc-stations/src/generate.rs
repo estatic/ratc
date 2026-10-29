@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
-use atc_geo::{FT_PER_M, LatLon, M_PER_NM, bearing_deg, distance_m};
+use atc_geo::{FT_PER_M, LatLon, M_PER_NM, bearing_deg, distance_m, point_in_polygon};
 use atc_navdata::model::{Airport, FreqKind};
 use atc_navdata::procedures::{
     AdjacentKind, AdjacentUnit, AirspaceDef, AirspaceKind, CircuitDef, CircuitSide, IfrDefaults,
@@ -250,7 +250,7 @@ fn airspaces_around(arp: [f64; 2], all: &[OaAirspace], elev: i32) -> Vec<Around<
         .filter_map(|a| {
             let kind = airspace_kind(a.kind)?;
             let polygon = a.geometry.outer_ring_lat_lon();
-            if !contains(&polygon, arp) {
+            if !point_in_polygon(arp, &polygon) {
                 return None;
             }
             let def = AirspaceDef {
@@ -264,22 +264,6 @@ fn airspaces_around(arp: [f64; 2], all: &[OaAirspace], elev: i32) -> Vec<Around<
             Some(Around { def, src: a })
         })
         .collect()
-}
-
-/// Ray-casting point-in-polygon on `[lat, lon]` rings (planar; the areas are small).
-fn contains(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
-    let mut inside = false;
-    let mut j = ring.len().wrapping_sub(1);
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[j]);
-        if (a[0] > p[0]) != (b[0] > p[0])
-            && p[1] < (b[1] - a[1]) * (p[0] - a[0]) / (b[0] - a[0]) + a[1]
-        {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
 }
 
 fn area(ring: &[[f64; 2]]) -> f64 {

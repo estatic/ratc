@@ -537,6 +537,13 @@ fn pl_vfr_join_and_frequency_change() {
         "zmiana częstotliwości zatwierdzona"
     );
     assert_eq!(
+        bare(vec![AtcItem::ChangeTo {
+            station: "Bielsko Radio".into(),
+            khz: 118_330
+        }]),
+        "przejdź na Bielsko Radio sto osiemnaście kropka trzy trzy zero"
+    );
+    assert_eq!(
         bare(vec![AtcItem::Unable(UnableReason::SouthernEntry)]),
         "nie mogę, wlot od południa tylko przez punkty południowe"
     );

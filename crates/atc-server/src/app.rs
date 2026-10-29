@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use atc_core::engine::VehicleOrder;
+use atc_navdata::enroute::EnrouteUnitDef;
 use atc_navdata::model::FreqKind;
 use atc_navdata::procedures::Procedures;
 use atc_phraseology::Lang;
@@ -76,11 +77,26 @@ impl StationMap {
     /// adjacent units they emulate; of two entries on the same kHz the first is kept (a real
     /// station's voice wins over an emulated unit's).
     pub fn union<'a>(all: impl IntoIterator<Item = &'a Procedures>) -> Self {
+        Self::union_with_units(all, &[])
+    }
+
+    /// [`StationMap::union`] with the en-route units (Radar voice, FIS and ACC alike) after
+    /// the positions and before the emulated adjacent units: a real unit wins over a
+    /// station's emulation of it.
+    pub fn union_with_units<'a>(
+        all: impl IntoIterator<Item = &'a Procedures>,
+        units: &[EnrouteUnitDef],
+    ) -> Self {
         let all: Vec<&Procedures> = all.into_iter().collect();
         let mut stations = Vec::new();
         for procs in &all {
             stations.extend(Self::positions(procs));
         }
+        stations.extend(units.iter().map(|u| Station {
+            khz: u.khz,
+            name: u.callsign.clone(),
+            voice: VoiceId::Radar,
+        }));
         for procs in &all {
             stations.extend(procs.adjacent.iter().map(|u| Station {
                 khz: u.khz,

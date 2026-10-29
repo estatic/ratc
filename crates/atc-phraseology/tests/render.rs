@@ -639,6 +639,13 @@ fn vfr_join_and_frequency_change() {
         "frequency change approved"
     );
     assert_eq!(
+        one(AtcItem::ChangeTo {
+            station: "Bielsko Radio".into(),
+            khz: 118_330
+        }),
+        "change to Bielsko Radio one one eight decimal three three zero"
+    );
+    assert_eq!(
         one(AtcItem::Unable(UnableReason::SouthernEntry)),
         "unable, entry from the south only via the southern points"
     );
