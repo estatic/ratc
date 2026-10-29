@@ -74,10 +74,36 @@ name = "ZULU"
 lat = 50.109167
 lon = 19.779444
 
+[[positions]]
+role = "Atis"
+callsign = "Kraków ATIS"
+khz = 126130
+
+[[positions]]
+role = "Delivery"
+callsign = "Kraków Delivery"
+khz = 121980
+
+[[positions]]
+role = "Ground"
+callsign = "Kraków Ground"
+khz = 118105
+
+[[positions]]
+role = "Tower"
+callsign = "Kraków Tower"
+khz = 123255
+
+[[positions]]
+role = "Approach"
+callsign = "Kraków Approach"
+khz = 121075
+
 [sources]
 airac = "AIP Polska eAIP IFR, AIRAC AMDT 10-26"
 approach_alt_khz = "AIP AD 2.18 + AD 2 EPKT 2.18"
 delivery_hours = "AIP AD 2.20"
+positions = "AIP AD 2.18 (callsigns spelled Kraków; OpenAIP has KRAKOW for some)"
 preferred_runway = "user ruling 2026-10-19"
 source = "AIP Polska eAIP IFR, AD 2 EPKK"
 tma = "user ruling 2026-10-19"
