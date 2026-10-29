@@ -45,7 +45,7 @@ use atc_geo::LatLon;
 use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::{Airport, Destination, FreqKind};
 use atc_navdata::parse_apt_dat;
-use atc_navdata::procedures::{AdjacentKind, AdjacentUnit, Procedures, parse_procedures};
+use atc_navdata::procedures::{AdjacentKind, AdjacentUnit, Procedures};
 use atc_navdata::xplane::{load_destinations, load_procedure_set};
 use atc_phraseology::{AtcItem, Callsign, CircuitLeg, Lang, Wind};
 use serde::Deserialize;
@@ -399,7 +399,8 @@ fn load_airport(icao: &str) -> Result<(Airport, Procedures)> {
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
     };
     let airport = parse_apt_dat(&read("apt.dat")?, icao)?;
-    let procs = parse_procedures(&read("procedures.toml")?)?;
+    let procs = atc_navdata::station::load_station(&dir)
+        .with_context(|| format!("loading the station {}", dir.display()))?;
     Ok((airport, procs))
 }
 
