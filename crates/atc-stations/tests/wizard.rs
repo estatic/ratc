@@ -170,7 +170,10 @@ fn value_change_is_stored_as_user_override() {
     // Change value 6 (preferred_runway), first an invalid literal, then "27"; then keep.
     let out = c.run(&format!("{CREATE_ZZZZ}\n2\n6\n27x\n\"27\"\n1\n6\n"));
     assert!(out.contains("Not a valid TOML value"), "{out}");
-    assert!(out.contains("preferred_runway = \"27\"   [user]"), "{out}");
+    assert!(
+        out.contains("preferred_runway = \"27\"   [override: user]"),
+        "{out}"
+    );
     let ov = atc_stations::overrides::Overrides::load(&c.station("ZZZZ")).unwrap();
     assert_eq!(ov.table["preferred_runway"].as_str(), Some("27"));
     assert_eq!(ov.sources["preferred_runway"], "user");
@@ -466,6 +469,57 @@ fn edit_changes_only_overrides() {
 }
 
 #[test]
+fn edit_without_changes_keeps_overrides_file() {
+    let c = ctx("editkeep").with_key();
+    let dir = c.station("ZZZZ");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "# my notes\npreferred_runway = \"09\"\n\n[sources]\npreferred_runway = \"AIP AD 2.22 3.1\"\n";
+    std::fs::write(dir.join("overrides.toml"), text).unwrap();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    // Edit, pick ZZZZ, keep without changing anything.
+    let out = c.run("n\n3\n1\n1\n6\n");
+    assert!(
+        out.contains("preferred_runway = \"09\"   [override: AIP AD 2.22 3.1]"),
+        "{out}"
+    );
+    assert!(out.contains("No changes to ZZZZ."), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("overrides.toml")).unwrap(),
+        text
+    );
+    // Change a value, then leave without saving: the file is untouched.
+    let out = c.run("n\n3\n1\n2\n4\n7000\n4\n6\n");
+    assert!(out.contains("4 Back without saving"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("overrides.toml")).unwrap(),
+        text
+    );
+}
+
+#[test]
+fn edit_reverts_a_value_to_generated() {
+    let c = ctx("revert").with_key();
+    let dir = c.station("ZZZZ");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("overrides.toml"),
+        "preferred_runway = \"09\"\ntransition_altitude_ft = 7000\n",
+    )
+    .unwrap();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    let generated = c.procs("ZZZZ").preferred_runway;
+    // Edit, pick ZZZZ, revert, pick preferred_runway (1st overridden key), keep.
+    let out = c.run("n\n3\n1\n3\n1\n1\n6\n");
+    assert!(out.contains("Revert which value to generated?"), "{out}");
+    assert!(out.contains("Saved the overrides of ZZZZ."), "{out}");
+    let ov = atc_stations::overrides::Overrides::load(&dir).unwrap();
+    assert!(!ov.table.contains_key("preferred_runway"));
+    assert_eq!(ov.table["transition_altitude_ft"].as_integer(), Some(7000));
+    let p = atc_navdata::station::load_station(&dir).unwrap();
+    assert_eq!(p.preferred_runway, generated);
+}
+
+#[test]
 fn hand_made_procedures_needs_confirmation() {
     let c = ctx("handwarn").with_key();
     let dir = c.station("ZZZZ");
@@ -491,7 +545,10 @@ fn hand_edited_overrides_are_not_rewritten() {
     let text = "# my notes\npreferred_runway = \"09\"\n";
     std::fs::write(dir.join("overrides.toml"), text).unwrap();
     let out = c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
-    assert!(out.contains("preferred_runway = \"09\"   [user]"), "{out}");
+    assert!(
+        out.contains("preferred_runway = \"09\"   [override: user]"),
+        "{out}"
+    );
     assert!(dir.join("station.toml").is_file());
     assert_eq!(
         std::fs::read_to_string(dir.join("overrides.toml")).unwrap(),

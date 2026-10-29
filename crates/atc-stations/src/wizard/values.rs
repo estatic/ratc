@@ -46,15 +46,25 @@ pub(super) fn value_screen<R: BufRead, W: Write>(
                 .get(*key)
                 .map_or_else(|| "(none)".to_string(), compact);
             let src = if ov.table.contains_key(*key) {
-                "user"
+                let from = ov.sources.get(*key).map_or("user", String::as_str);
+                format!("override: {from}")
             } else {
-                provenance.get(*key).map_or("?", String::as_str)
+                provenance.get(*key).map_or("?", String::as_str).to_string()
             };
             p.say(format!("  {}. {key} = {value}   [{src}]", i + 1));
         }
-        match p.menu(&format!("Station {id}"), &["Keep", "Change a value"]) {
+        match p.menu(
+            &format!("Station {id}"),
+            &[
+                "Keep",
+                "Change a value",
+                "Revert a value to generated",
+                "Back without saving",
+            ],
+        ) {
             1 => return true,
             2 => change_value(p, base, ov),
+            3 => revert_value(p, ov),
             _ => return false,
         }
     }
@@ -113,6 +123,21 @@ fn change_value<R: BufRead, W: Write>(
         }
         ov.set(key, value, "user");
         return;
+    }
+}
+
+/// Drops one override, so the generated value applies again.
+fn revert_value<R: BufRead, W: Write>(p: &mut Prompt<R, W>, ov: &mut Overrides) {
+    let keys: Vec<String> = ov.table.keys().cloned().collect();
+    if keys.is_empty() {
+        p.say("No value is overridden.");
+        return;
+    }
+    let mut items: Vec<&str> = keys.iter().map(String::as_str).collect();
+    items.push("Back");
+    let n = p.menu("Revert which value to generated?", &items);
+    if (1..=keys.len()).contains(&n) {
+        ov.remove(&keys[n - 1]);
     }
 }
 
@@ -176,14 +201,21 @@ pub(super) fn edit<R: BufRead, W: Write>(env: &WizardEnv, p: &mut Prompt<R, W>) 
             return;
         }
     };
-    let mut ov = match Overrides::load(&st.dir) {
+    let loaded = match Overrides::load(&st.dir) {
         Ok(o) => o,
         Err(e) => {
             p.say(format!("{id}: {e}"));
             return;
         }
     };
-    if value_screen(p, id, &base, &provenance_of(&text), &mut ov) {
+    let mut ov = loaded.clone();
+    if !value_screen(p, id, &base, &provenance_of(&text), &mut ov) {
+        return;
+    }
+    // A hand-edited overrides.toml (with its comments) is rewritten only when changed.
+    if ov == loaded {
+        p.say(format!("No changes to {id}."));
+    } else {
         match ov.save(&st.dir) {
             Ok(()) => p.say(format!("Saved the overrides of {id}.")),
             Err(e) => p.say(format!("{id}: {e}")),
