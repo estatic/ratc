@@ -498,3 +498,74 @@ fn unchanged_store_does_not_prompt() {
     let out = c.run("n\n6\n");
     assert!(out.contains("Updates available for ZZ"), "{out}");
 }
+
+#[test]
+fn failed_update_check_is_not_reported_as_up_to_date() {
+    let c = ctx("checkfail").with_key();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    c.api.fail(Endpoint::Airports, ApiError::Status(503));
+    let out = c.run("2\n6\n");
+    assert!(out.contains("Could not check OpenAIP for updates"), "{out}");
+    assert!(!out.contains("All OpenAIP data is up to date."), "{out}");
+}
+
+/// Reports one change everywhere but answers every list empty.
+struct ChangedButEmpty;
+
+impl OpenAipApi for ChangedButEmpty {
+    fn airports(&self, _: &str, _: Option<&str>) -> Result<Vec<OaAirport>, ApiError> {
+        Ok(Vec::new())
+    }
+    fn airspaces(&self, _: &str, _: Option<&str>) -> Result<Vec<OaAirspace>, ApiError> {
+        Ok(Vec::new())
+    }
+    fn reporting_points(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<Vec<OaReportingPoint>, ApiError> {
+        Ok(Vec::new())
+    }
+    fn changed_count(&self, _: Endpoint, _: &str, _: &str) -> Result<u64, ApiError> {
+        Ok(1)
+    }
+    fn search_airports(&self, _: &str) -> Result<Vec<OaAirport>, ApiError> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn empty_answer_keeps_the_stored_country() {
+    let c = ctx("emptyupd").with_key();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    let station = c.station("ZZZZ").join("station.toml");
+    std::fs::write(
+        &station,
+        "# marker\n".to_string() + &std::fs::read_to_string(&station).unwrap(),
+    )
+    .unwrap();
+    let before_store = c.env.store.load_country("ZZ").unwrap().unwrap();
+
+    let mut prompt = Prompt::new(Cursor::new(b"n\n2\n6\n".to_vec()), Vec::new());
+    run(
+        &c.env,
+        |_: &str| -> Box<dyn OpenAipApi> { Box::new(ChangedButEmpty) },
+        &mut prompt,
+    )
+    .unwrap();
+    let out = String::from_utf8(prompt.into_output()).unwrap();
+    assert!(
+        out.contains("OpenAIP returned no data for ZZ; keeping the stored copy."),
+        "{out}"
+    );
+    assert!(!out.contains("Updated ZZZZ"), "no regeneration: {out}");
+    assert!(
+        std::fs::read_to_string(&station)
+            .unwrap()
+            .starts_with("# marker")
+    );
+    assert_eq!(
+        c.env.store.load_country("ZZ").unwrap().unwrap(),
+        before_store
+    );
+}

@@ -61,7 +61,7 @@ pub(super) fn update_all<R: BufRead, W: Write>(
         p.say("No OpenAIP data downloaded yet; create a station first (menu 1).");
         return;
     }
-    let (mut changed, mut updated) = (false, false);
+    let (mut changed, mut updated, mut errored) = (false, false, false);
     for cc in countries {
         match env.store.changes(api, &cc) {
             Ok(Some(c)) if c.airports + c.airspaces + c.points > 0 => {
@@ -75,13 +75,14 @@ pub(super) fn update_all<R: BufRead, W: Write>(
             Ok(_) => {}
             Err(e) => {
                 p.say(format!("Could not check OpenAIP for updates: {e}"));
+                errored = true;
                 break;
             }
         }
     }
     if updated {
         regenerate_all(env, p);
-    } else if !changed {
+    } else if !changed && !errored {
         p.say("All OpenAIP data is up to date.");
     }
 }
@@ -94,6 +95,13 @@ fn download<R: BufRead, W: Write>(
     p: &mut Prompt<R, W>,
 ) -> bool {
     match env.store.fetch_country(api, cc, &env.now()) {
+        // The store keeps its previous copy when every list is empty.
+        Ok(d) if d.airports.is_empty() && d.airspaces.is_empty() && d.points.is_empty() => {
+            p.say(format!(
+                "OpenAIP returned no data for {cc}; keeping the stored copy."
+            ));
+            false
+        }
         Ok(_) => true,
         Err(e) => {
             p.say(format!(
