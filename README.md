@@ -173,7 +173,7 @@ Step-by-step flights (in Russian for now): [VFR circuit](docs/user-guide/ru/scen
 [IFR and VFR points](docs/user-guide/ru/ifr-and-vfr-points.md),
 [Polish circuit](docs/user-guide/ru/polish-circuit.md). Phraseology the controller understands:
 [English](docs/phraseology/en.md), [Polish](docs/phraseology/pl.md). More detail on every
-option: [docs/RUNNING.md](docs/RUNNING.md) (in Russian; an English version is coming).
+option: [docs/RUNNING.md](docs/RUNNING.md).
 
 ### Common problems
 
