@@ -3,6 +3,9 @@
 //! Usage: `atc-server [--config <path>] [--fresh]` (default `config/server.toml`). The flights
 //! in progress are kept across restarts ([`atc_server::persist`]); `--fresh` starts without
 //! them. Exit code 2 when a configured model is missing.
+//!
+//! `atc-server airports [--config <path>]` runs the interactive airport wizard (stations from
+//! OpenAIP) instead of serving.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -12,12 +15,11 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, bail};
 use atc_core::engine::{AtcEngine, EngineConfig};
 use atc_core::readback::Strictness;
-use atc_navdata::procedures::parse_procedures;
 use atc_phraseology::{Lang, station_name};
 use atc_server::config::{ServerConfig, StrictnessSetting, check_models, load_config};
 use atc_server::hub::Hub;
 use atc_server::layout::{
-    adjacent_names, load_airport, load_destinations_near, load_procedure_set_for,
+    adjacent_names, load_airport, load_destinations_near, load_procedure_set_for, load_procedures,
 };
 use atc_server::{AppState, StationMap, SttPrompts, persist, router};
 use atc_voice::{PiperTts, VoiceError, WhisperStt, initial_prompt, load_voices_config};
@@ -26,21 +28,59 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_CONFIG: &str = "config/server.toml";
 const EXIT_MODEL_MISSING: u8 = 2;
 
-/// The config path and whether `--fresh` was given.
-fn args() -> Result<(PathBuf, bool)> {
-    let mut args = std::env::args().skip(1);
-    let mut path = PathBuf::from(DEFAULT_CONFIG);
+/// What the command line asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    Serve { config: PathBuf, fresh: bool },
+    Airports { config: PathBuf },
+}
+
+const USAGE: &str =
+    "usage: atc-server [--config <path>] [--fresh] | atc-server airports [--config <path>]";
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command> {
+    let mut args = args.into_iter().peekable();
+    let airports = args.peek().map(String::as_str) == Some("airports");
+    if airports {
+        args.next();
+    }
+    let mut config = PathBuf::from(DEFAULT_CONFIG);
     let mut fresh = false;
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--config" => path = args.next().context("--config needs a path")?.into(),
-            "--fresh" => fresh = true,
-            other => {
-                bail!("unknown argument {other:?} (usage: atc-server [--config <path>] [--fresh])")
-            }
+            "--config" => config = args.next().context("--config needs a path")?.into(),
+            "--fresh" if !airports => fresh = true,
+            other => bail!("unknown argument {other:?} ({USAGE})"),
         }
     }
-    Ok((path, fresh))
+    Ok(if airports {
+        Command::Airports { config }
+    } else {
+        Command::Serve { config, fresh }
+    })
+}
+
+fn read_config(path: &Path) -> Result<ServerConfig> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
+    load_config(&text)
+}
+
+/// Runs the airport wizard on the console (blocking).
+fn run_wizard(config: &Path) -> Result<()> {
+    use atc_stations::openaip::HttpApi;
+    use atc_stations::prompt::Prompt;
+    use atc_stations::store::{Store, config_dir};
+    use atc_stations::wizard::{WizardEnv, run};
+    let cfg = read_config(config)?;
+    let store =
+        Store::default_location().context("no home directory for the OpenAIP data store")?;
+    let key_dir = config_dir().context("no home directory for the OpenAIP key")?;
+    let env = WizardEnv::new(cfg.data_dir, cfg.xplane_root, store, key_dir);
+    let stdin = std::io::stdin();
+    let mut prompt = Prompt::new(stdin.lock(), std::io::stdout());
+    run(&env, |key| Box::new(HttpApi::new(key)), &mut prompt)?;
+    Ok(())
 }
 
 /// Restores the saved flights unless `fresh`; logs what happened.
@@ -60,12 +100,8 @@ fn restore_state(engine: &Mutex<AtcEngine>, path: &Path, fresh: bool) {
 
 fn build_state(cfg: &ServerConfig) -> Result<AppState> {
     let dir = cfg.data_dir.join(&cfg.airport);
-    let read = |name: &str| {
-        let p = dir.join(name);
-        std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))
-    };
     let airport = load_airport(cfg.xplane_root.as_deref(), &dir, &cfg.airport)?;
-    let procs = parse_procedures(&read("procedures.toml")?).context("parse procedures.toml")?;
+    let procs = load_procedures(&dir)?;
     let stations = StationMap::new(&procs);
     // The prompt is in the language the aircraft speaks, with the stations as said in it.
     let prompt_in = |lang: Lang, code: &str| {
@@ -116,10 +152,11 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
 }
 
 async fn run() -> Result<()> {
-    let (path, fresh) = args()?;
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("read config {}", path.display()))?;
-    let cfg = load_config(&text)?;
+    let (path, fresh) = match parse_args(std::env::args().skip(1))? {
+        Command::Serve { config, fresh } => (config, fresh),
+        Command::Airports { config } => return run_wizard(&config),
+    };
+    let cfg = read_config(&path)?;
     check_models(&cfg).map_err(|e| anyhow::Error::new(ModelsMissing(e)))?;
     // Model loading is blocking (seconds on a cold start).
     let state = tokio::task::spawn_blocking(move || build_state(&cfg).map(|s| (s, cfg))).await??;
@@ -190,5 +227,39 @@ async fn main() -> ExitCode {
             eprintln!("error: {e:#}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(a: &[&str]) -> Result<Command> {
+        parse_args(a.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn airports_subcommand_parses() {
+        assert_eq!(
+            parse(&["airports"]).unwrap(),
+            Command::Airports {
+                config: DEFAULT_CONFIG.into()
+            }
+        );
+        assert_eq!(
+            parse(&["airports", "--config", "x.toml"]).unwrap(),
+            Command::Airports {
+                config: "x.toml".into()
+            }
+        );
+        assert_eq!(
+            parse(&["--fresh"]).unwrap(),
+            Command::Serve {
+                config: DEFAULT_CONFIG.into(),
+                fresh: true
+            }
+        );
+        assert!(parse(&["airports", "--fresh"]).is_err());
+        assert!(parse(&["--config"]).is_err());
     }
 }

@@ -7,3 +7,5 @@
 /data/cache/
 /models/
 .superpowers/
+data/airports/*/station.toml
+data/airports/*/wizard.toml

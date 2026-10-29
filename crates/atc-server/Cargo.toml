@@ -26,6 +26,7 @@ atc-geo = { path = "../atc-geo" }
 atc-navdata = { path = "../atc-navdata" }
 atc-phraseology = { path = "../atc-phraseology" }
 atc-proto = { path = "../atc-proto" }
+atc-stations = { path = "../atc-stations" }
 atc-voice = { path = "../atc-voice" }
 axum = { workspace = true }
 futures-util = { workspace = true }

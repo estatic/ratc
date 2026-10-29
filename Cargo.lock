@@ -140,6 +140,7 @@ dependencies = [
  "atc-navdata",
  "atc-phraseology",
  "atc-proto",
+ "atc-stations",
  "atc-voice",
  "axum",
  "futures-util",

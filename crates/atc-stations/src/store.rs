@@ -212,7 +212,8 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, StoreError> {
     })
 }
 
-fn config_dir() -> Option<PathBuf> {
+/// The per-user config directory (holds the OpenAIP key).
+pub fn config_dir() -> Option<PathBuf> {
     Some(
         directories::ProjectDirs::from("", "", "vatc")?
             .config_dir()
