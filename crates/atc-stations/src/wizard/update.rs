@@ -176,32 +176,60 @@ fn regenerate<R: BufRead, W: Write>(
         }
     };
     let offered = offered_positions(ap);
-    let kept: Vec<PositionDef> = offered
-        .iter()
-        .filter(|o| old.positions.iter().any(|x| x.khz == o.khz))
-        .cloned()
-        .collect();
-    let doc = generate(ap, all, &layout, &Choice { positions: kept }, fetched_on);
+    let m = match_positions(&old.positions, &offered);
+    let doc = generate(
+        ap,
+        all,
+        &layout,
+        &Choice {
+            positions: m.kept.clone(),
+        },
+        fetched_on,
+    );
 
-    let mut lines: BTreeSet<String> = orphans(&doc.procs, &ov).into_iter().collect();
-    for gone in old
-        .positions
+    let gone_prefixes: Vec<String> = m
+        .gone
         .iter()
-        .filter(|x| !offered.iter().any(|o| o.khz == x.khz))
-    {
+        .map(|g| format!("positions: {} (", mhz(g.khz)))
+        .collect();
+    let mut lines: BTreeSet<String> = orphans(&old, &doc.procs, &ov)
+        .into_iter()
+        .filter(|l| !gone_prefixes.iter().any(|g| l.starts_with(g.as_str())))
+        .collect();
+    for gone in &m.gone {
         lines.insert(format!(
             "positions: {} ({}) is not in OpenAIP any more",
             mhz(gone.khz),
             gone.callsign
         ));
     }
+    for (was, now) in &m.retuned {
+        lines.insert(format!(
+            "positions: {:?} {} -> {} (frequency changed)",
+            was.role,
+            mhz(was.khz),
+            mhz(now.khz)
+        ));
+    }
     for l in &lines {
         p.say(format!("{id}: {l}"));
+    }
+    for n in m.unticked.iter().filter(|o| {
+        meta.offered_khz
+            .as_ref()
+            .is_none_or(|before| !before.contains(&o.khz))
+    }) {
+        p.say(format!(
+            "{id}: New in OpenAIP: {} {} (use Create to add it)",
+            n.callsign,
+            mhz(n.khz)
+        ));
     }
     let meta = Meta {
         openaip_id: meta.openaip_id.clone(),
         country: meta.country.clone(),
         positions_khz: doc.procs.positions.iter().map(|x| x.khz).collect(),
+        offered_khz: Some(offered.iter().map(|x| x.khz).collect()),
     };
     let written = write_station(&doc, &st.dir.join(STATION))
         .map_err(|e| e.to_string())
@@ -210,6 +238,75 @@ fn regenerate<R: BufRead, W: Write>(
         Ok(()) => p.say(format!("Updated {id}.")),
         Err(e) => p.say(format!("{id}: could not write the station: {e}")),
     }
+}
+
+/// The old station's positions matched to the positions OpenAIP offers now.
+#[derive(Debug, Default, PartialEq)]
+struct Matched {
+    /// Offered positions that continue a ticked one, in offered order.
+    kept: Vec<PositionDef>,
+    /// Old position and the offered one that continues it on another frequency.
+    retuned: Vec<(PositionDef, PositionDef)>,
+    /// Old positions with no counterpart.
+    gone: Vec<PositionDef>,
+    /// Offered positions that continue nothing.
+    unticked: Vec<PositionDef>,
+}
+
+/// Matches by frequency first; else by role when the old station and the offer each have
+/// exactly one position of that role; else by role and callsign.
+fn match_positions(old: &[PositionDef], offered: &[PositionDef]) -> Matched {
+    let mut used = vec![false; offered.len()];
+    let mut pairs: Vec<Option<usize>> = old
+        .iter()
+        .map(|o| {
+            let i = offered
+                .iter()
+                .enumerate()
+                .position(|(i, x)| !used[i] && x.khz == o.khz)?;
+            used[i] = true;
+            Some(i)
+        })
+        .collect();
+    for (k, o) in old.iter().enumerate() {
+        if pairs[k].is_some() {
+            continue;
+        }
+        let of_role = |list: &[PositionDef]| list.iter().filter(|x| x.role == o.role).count();
+        let by_role = (of_role(old) == 1 && of_role(offered) == 1)
+            .then(|| offered.iter().position(|x| x.role == o.role))
+            .flatten()
+            .filter(|&i| !used[i]);
+        let by_callsign = || {
+            let mut same = offered.iter().enumerate().filter(|(i, x)| {
+                !used[*i] && x.role == o.role && x.callsign.eq_ignore_ascii_case(&o.callsign)
+            });
+            match (same.next(), same.next()) {
+                (Some((i, _)), None) => Some(i),
+                _ => None,
+            }
+        };
+        if let Some(i) = by_role.or_else(by_callsign) {
+            used[i] = true;
+            pairs[k] = Some(i);
+        }
+    }
+    let mut m = Matched::default();
+    for (o, pair) in old.iter().zip(&pairs) {
+        match pair {
+            Some(i) if offered[*i].khz != o.khz => m.retuned.push((o.clone(), offered[*i].clone())),
+            Some(_) => {}
+            None => m.gone.push(o.clone()),
+        }
+    }
+    for (i, x) in offered.iter().enumerate() {
+        if used[i] {
+            m.kept.push(x.clone());
+        } else {
+            m.unticked.push(x.clone());
+        }
+    }
+    m
 }
 
 /// The X-Plane layout of an existing station: from the install, else its own `apt.dat`.
@@ -222,5 +319,54 @@ fn layout_for_update(env: &WizardEnv, id: &str, dir: &Path) -> Result<Airport, S
     match std::fs::read_to_string(dir.join(APT_DAT)) {
         Ok(text) => parse_apt_dat(&text, id).map_err(|e| e.to_string()),
         Err(_) => Err("no X-Plane layout (install its scenery or check xplane_root)".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atc_navdata::model::FreqKind;
+
+    fn pos(role: FreqKind, callsign: &str, khz: u32) -> PositionDef {
+        PositionDef {
+            role,
+            callsign: callsign.into(),
+            khz,
+        }
+    }
+
+    #[test]
+    fn retuned_single_role_is_kept() {
+        let old = [
+            pos(FreqKind::Tower, "Zeta Tower", 118_300),
+            pos(FreqKind::Delivery, "Zeta Delivery", 121_900),
+        ];
+        let offered = [
+            pos(FreqKind::Ground, "Zeta Ground", 121_700),
+            pos(FreqKind::Tower, "Zeta Tower", 118_350),
+        ];
+        let m = match_positions(&old, &offered);
+        assert_eq!(m.kept, [offered[1].clone()]);
+        assert_eq!(m.retuned, [(old[0].clone(), offered[1].clone())]);
+        assert_eq!(m.gone, [old[1].clone()]);
+        assert_eq!(m.unticked, [offered[0].clone()]);
+    }
+
+    #[test]
+    fn several_of_a_role_match_by_callsign() {
+        let old = [
+            pos(FreqKind::Ground, "Zeta Ground", 121_700),
+            pos(FreqKind::Ground, "Zeta Apron", 121_750),
+        ];
+        let offered = [
+            pos(FreqKind::Ground, "Zeta Apron", 121_850),
+            pos(FreqKind::Ground, "Zeta Ground", 121_700),
+            pos(FreqKind::Ground, "Zeta East", 121_600),
+        ];
+        let m = match_positions(&old, &offered);
+        assert_eq!(m.kept, [offered[0].clone(), offered[1].clone()]);
+        assert_eq!(m.retuned, [(old[1].clone(), offered[0].clone())]);
+        assert!(m.gone.is_empty());
+        assert_eq!(m.unticked, [offered[2].clone()]);
     }
 }

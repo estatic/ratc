@@ -4,7 +4,7 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 
 use atc_geo::{M_PER_NM, distance_m};
-use atc_navdata::procedures::PositionDef;
+use atc_navdata::procedures::{PositionDef, Procedures};
 use atc_navdata::xplane::{ResolvedAirport, load_destinations, resolve_airport};
 
 use super::values::value_screen;
@@ -14,7 +14,7 @@ use super::{
 };
 use crate::generate::{Choice, StationDoc, generate, offered_positions, write_station};
 use crate::openaip::{OaAirport, OpenAipApi, khz};
-use crate::overrides::Overrides;
+use crate::overrides::{Overrides, orphans};
 use crate::store::CountryData;
 
 const AREA_M: f64 = 100_000.0;
@@ -251,12 +251,25 @@ fn create_one<R: BufRead, W: Write>(
         openaip_id: ap.id.clone(),
         country: ap.country.to_uppercase(),
         positions_khz: doc.procs.positions.iter().map(|x| x.khz).collect(),
+        offered_khz: Some(offered.iter().map(|x| x.khz).collect()),
     };
     // A hand-edited overrides.toml is rewritten only when the user changed something.
     let save_ov = (ov != loaded || !dir.join(OVERRIDES).is_file()).then_some(&ov);
+    // The station being replaced, without overrides, for the orphan check.
+    let previous: Option<Procedures> = std::fs::read_to_string(dir.join(STATION))
+        .ok()
+        .and_then(|t| toml::from_str(&t).ok());
     match write_new_station(&dir, &id, &doc, save_ov, &resolved, &meta) {
         Ok(()) => p.say(format!("Created {id} in {}.", dir.display())),
-        Err(e) => p.say(format!("{id}: could not write the station: {e}")),
+        Err(e) => {
+            p.say(format!("{id}: could not write the station: {e}"));
+            return;
+        }
+    }
+    if let Some(old) = previous {
+        for l in orphans(&old, &doc.procs, &ov) {
+            p.say(format!("{id}: {l}"));
+        }
     }
 }
 

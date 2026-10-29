@@ -301,6 +301,42 @@ fn update_keeps_position_choice() {
         out.contains("ZZZZ: positions: 121.900 (Zeta Delivery) is not in OpenAIP any more"),
         "{out}"
     );
+    assert_eq!(out.matches("121.900 (Zeta Delivery)").count(), 1, "{out}");
+    // Only the frequency that is new upstream is announced, not the ones left unticked.
+    assert!(
+        out.contains("ZZZZ: New in OpenAIP: Zeta Ground 121.800 (use Create to add it)"),
+        "{out}"
+    );
+    assert!(!out.contains("121.700 (use Create"), "{out}");
+}
+
+#[test]
+fn update_follows_a_retuned_position() {
+    let c = ctx("retune").with_key();
+    c.run(&format!("{CREATE_ZZZZ}2 4 5\n1\n6\n"));
+    let mut aps = airports();
+    for f in &mut aps[0].frequencies {
+        if f.value == "118.300" {
+            f.value = "118.350".into();
+        }
+    }
+    c.api.set_airports("ZZ", aps);
+    let out = c.run("n\n2\n6\n");
+    assert!(
+        out.contains("ZZZZ: positions: Tower 118.300 -> 118.350 (frequency changed)"),
+        "{out}"
+    );
+    assert!(!out.contains("is not in OpenAIP any more"), "{out}");
+    assert!(!out.contains("New in OpenAIP"), "{out}");
+    assert_eq!(khz_of(&c.procs("ZZZZ")), [121_900, 118_350, 119_900]);
+    let wiz: toml::Table = std::fs::read_to_string(c.station("ZZZZ").join("wizard.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        wiz["positions_khz"],
+        toml::Value::Array(vec![121_900.into(), 118_350.into(), 119_900.into()])
+    );
 }
 
 #[test]

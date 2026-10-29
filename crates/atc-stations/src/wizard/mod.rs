@@ -89,6 +89,10 @@ struct Meta {
     openaip_id: String,
     country: String,
     positions_khz: Vec<u32>,
+    /// Every position OpenAIP offered when the station was last written; `None` in files
+    /// from before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offered_khz: Option<Vec<u32>>,
 }
 
 /// Runs the wizard until Quit or end of input. Problems with data, files or OpenAIP are

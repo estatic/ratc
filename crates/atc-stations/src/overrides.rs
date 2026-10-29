@@ -113,40 +113,47 @@ fn mhz(khz: u32) -> String {
     format!("{}.{:03}", khz / 1000, khz % 1000)
 }
 
-/// Overrides that name a VFR point, hold, position or adjacent unit absent from `generated`.
-pub fn orphans(generated: &Procedures, ov: &Overrides) -> Vec<String> {
+/// Overrides that name a VFR point, hold, position or adjacent unit that the previous
+/// generated station (`old`, without overrides) had and the new one (`new`) has not.
+///
+/// Only disappearances are reported: an item the user added that OpenAIP never had is not an
+/// orphan. The warning therefore appears on the update where the item disappears.
+pub fn orphans(old: &Procedures, new: &Procedures, ov: &Overrides) -> Vec<String> {
     const GONE: &str = "is not in OpenAIP any more";
+    let has_point = |p: &Procedures, name: &str| p.vfr_point(name).is_some();
+    let has_hold =
+        |p: &Procedures, name: &str| p.vfr_holds.iter().any(|h| h.eq_ignore_ascii_case(name));
     let mut out = BTreeSet::new();
     let own_points: Vec<VfrPoint> = ov.list("vfr_points").unwrap_or_default();
     for p in &own_points {
-        if generated.vfr_point(&p.name).is_none() {
+        if has_point(old, &p.name) && !has_point(new, &p.name) {
             out.insert(format!("vfr_points: {} {GONE}", p.name));
         }
     }
     for name in ov.list::<String>("vfr_holds").unwrap_or_default() {
-        let known = generated.vfr_point(&name).is_some()
-            || generated
-                .vfr_holds
-                .iter()
-                .any(|h| h.eq_ignore_ascii_case(&name))
+        let known_before = has_point(old, &name) || has_hold(old, &name);
+        let still_known = has_point(new, &name)
+            || has_hold(new, &name)
             || own_points
                 .iter()
                 .any(|p| p.name.eq_ignore_ascii_case(&name));
-        if !known {
+        if known_before && !still_known {
             out.insert(format!("vfr_holds: {name} {GONE}"));
         }
     }
+    let has_khz = |p: &Procedures, khz: u32| p.positions.iter().any(|g| g.khz == khz);
     for p in ov.list::<PositionDef>("positions").unwrap_or_default() {
-        if !generated.positions.iter().any(|g| g.khz == p.khz) {
+        if has_khz(old, p.khz) && !has_khz(new, p.khz) {
             out.insert(format!("positions: {} ({}) {GONE}", mhz(p.khz), p.callsign));
         }
     }
-    for a in ov.list::<AdjacentUnit>("adjacent").unwrap_or_default() {
-        if !generated
-            .adjacent
+    let has_unit = |p: &Procedures, cs: &str| {
+        p.adjacent
             .iter()
-            .any(|g| g.callsign.eq_ignore_ascii_case(&a.callsign))
-        {
+            .any(|g| g.callsign.eq_ignore_ascii_case(cs))
+    };
+    for a in ov.list::<AdjacentUnit>("adjacent").unwrap_or_default() {
+        if has_unit(old, &a.callsign) && !has_unit(new, &a.callsign) {
             out.insert(format!("adjacent: {} {GONE}", a.callsign));
         }
     }
@@ -196,6 +203,31 @@ kind = "Fis"
 "#,
         )
         .unwrap()
+    }
+
+    /// The previous generated station: also had ECHO, GONE (a hold), 118.200 and Gone Radar.
+    fn old() -> Procedures {
+        let mut p = generated();
+        p.vfr_points.push(VfrPoint {
+            name: "ECHO".into(),
+            lat: 50.1,
+            lon: 19.1,
+            south: false,
+        });
+        p.vfr_holds.push("GONE".into());
+        p.positions.push(PositionDef {
+            role: atc_navdata::model::FreqKind::Tower,
+            callsign: "Old Tower".into(),
+            khz: 118_200,
+        });
+        p.adjacent.push(AdjacentUnit {
+            callsign: "Gone Radar".into(),
+            khz: 125_000,
+            kind: atc_navdata::procedures::AdjacentKind::Acc,
+            airport: None,
+            min_level_ft: None,
+        });
+        p
     }
 
     fn val(text: &str) -> toml::Value {
@@ -272,7 +304,7 @@ kind = "Fis"
         );
         ov.set("vfr_holds", val("[\"ALFA\", \"ECHO\", \"GONE\"]"), "user");
         assert_eq!(
-            orphans(&generated(), &ov),
+            orphans(&old(), &generated(), &ov),
             vec![
                 "vfr_holds: GONE is not in OpenAIP any more".to_string(),
                 "vfr_points: ECHO is not in OpenAIP any more".to_string(),
@@ -294,7 +326,7 @@ kind = "Fis"
             "user",
         );
         assert_eq!(
-            orphans(&generated(), &ov),
+            orphans(&old(), &generated(), &ov),
             vec![
                 "adjacent: Gone Radar is not in OpenAIP any more".to_string(),
                 "positions: 118.200 (Old Tower) is not in OpenAIP any more".to_string(),
@@ -306,6 +338,30 @@ kind = "Fis"
     fn no_orphans_for_plain_overrides() {
         let mut ov = Overrides::default();
         ov.set("preferred_runway", val("\"25\""), "user");
-        assert!(orphans(&generated(), &ov).is_empty());
+        assert!(orphans(&old(), &generated(), &ov).is_empty());
+    }
+
+    #[test]
+    fn user_added_point_is_not_an_orphan() {
+        // Neither the old nor the new generated station has ECHO, HOLDME or the 118.200
+        // position: the user added them, so nothing has disappeared.
+        let mut ov = Overrides::default();
+        ov.set(
+            "vfr_points",
+            val("[{ name = \"ECHO\", lat = 50.1, lon = 19.1 }]"),
+            "user",
+        );
+        ov.set("vfr_holds", val("[\"ECHO\", \"HOLDME\"]"), "user");
+        ov.set(
+            "positions",
+            val("[{ role = \"Tower\", callsign = \"Own Tower\", khz = 118200 }]"),
+            "user",
+        );
+        ov.set(
+            "adjacent",
+            val("[{ callsign = \"Own Radar\", khz = 125000, kind = \"Acc\" }]"),
+            "user",
+        );
+        assert!(orphans(&generated(), &generated(), &ov).is_empty());
     }
 }
