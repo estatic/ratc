@@ -173,11 +173,12 @@ such as the national transition altitude), where you can change a value.
 Files per airport in `data/airports/<ID>/`:
 
 - `station.toml`: generated, git-ignored, rewritten on every update;
-- `overrides.toml`: yours; the values you changed, each with its source in `[sources]`; never
-  overwritten by the wizard;
+- `overrides.toml`: yours; the values you changed, each with its source in `[sources]`; the
+  wizard rewrites it only when you change or revert a value through it, and comments in the
+  file are not kept then;
 - `wizard.toml`: which OpenAIP airfield the station was made from (git-ignored);
-- `apt.dat`: a copy of the airport's X-Plane layout, so the station also runs without
-  `xplane_root`.
+- `apt.dat`: your copy of the airport's X-Plane layout, so the station also runs without
+  `xplane_root`; commit it only if its licence allows.
 
 To fly there, set `airport = "<ID>"` in `config/server.toml` and restart the server.
 
