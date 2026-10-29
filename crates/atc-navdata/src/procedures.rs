@@ -11,21 +11,21 @@ pub enum CircuitSide {
     Right,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CircuitDef {
     pub runway: String,
     pub side: CircuitSide,
     pub altitude_ft_msl: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PositionDef {
     pub role: FreqKind,
     pub callsign: String,
     pub khz: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Procedures {
     pub icao: String,
     pub source: String,
@@ -41,19 +41,19 @@ pub struct Procedures {
     #[serde(default)]
     pub vfr_holds: Vec<String>,
     /// Highest altitude (ft AMSL) for VFR holding.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vfr_hold_max_ft: Option<i32>,
     /// Neighbouring units the pilot is handed to or from.
     #[serde(default)]
     pub adjacent: Vec<AdjacentUnit>,
     /// Control area approximation.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tma: Option<Tma>,
     /// Delivery opening hours.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_hours: Option<DeliveryHours>,
     /// IFR defaults.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ifr: Option<IfrDefaults>,
     /// Additional approach frequencies (kHz) of the Approach position.
     #[serde(default)]
@@ -61,6 +61,35 @@ pub struct Procedures {
     /// Magnetic variation in degrees, east positive (magnetic = true - variation).
     #[serde(default)]
     pub magnetic_variation_deg: f64,
+    /// Airspaces around the aerodrome (generated data; empty for hand-authored files).
+    #[serde(default)]
+    pub airspaces: Vec<AirspaceDef>,
+}
+
+/// Kind of an airspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AirspaceKind {
+    Ctr,
+    Atz,
+    Tma,
+    Cta,
+    Fis,
+    Acc,
+    Fir,
+}
+
+/// An airspace volume; limits are feet AMSL (FL x 100, metres x 3.28084 rounded, GND = 0).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AirspaceDef {
+    pub kind: AirspaceKind,
+    pub name: String,
+    /// ICAO airspace class letter, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<char>,
+    pub lower_ft: i32,
+    pub upper_ft: i32,
+    /// Boundary vertices as `[lat, lon]`.
+    pub polygon: Vec<[f64; 2]>,
 }
 
 impl Procedures {
@@ -73,7 +102,7 @@ impl Procedures {
 }
 
 /// A VFR reporting point.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VfrPoint {
     /// Point name.
     pub name: String,
@@ -87,7 +116,7 @@ pub struct VfrPoint {
 }
 
 /// Kind of a neighbouring unit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AdjacentKind {
     /// Area control centre.
     Acc,
@@ -98,7 +127,7 @@ pub enum AdjacentKind {
 }
 
 /// A neighbouring unit with its frequency.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AdjacentUnit {
     /// Radio callsign of the unit.
     pub callsign: String,
@@ -107,15 +136,15 @@ pub struct AdjacentUnit {
     /// Unit kind.
     pub kind: AdjacentKind,
     /// ICAO code of the aerodrome for a tower.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub airport: Option<String>,
     /// Lowest level (ft) the unit serves.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_level_ft: Option<i32>,
 }
 
 /// Control area approximated as a circle around the airport.
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tma {
     /// Radius, NM.
     pub radius_nm: f64,
@@ -124,7 +153,7 @@ pub struct Tma {
 }
 
 /// Delivery opening hours, UTC hours `[open, close]`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryHours {
     /// Summer time hours.
     pub summer_utc: [u8; 2],
@@ -133,7 +162,7 @@ pub struct DeliveryHours {
 }
 
 /// Defaults for IFR flights.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IfrDefaults {
     /// Default cruise altitude, ft.
     pub cruise_ft: i32,

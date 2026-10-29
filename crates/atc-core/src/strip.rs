@@ -40,7 +40,8 @@ impl Role {
             FreqKind::Tower => Some(Role::Tower),
             FreqKind::Delivery => Some(Role::Delivery),
             FreqKind::Approach => Some(Role::Approach),
-            FreqKind::Atis | FreqKind::Unicom | FreqKind::Departure => None,
+            // AFIS is data only for now: the engine does not staff it.
+            FreqKind::Atis | FreqKind::Unicom | FreqKind::Departure | FreqKind::Afis => None,
         }
     }
 }

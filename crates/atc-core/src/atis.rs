@@ -414,6 +414,7 @@ mod tests {
             ifr: None,
             approach_alt_khz: vec![],
             magnetic_variation_deg: 0.0,
+            airspaces: Vec::new(),
         }
     }
 
