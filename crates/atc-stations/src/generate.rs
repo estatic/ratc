@@ -12,8 +12,8 @@ use atc_navdata::procedures::{
 };
 
 use crate::defaults::{
-    airspace_kind, callsign_from_name, role_of_frequency, role_order, role_word, title_case,
-    transition_altitude,
+    airspace_kind, callsign_from_name, place_name, role_of_frequency, role_order, role_word,
+    title_case, transition_altitude,
 };
 use crate::openaip::{Limit, OaAirport, OaAirspace, OaFrequency, khz};
 use crate::store::CountryData;
@@ -79,7 +79,7 @@ pub fn offered_positions(ap: &OaAirport) -> Vec<PositionDef> {
 
 fn position(ap: &OaAirport, role: FreqKind, name: Option<&str>, khz: u32) -> PositionDef {
     let callsign = match name.filter(|n| !n.trim().is_empty()) {
-        Some(n) => callsign_from_name(n),
+        Some(n) => callsign_from_name(n, &ap.name),
         None => format!("{} {}", title_case(&ap.name), role_word(role)),
     };
     PositionDef {
@@ -390,16 +390,17 @@ fn adjacent(ap: &OaAirport, data: &CountryData, around: &[Around<'_>]) -> Vec<Ad
         .filter_map(|o| {
             let dist = distance_m(arp, ll(o.geometry.lat_lon()));
             let twr = o.frequencies.iter().filter(|f| f.kind == 14);
-            let k = twr
-                .clone()
-                .find(|f| f.primary)
-                .or(twr.clone().next())
-                .and_then(parsed)?;
+            let f = twr.clone().find(|f| f.primary).or(twr.clone().next())?;
+            let k = parsed(f)?;
+            let callsign = match f.name.as_deref().filter(|n| !n.trim().is_empty()) {
+                Some(n) => callsign_from_name(n, &o.name),
+                None => format!("{} Tower", place_name(&o.name)),
+            };
             (dist <= TOWER_RADIUS_M).then(|| {
                 (
                     dist,
                     AdjacentUnit {
-                        callsign: format!("{} Tower", title_case(&o.name)),
+                        callsign,
                         khz: k,
                         kind: AdjacentKind::Tower,
                         airport: o.icao_code.clone(),

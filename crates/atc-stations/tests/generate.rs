@@ -245,9 +245,43 @@ fn adjacent_towers_within_100_km() {
         .filter(|a| a.kind == AdjacentKind::Tower)
         .collect();
     assert_eq!(towers.len(), 1);
-    assert_eq!(towers[0].callsign, "Yonder Field Tower");
+    // From the tower frequency's name, "YONDER TWR".
+    assert_eq!(towers[0].callsign, "Yonder Tower");
     assert_eq!(towers[0].airport.as_deref(), Some("YYYY"));
     assert_eq!(towers[0].khz, 122_500);
+}
+
+#[test]
+fn adjacent_tower_callsign_without_a_place_in_the_name() {
+    let mut d = data();
+    let yonder = d
+        .airports
+        .iter_mut()
+        .find(|a| a.name == "YONDER FIELD")
+        .unwrap();
+    yonder.name = "YONDER/SOUTH".into();
+    yonder.frequencies[0].name = Some("TOWER".into());
+    let tower = |d: &CountryData| {
+        let ap = d.airports[0].clone();
+        let choice = Choice {
+            positions: offered_positions(&ap),
+        };
+        generate(&ap, d, &layout(), &choice, "2026-10-29")
+            .procs
+            .adjacent
+            .into_iter()
+            .find(|a| a.kind == AdjacentKind::Tower)
+            .unwrap()
+            .callsign
+    };
+    assert_eq!(tower(&d), "Yonder Tower");
+    d.airports
+        .iter_mut()
+        .find(|a| a.name == "YONDER/SOUTH")
+        .unwrap()
+        .frequencies[0]
+        .name = None;
+    assert_eq!(tower(&d), "Yonder Tower");
 }
 
 #[test]

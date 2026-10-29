@@ -113,20 +113,67 @@ fn capitalise(w: &str) -> String {
     }
 }
 
-/// Title-cases a frequency name and expands the abbreviations `APP`, `GND`, `TWR`, `DEL`.
-pub fn callsign_from_name(name: &str) -> String {
-    name.split_whitespace()
+/// Words that name a service rather than a place: a frequency name made only of these
+/// (`ATIS`, `TOWER`, ...) gets the airport's place name in front.
+const ROLE_WORDS: [&str; 16] = [
+    "ATIS",
+    "ARR-ATIS",
+    "DEP-ATIS",
+    "TWR",
+    "TOWER",
+    "GND",
+    "GROUND",
+    "APP",
+    "APPROACH",
+    "DEL",
+    "DELIVERY",
+    "RADIO",
+    "INFO",
+    "INFORMATION",
+    "AFIS",
+    "RADAR",
+];
+
+/// The place an airport is named after: the first part of its OpenAIP name before `/`, `-`
+/// or a space, title-cased (`ZETA/NORTH` to `Zeta`, `ZETA-WEST FIELD` to `Zeta`).
+pub fn place_name(airport_name: &str) -> String {
+    airport_name
+        .split(|c: char| c == '/' || c == '-' || c.is_whitespace())
+        .find(|w| !w.is_empty())
+        .map(title_case)
+        .unwrap_or_default()
+}
+
+/// Radio callsign from an OpenAIP frequency name: title-cased, abbreviations expanded
+/// (`APP`, `GND`, `TWR`, `DEL`), acronyms kept (`ATIS`, `AFIS`). A name of role words only
+/// (`ATIS`, `TOWER`) is prefixed with the place name of `airport_name`.
+pub fn callsign_from_name(name: &str, airport_name: &str) -> String {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let body = words
+        .iter()
         .map(|w| match w.to_uppercase().as_str() {
             "APP" => "Approach".to_string(),
             "GND" => "Ground".to_string(),
             "TWR" => "Tower".to_string(),
             "DEL" => "Delivery".to_string(),
             "ATIS" => "ATIS".to_string(),
+            "ARR-ATIS" => "Arrival ATIS".to_string(),
+            "DEP-ATIS" => "Departure ATIS".to_string(),
             "AFIS" => "AFIS".to_string(),
             _ => title_case(w),
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    let roles_only = !words.is_empty()
+        && words
+            .iter()
+            .all(|w| ROLE_WORDS.contains(&w.to_uppercase().as_str()));
+    let place = place_name(airport_name);
+    if roles_only && !place.is_empty() {
+        format!("{place} {body}")
+    } else {
+        body
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +228,34 @@ mod tests {
     #[test]
     fn title_case_handles_utf8_and_hyphens() {
         assert_eq!(title_case("KRAKÓW-ZACHOD  north"), "Kraków-Zachod North");
-        assert_eq!(callsign_from_name("KRAKÓW APP"), "Kraków Approach");
+        assert_eq!(
+            callsign_from_name("KRAKÓW APP", "KRAKÓW BALICE"),
+            "Kraków Approach"
+        );
+    }
+
+    #[test]
+    fn place_name_is_the_first_part() {
+        assert_eq!(place_name("ZETA/NORTH"), "Zeta");
+        assert_eq!(place_name("ZETA-WEST FIELD"), "Zeta");
+        assert_eq!(place_name("ZETA INTERNATIONAL"), "Zeta");
+        assert_eq!(place_name(" ÉTOILE "), "Étoile");
+        assert_eq!(place_name(""), "");
+    }
+
+    #[test]
+    fn bare_role_names_get_the_place() {
+        let ap = "ZETA/NORTH";
+        assert_eq!(callsign_from_name("ATIS", ap), "Zeta ATIS");
+        assert_eq!(callsign_from_name("TOWER", ap), "Zeta Tower");
+        assert_eq!(callsign_from_name("ARR-ATIS", ap), "Zeta Arrival ATIS");
+        assert_eq!(callsign_from_name("dep-atis", ap), "Zeta Departure ATIS");
+        assert_eq!(callsign_from_name("GND", ap), "Zeta Ground");
+        // A name with a place keeps its own.
+        assert_eq!(callsign_from_name("OMEGA TOWER", ap), "Omega Tower");
+        assert_eq!(callsign_from_name("ZETA DELIVERY", ap), "Zeta Delivery");
+        assert_eq!(callsign_from_name("ZETA ATIS", ap), "Zeta ATIS");
+        // No place to add.
+        assert_eq!(callsign_from_name("TOWER", ""), "Tower");
     }
 }
