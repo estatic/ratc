@@ -1,0 +1,23 @@
+# Virtual ATC server. Paths are relative to the working directory (the repo root).
+listen = "127.0.0.1:8740"
+airport = "EPKK"
+data_dir = "data/airports"
+# Airport layout (runways, taxiways, stands) from the scenery this X-Plane actually loads, so
+# taxi routes match the sim; without it (or if not found) data_dir/<airport>/apt.dat is used.
+# Procedures and frequencies always come from data_dir.
+xplane_root = "/home/estatic/.local/share/Steam/steamapps/common/X-Plane 11"
+# "standard" | "training"
+strictness = "standard"
+
+[whisper]
+# provisional — see docs/benchmarks/2026-10-voice.md; re-check with X-Plane running
+model = "models/whisper/ggml-large-v3-turbo-q5_0.bin"
+# "en" fixes English. "pl" fixes Polish (prompt, parsing, replies, ATIS and voices).
+# Omit the line to auto-detect: each aircraft is answered in the language it was last
+# understood in (English until then); see docs/RUNNING.md.
+# language = "pl"
+language = "en"
+
+[piper]
+bin = "models/piper/piper/piper"
+voices = "config/voices.toml"

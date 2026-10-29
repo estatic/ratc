@@ -1,0 +1,41 @@
+[package]
+name = "atc-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["whisper", "piper"]
+whisper = ["atc-voice/whisper"]
+piper = ["atc-voice/piper"]
+
+[[bin]]
+name = "atc-server"
+path = "src/main.rs"
+required-features = ["whisper", "piper"]
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing-subscriber = { workspace = true }
+atc-core = { path = "../atc-core" }
+atc-geo = { path = "../atc-geo" }
+atc-navdata = { path = "../atc-navdata" }
+atc-phraseology = { path = "../atc-phraseology" }
+atc-proto = { path = "../atc-proto" }
+atc-voice = { path = "../atc-voice" }
+axum = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["signal", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+atc-core = { path = "../atc-core", features = ["testkit"] }
+atc-voice = { path = "../atc-voice", features = ["fakes"] }
+tokio = { workspace = true, features = ["time"] }
+tokio-tungstenite = { workspace = true }

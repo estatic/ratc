@@ -1,0 +1,84 @@
+# Release builds for Linux and macOS: on a version tag (published as a GitHub release) or by hand
+# (artifacts only). Each archive holds the binaries plus the config, data and scripts they run
+# with; speech models are fetched by the user (tools/).
+name: Build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            plugin: true
+          - name: macos-aarch64
+            os: macos-14
+            # The overlay plugin is built and installed for Linux only (lin.xpl).
+            plugin: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libclang-dev libvulkan-dev glslc libasound2-dev libudev-dev pkg-config
+
+      - name: System libraries (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Build
+        run: cargo build --release --locked -p atc-server -p atc-client
+
+      - name: Build the X-Plane plugin
+        if: matrix.plugin
+        run: cargo build --release --locked -p atc-xplane-plugin
+
+      - name: Package
+        shell: bash
+        run: |
+          NAME="virtual-atc-${GITHUB_REF_NAME//\//-}-${{ matrix.name }}"
+          DIR="dist/$NAME"
+          mkdir -p "$DIR/bin"
+          cp target/release/atc-server target/release/atc-client "$DIR/bin/"
+          if [ "${{ matrix.plugin }}" = "true" ]; then
+            mkdir -p "$DIR/plugin/atc-overlay/64"
+            cp target/release/libatc_overlay.so "$DIR/plugin/atc-overlay/64/lin.xpl"
+          fi
+          cp -R config data scenarios tools docs "$DIR/"
+          cp README.md LICENSE.md NOTICE.md CONTRIBUTING.md "$DIR/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          echo "ARCHIVE=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ env.ARCHIVE }}
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE }}

@@ -1,0 +1,22 @@
+[package]
+name = "atc-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+testkit = []
+
+[dependencies]
+atc-geo = { path = "../atc-geo" }
+atc-navdata = { path = "../atc-navdata" }
+atc-phraseology = { path = "../atc-phraseology" }
+atc-proto = { path = "../atc-proto" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

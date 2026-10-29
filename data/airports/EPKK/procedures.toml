@@ -1,0 +1,161 @@
+icao = "EPKK"
+source = "AIP Polska eAIP IFR, AD 2 EPKK: AD 2.17 (transition altitude), AD 2.18 (frequencies). Circuits and preferred runway are NOT in AIP: ICAO standard, user-approved."
+airac = "AIRAC AMDT 10-26 (2026-10-01)"
+transition_altitude_ft = 6500
+# Controller ruling: prevailing westerlies.
+preferred_runway = "25"
+# AIP VAC AD 2 EPKK 13-1: VAR 6°E 2024 (east positive).
+magnetic_variation_deg = 6.0
+
+# AIP AD 2.22 3.3: VFR holding over KILO or ZULU, not higher than 2000 ft AMSL.
+vfr_holds = ["KILO", "ZULU"]
+vfr_hold_max_ft = 2000
+# Same Approach unit: AD 2.18 (126.530; 126.975 also listed, unused) and AD 2 EPKT 2.18 (135.405).
+approach_alt_khz = [126530, 135405]
+# Approximation of the KRAKOW TMA polygon (ruling): circle, FL095 ceiling.
+tma = { radius_nm = 40.0, ceiling_ft = 9500 }
+# AIP AD 2.20, UTC hours.
+delivery_hours = { summer_utc = [6, 22], winter_utc = [5, 21] }
+# Design decision (spec 3.2), not AIP.
+ifr = { cruise_ft = 5000 }
+
+# ICAO standard, user-approved -- not published in AIP.
+# Left-hand, 1000 ft AGL: field elevation 791 ft + 1000 = 1791 -> 1800 ft AMSL.
+[[circuits]]
+runway = "07"
+side = "Left"
+altitude_ft_msl = 1800
+
+[[circuits]]
+runway = "25"
+side = "Left"
+altitude_ft_msl = 1800
+
+[[positions]]
+role = "Atis"
+callsign = "Kraków ATIS"
+khz = 126130
+
+[[positions]]
+role = "Delivery"
+callsign = "Kraków Delivery"
+khz = 121980
+
+[[positions]]
+role = "Ground"
+callsign = "Kraków Ground"
+khz = 118105
+
+[[positions]]
+role = "Tower"
+callsign = "Kraków Tower"
+khz = 123255
+
+[[positions]]
+role = "Approach"
+callsign = "Kraków Approach"
+khz = 121075
+
+
+# Adjacent units.
+# ENR 2.1.2 sector EPWW J (LOW), FL095-FL335.
+[[adjacent]]
+callsign = "Warszawa Radar"
+khz = 127660
+kind = "Acc"
+min_level_ft = 9500
+
+# VAC chart AD 2 EPKK 13-1 (16 APR 2026).
+[[adjacent]]
+callsign = "Kraków Information"
+khz = 119275
+kind = "Fis"
+
+# AD 2 EPKT 2.18.
+[[adjacent]]
+callsign = "Katowice Tower"
+khz = 129255
+kind = "Tower"
+airport = "EPKT"
+
+# VFR points, AIP AD 2.22 3.1. Coordinates converted from DMS.
+# BRAVO: 50°15'53"N 19°26'05"E (Bukowno)
+[[vfr_points]]
+name = "BRAVO"
+lat = 50.264722
+lon = 19.434722
+
+# DELTA: 49°51'25"N 20°08'30"E (near Dobczyce)
+[[vfr_points]]
+name = "DELTA"
+lat = 49.856944
+lon = 20.141667
+
+# ECHO: 50°02'31"N 20°05'52"E (water power plant on the Vistula)
+[[vfr_points]]
+name = "ECHO"
+lat = 50.041944
+lon = 20.097778
+
+# HOTEL: 50°19'05"N 19°14'14"E (Strzemieszyce, roads S1/94)
+[[vfr_points]]
+name = "HOTEL"
+lat = 50.318056
+lon = 19.237222
+
+# INDIA: 50°09'00"N 19°38'00"E (Krzeszowice mine)
+[[vfr_points]]
+name = "INDIA"
+lat = 50.150000
+lon = 19.633333
+
+# KILO: 50°03'00"N 19°48'00"E (Kryspinów, south of the reservoir)
+[[vfr_points]]
+name = "KILO"
+lat = 50.050000
+lon = 19.800000
+south = true
+
+# LIMA: 50°08'11"N 20°06'52"E (Luborzyca)
+[[vfr_points]]
+name = "LIMA"
+lat = 50.136389
+lon = 20.114444
+
+# MIKE: 50°21'00"N 20°02'00"E (Miechów)
+[[vfr_points]]
+name = "MIKE"
+lat = 50.350000
+lon = 20.033333
+
+# OSCAR: 50°12'00"N 19°53'00"E (Smardzowice church)
+[[vfr_points]]
+name = "OSCAR"
+lat = 50.200000
+lon = 19.883333
+
+# ROMEO: 49°54'39"N 19°24'46"E (near Radocza)
+[[vfr_points]]
+name = "ROMEO"
+lat = 49.910833
+lon = 19.412778
+
+# SIERRA: 49°59'00"N 19°49'00"E (Skawina)
+[[vfr_points]]
+name = "SIERRA"
+lat = 49.983333
+lon = 19.816667
+south = true
+
+# UNIFORM: 49°47'31"N 19°46'41"E (near Sułkowice)
+[[vfr_points]]
+name = "UNIFORM"
+lat = 49.791944
+lon = 19.778056
+
+# ZULU: 50°06'33"N 19°46'46"E (Zabierzów radar dome)
+[[vfr_points]]
+name = "ZULU"
+lat = 50.109167
+lon = 19.779444
+

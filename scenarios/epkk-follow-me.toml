@@ -1,0 +1,98 @@
+# A pilot lost on the way back to the stand (stands have no markings on the pavement): taxi
+# help says where the stand is, the second help brings the follow-me car, which leads to the
+# stand; "on stand" is answered with "good day". Also Whisper's "Dunn, wind" and "#1".
+airport = "EPKK"
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+track = "synthetic-circuit:25"
+transponder = { code = 4201, mode = 2 }
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, information Alpha, request taxi for circuits"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, squawk four two zero one, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:HoldingShort"
+freq = "ground"
+text = "Contact Krakow Tower one two three decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+t = 141.0
+freq = "tower"
+text = "Runway two five, cleared for take-off, report downwind, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Downwind"
+freq = "tower"
+text = "Sierra Papa Alpha Bravo Charlie Dunn, wind, full stop"
+
+[[say]]
+at = "phase:Downwind"
+freq = "tower"
+text = "#1, report final, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+text = "Sierra Bravo Charlie, final"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+text = "Runway two five, cleared to land, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Landed"
+freq = "tower"
+text = "Vacating, contact Krakow Ground one one eight decimal one zero five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:TaxiIn"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, request taxi to stand"
+
+[[say]]
+at = "phase:TaxiIn"
+freq = "ground"
+text = "Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie"
+
+[[say]]
+t = 740
+freq = "ground"
+text = "Sierra Papa Alpha Bravo Charlie, I am lost, I need help, taxi"
+
+[[say]]
+t = 740
+freq = "ground"
+text = "Taxi to stand three five via Bravo four, Sierra Bravo Charlie"
+
+[[say]]
+t = 760
+freq = "ground"
+text = "Sierra Papa Alpha Bravo Charlie, still lost, I need help"
+
+[[say]]
+t = 760
+freq = "ground"
+text = "Holding position, Sierra Bravo Charlie"
+
+[[say]]
+t = 775
+freq = "ground"
+text = "Follow the follow-me, Sierra Bravo Charlie"
+
+[[say]]
+t = 817
+freq = "ground"
+text = "Sierra Papa Alpha Bravo Charlie on stand, have a good day."
+
+[[say]]
+t = 818
+freq = "ground"
+text = "Sierra Papa Alpha Bravo Charlie, understand"

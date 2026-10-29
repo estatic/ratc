@@ -1,0 +1,19 @@
+# The pilot is cleared to taxi to the holding point but does not stop there: the aircraft rolls
+# onto runway 25 without a clearance and takes off. Tower must react.
+airport = "EPKK"
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+track = "synthetic-circuit:25"
+
+[[event]]
+kind = "skip-hold-short"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, information Alpha, request taxi for circuits"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, squawk four two zero one, Sierra Bravo Charlie"

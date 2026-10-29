@@ -1,0 +1,6 @@
+[    0.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, information Alpha, request taxi for circuits
+[    0.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, squawk four two zero one
+[    0.0] PILOT: Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, squawk four two zero one, Sierra Bravo Charlie
+[  156.0] Kraków Ground: Sierra Bravo Charlie, hold position, you have entered runway two five without clearance
+[  192.0] Kraków Ground: Sierra Bravo Charlie, you have taken off without clearance
+[  575.0] Kraków Ground: Sierra Bravo Charlie, you have landed without clearance

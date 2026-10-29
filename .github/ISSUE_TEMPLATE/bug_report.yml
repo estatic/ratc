@@ -1,0 +1,109 @@
+name: Bug report
+description: The controller said or did something wrong, or the program failed.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. A controller problem can rarely be fixed from a description
+        alone: the exchange, the server log and the airport are what make it reproducible.
+        Please remove anything private from logs before posting them.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: In plain words.
+    validations:
+      required: true
+
+  - type: textarea
+    id: exchange
+    attributes:
+      label: Radio exchange
+      description: |
+        The lines printed by `atc-client` (what the controller said and what it understood from
+        you), from a few lines before the problem to after it. Copy them as text.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: server-log
+    attributes:
+      label: Server log
+      description: |
+        The `atc-server` log of the same session, for example from
+        `RUST_LOG=info target/release/atc-server 2>&1 | tee server.log`.
+        It shows what Whisper heard (`pilot transcript`).
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: airport
+    attributes:
+      label: Airport
+      description: ICAO code.
+      placeholder: EPKK
+    validations:
+      required: true
+
+  - type: input
+    id: station
+    attributes:
+      label: Station and frequency
+      description: The position you were talking to, its frequency; the runway in use and the ATIS letter if you know them.
+      placeholder: Tower 123.255, runway 25, information Charlie
+    validations:
+      required: true
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language
+      description: The `[whisper] language` setting in `config/server.toml`.
+      options:
+        - en (English, fixed)
+        - pl (Polish, fixed)
+        - auto (line removed)
+    validations:
+      required: true
+
+  - type: input
+    id: spoken
+    attributes:
+      label: Language you spoke
+      placeholder: English, with a Russian accent
+    validations:
+      required: false
+
+  - type: textarea
+    id: flight
+    attributes:
+      label: Flight
+      description: VFR or IFR, the clearance you had (destination, SID/STAR, approach), the phase of flight, the aircraft type.
+      placeholder: IFR to EPKT, SUDOL 1F, climbing after take-off, C172
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: |
+        Project version (`git rev-parse --short HEAD`), operating system, X-Plane version,
+        the Whisper model, `strictness`, and any change you made to `config/*.toml`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: track
+    attributes:
+      label: Recorded track (if you have one)
+      description: |
+        Run the client with `--record track.csv` and attach the file here (drag and drop).
+        With the exchange above, it lets the problem be replayed with `atc-replay`.
+    validations:
+      required: false

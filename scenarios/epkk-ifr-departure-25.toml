@@ -1,0 +1,106 @@
+# IFR departure EPKK -> EPKT on runway 25 (spec 3.2): clearance from Delivery, start-up and
+# taxi from Ground, Tower calls at the holding point, Approach after take-off, direct to
+# Katowice after the SID's turn, descent 20 NM out, hand-off to Katowice Tower 10 NM out.
+# The pilot first reads back the runway 07 SID and is corrected.
+airport = "EPKK"
+navdata = "xplane"
+utc = "10:00"
+day = 200
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+transponder = { code = 2000, mode = 1 }
+track = "path"
+
+[path]
+start = { stand = "35" }
+runway = "25"
+waypoints = [
+  { fix = "KK599", alt = 3000, kt = 90 },
+  { fix = "KK602", alt = 4500, kt = 95 },
+  { lat = 50.14766, lon = 19.3404, alt = 5000, kt = 100 },
+  { lat = 50.19221, lon = 19.3051, alt = 5000, kt = 100 },
+  { lat = 50.29614, lon = 19.22248, alt = 3000, kt = 100 },
+  { lat = 50.37034, lon = 19.16324, alt = 2500, kt = 90 },
+]
+
+[[say]]
+at = "phase:Parked"
+freq = "delivery"
+text = "Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand three five, information Alpha, IFR to Katowice, request clearance"
+
+[[say]]
+at = "heard:cleared to"
+freq = "delivery"
+transponder = { code = 4201 }
+text = "Cleared to Katowice, Sudol one Foxtrot departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:negative"
+freq = "delivery"
+text = "Cleared to Katowice, Sudol two Juliett departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:ground"
+freq = "delivery"
+text = "Ground one one eight decimal one zero five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand three five, information Alpha, request start up"
+
+[[say]]
+at = "heard:start-up approved"
+freq = "ground"
+text = "Start up approved, QNH one zero one three, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, Sierra Bravo Charlie, information Alpha, request taxi"
+
+[[say]]
+at = "heard:taxi to"
+freq = "ground"
+transponder = { mode = 3 }
+text = "Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:contact kraków tower"
+freq = "ground"
+text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:cleared for take-off"
+freq = "tower"
+text = "Runway two five, cleared for take-off, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:contact kraków approach"
+freq = "tower"
+text = "Approach one two one decimal zero seven five, Sierra Bravo Charlie"
+
+[[say]]
+t = 300.0
+freq = "approach"
+text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing five thousand feet"
+
+[[say]]
+at = "heard:direct katowice"
+freq = "approach"
+text = "Direct Katowice, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:descend"
+freq = "approach"
+text = "Descend three thousand feet, QNH one zero one three, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:contact katowice tower"
+freq = "approach"
+text = "Katowice Tower one two nine decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+t = 1460.0
+freq = "tower:EPKT"
+text = "Katowice Tower, Sierra Papa Alpha Bravo Charlie, descending three thousand feet, inbound to Katowice"

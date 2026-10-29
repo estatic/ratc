@@ -1,0 +1,16 @@
+[package]
+name = "atc-replay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+atc-core = { path = "../atc-core", features = ["testkit"] }
+atc-geo = { path = "../atc-geo" }
+atc-navdata = { path = "../atc-navdata" }
+atc-phraseology = { path = "../atc-phraseology" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }

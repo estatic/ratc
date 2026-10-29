@@ -1,0 +1,23 @@
+[    5.0] PILOT: Krakow Information, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, IFR from Opole to Krakow, five thousand feet, inbound Krakow
+[    5.0] Kraków Information: Sierra Papa Alpha Bravo Charlie, contact Kraków Approach one two one decimal zero seven five
+[    5.0] PILOT: Approach one two one decimal zero seven five, Sierra Bravo Charlie
+[   15.0] PILOT: Krakow Approach, Sierra Papa Alpha Bravo Charlie, IFR, five thousand feet, inbound Krakow, information Alpha
+[   15.0] Kraków Approach: Sierra Papa Alpha Bravo Charlie, identified, MAPIK one Golf arrival, maintain altitude five thousand feet, QNH one zero one three, expect ILS approach runway two five
+[   15.0] PILOT: MAPIK one Golf arrival, maintain five thousand feet, QNH one zero one three, expect ILS approach runway two five, Sierra Bravo Charlie
+[ 2968.0] Kraków Approach: Sierra Bravo Charlie, turn right heading two five five, descend to altitude three thousand feet
+[ 2968.0] PILOT: Right heading two five five, descend three thousand feet, Sierra Bravo Charlie
+[ 3100.0] Kraków Approach: Sierra Bravo Charlie, turn left heading two two zero, one five miles from touchdown, cleared ILS approach runway two five, report established
+[ 3100.0] PILOT: Left heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
+[ 3298.0] PILOT: Sierra Bravo Charlie, established ILS runway two five
+[ 3298.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
+[ 3298.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
+[ 3298.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, established ILS runway two five
+[ 3298.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared to land
+[ 3298.0] PILOT: Runway two five, cleared to land, Sierra Bravo Charlie
+[ 3816.0] Kraków Tower: Sierra Bravo Charlie, vacate, contact Kraków Ground one one eight decimal one zero five, good day
+[ 3816.0] PILOT: Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie
+[ 3918.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five
+[ 3918.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, taxi to stand three five via Charlie, Bravo four
+[ 3918.0] PILOT: Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie
+[ 4066.0] PILOT: Sierra Bravo Charlie, on stand three five
+[ 4066.0] Kraków Ground: Sierra Bravo Charlie, good day

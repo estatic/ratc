@@ -1,0 +1,17 @@
+# Virtual ATC client. Run from the repo root: `atc-client [--text] [--record track.csv]`.
+server = "ws://127.0.0.1:8740/ws"
+callsign = "SP-ABC"
+aircraft_type = "C172"
+# X-Plane 11 host:port (UDP RREF, read-only)
+xplane = "127.0.0.1:49000"
+# EPKK field elevation, for cloud bases above ground in the weather sent to the server
+field_elev_ft = 791
+# Audio devices by name substring; the system default when omitted.
+# input_device = "USB"
+# output_device = "Headset"
+
+[ptt]
+# Hold-to-talk joystick button (0 = trigger); remove the line to use only the key.
+joystick_button = 0
+# Terminal key, toggle: press to start transmitting, press again to stop.
+key = "space"

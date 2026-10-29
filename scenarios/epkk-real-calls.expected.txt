@@ -1,0 +1,24 @@
+[    0.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, information Alpha, request taxi for circuits
+[    0.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, squawk four two zero one
+[    0.0] PILOT: Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, squawk four two zero one, Sierra Bravo Charlie
+[  140.0] Kraków Ground: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five, have a nice flight
+[  140.0] PILOT: Contact Krakow Tower one two three decimal two five five, Sierra Bravo Charlie
+[  141.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, squawk Charlie
+[  141.0] PILOT: Say again please
+[  141.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, squawk Charlie
+[  141.0] PILOT: Squawk Charlie, Sierra Bravo Charlie
+[  141.0] Kraków Tower: Sierra Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared for take-off, report downwind
+[  141.0] PILOT: Runway two five, cleared for take-off, report downwind, Sierra Bravo Charlie
+[  340.0] PILOT: Sierra Bravo Charlie, downwind, full stop
+[  340.0] Kraków Tower: Sierra Bravo Charlie, number one, report final
+[  340.0] PILOT: Number one, report final, Sierra Bravo Charlie
+[  528.0] PILOT: Sierra Bravo Charlie, final
+[  528.0] Kraków Tower: Sierra Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared to land
+[  528.0] PILOT: Runway two five, cleared to land, Sierra Bravo Charlie
+[  580.0] Kraków Tower: Sierra Bravo Charlie, vacate, contact Kraków Ground one one eight decimal one zero five, good day
+[  580.0] PILOT: Vacating, contact Krakow Ground one one eight decimal one zero five, Sierra Bravo Charlie
+[  667.0] PILOT: Kraków Ground's Sierra Bravo Charlie requests taxi to stand two zero.
+[  667.0] Kraków Ground: Sierra Bravo Charlie, taxi to stand two zero via Charlie, Bravo four, Bravo five, Whiskey one, Sierra
+[  667.0] PILOT: Kraków Ground, could you get me how to taxi to the Sierra Sierra Bravo Charlie
+[  667.0] Kraków Ground: Sierra Bravo Charlie, taxi to stand two zero via Charlie, Bravo four, Bravo five, Whiskey one, Sierra
+[  667.0] PILOT: Taxi to stand two zero via Charlie, Bravo four, Bravo five, Whiskey one, Sierra Sierra, Bravo Charlie

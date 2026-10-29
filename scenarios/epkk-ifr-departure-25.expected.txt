@@ -1,0 +1,29 @@
+[    0.0] PILOT: Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand three five, information Alpha, IFR to Katowice, request clearance
+[    0.0] Kraków Delivery: Sierra Papa Alpha Bravo Charlie, cleared to Katowice, SUDOL two Juliett departure, climb altitude five thousand feet, squawk four two zero one
+[    0.0] PILOT: Cleared to Katowice, Sudol one Foxtrot departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie
+[    0.0] Kraków Delivery: Sierra Bravo Charlie, negative, SUDOL two Juliett departure
+[    0.0] PILOT: Cleared to Katowice, Sudol two Juliett departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie
+[    0.0] Kraków Delivery: Sierra Bravo Charlie, readback correct, contact Kraków Ground one one eight decimal one zero five
+[    0.0] PILOT: Ground one one eight decimal one zero five, Sierra Bravo Charlie
+[    0.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand three five, information Alpha, request start up
+[    0.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, start-up approved, QNH one zero one three
+[    0.0] PILOT: Start up approved, QNH one zero one three, Sierra Bravo Charlie
+[    0.0] PILOT: Krakow Ground, Sierra Bravo Charlie, information Alpha, request taxi
+[    0.0] Kraków Ground: Sierra Bravo Charlie, taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five
+[    0.0] PILOT: Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, Sierra Bravo Charlie
+[  140.0] Kraków Ground: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five, have a nice flight
+[  140.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
+[  141.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared for take-off
+[  141.0] PILOT: Runway two five, cleared for take-off, Sierra Bravo Charlie
+[  221.0] Kraków Tower: Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five
+[  221.0] PILOT: Approach one two one decimal zero seven five, Sierra Bravo Charlie
+[  300.0] PILOT: Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing five thousand feet
+[  300.0] Kraków Approach: Sierra Papa Alpha Bravo Charlie, identified
+[  775.0] Kraków Approach: Sierra Bravo Charlie, proceed direct Katowice
+[  775.0] PILOT: Direct Katowice, Sierra Bravo Charlie
+[ 1084.0] Kraków Approach: Sierra Bravo Charlie, descend to altitude three thousand feet, QNH one zero one three
+[ 1084.0] PILOT: Descend three thousand feet, QNH one zero one three, Sierra Bravo Charlie
+[ 1452.0] Kraków Approach: Sierra Bravo Charlie, contact Katowice Tower one two niner decimal two five five
+[ 1452.0] PILOT: Katowice Tower one two nine decimal two five five, Sierra Bravo Charlie
+[ 1460.0] PILOT: Katowice Tower, Sierra Papa Alpha Bravo Charlie, descending three thousand feet, inbound to Katowice
+[ 1460.0] Katowice Tower: Sierra Papa Alpha Bravo Charlie, identified

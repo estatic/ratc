@@ -1,0 +1,16 @@
+[package]
+name = "atc-xplane-plugin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# X-Plane loads `<plugin>/64/lin.xpl`; tools/install-xplane-plugin.sh copies the built
+# `libatc_overlay.so` there.
+[lib]
+name = "atc_overlay"
+crate-type = ["cdylib"]
+
+[dependencies]
+atc-proto = { path = "../atc-proto" }

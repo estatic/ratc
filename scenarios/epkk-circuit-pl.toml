@@ -1,0 +1,85 @@
+# The full left-hand circuit of epkk-circuit-vmc on runway 25, flown in Polish: no ATIS
+# letter on the first call, every clearance read back in Polish, "na stanowisku" at the end.
+airport = "EPKK"
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+track = "synthetic-circuit:25"
+language = "pl"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+lang = "pl"
+text = "Kraków Ground, Sierra Papa Alfa Bravo Charlie, dzień dobry, proszę o kołowanie do kręgów"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+lang = "pl"
+text = "Kołuję do punktu oczekiwania przed pasem dwa pięć drogą Bravo pięć, Bravo sześć, Alfa, oczekuję przed pasem dwa pięć, QNH dziesięć trzynaście, skłok cztery dwa zero jeden, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:HoldingShort"
+freq = "ground"
+lang = "pl"
+text = "Łączność z Kraków Wieża sto dwadzieścia trzy kropka dwa pięć pięć, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:HoldingShort"
+freq = "tower"
+lang = "pl"
+text = "Kraków Wieża, Sierra Papa Alfa Bravo Charlie, punkt oczekiwania pas dwa pięć, gotowy do startu"
+
+[[say]]
+at = "phase:HoldingShort"
+freq = "tower"
+lang = "pl"
+text = "Pas dwa pięć, zezwalasz startować, zgłoszę z wiatrem, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Downwind"
+freq = "tower"
+lang = "pl"
+text = "Sierra Bravo Charlie, z wiatrem, z pełnym zatrzymaniem"
+
+[[say]]
+at = "phase:Downwind"
+freq = "tower"
+lang = "pl"
+text = "Numer jeden, zgłoszę prostą, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+lang = "pl"
+text = "Sierra Bravo Charlie, prosta"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+lang = "pl"
+text = "Pas dwa pięć, zezwalasz lądować, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Landed"
+freq = "tower"
+lang = "pl"
+text = "Zwalniam pas, łączność z Kraków Ground sto osiemnaście kropka jeden zero pięć, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:TaxiIn"
+freq = "ground"
+lang = "pl"
+text = "Kraków Ground, Sierra Bravo Charlie, proszę o kołowanie do stanowiska"
+
+[[say]]
+at = "phase:TaxiIn"
+freq = "ground"
+lang = "pl"
+text = "Kołuję do stanowiska trzy pięć drogą Charlie, Bravo cztery, Sierra Bravo Charlie"
+
+[[say]]
+t = 817
+freq = "ground"
+lang = "pl"
+text = "Kraków Ground, Sierra Bravo Charlie, na stanowisku, do widzenia"

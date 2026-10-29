@@ -1,0 +1,38 @@
+[    0.0] PILOT: Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand three five, information Alpha, VFR to Nowy Targ via Sierra, request clearance
+[    0.0] Kraków Delivery: Sierra Papa Alpha Bravo Charlie, cleared to Nowy Targ, leave control zone via SIERRA, squawk four two zero one
+[    0.0] PILOT: Cleared to Nowy Targ, leave control zone via Sierra, squawk four two zero one, Sierra Bravo Charlie
+[    0.0] Kraków Delivery: Sierra Bravo Charlie, readback correct, contact Kraków Ground one one eight decimal one zero five
+[    0.0] PILOT: Ground one one eight decimal one zero five, Sierra Bravo Charlie
+[    0.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand three five, information Alpha, VFR to Nowy Targ, request taxi
+[    0.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three
+[    0.0] PILOT: Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, Sierra Bravo Charlie
+[  140.0] Kraków Ground: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five, have a nice flight
+[  140.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
+[  141.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared for take-off
+[  141.0] PILOT: Runway two five, cleared for take-off, Sierra Bravo Charlie
+[  221.0] Kraków Tower: Sierra Bravo Charlie, report at SIERRA
+[  221.0] PILOT: Wilco, Sierra Bravo Charlie
+[  662.0] PILOT: Sierra Bravo Charlie, at Sierra, two thousand feet
+[  662.0] Kraków Tower: Sierra Bravo Charlie, leave control zone via SIERRA, frequency change approved, contact Kraków Information one one niner decimal two seven five
+[  662.0] PILOT: Leaving control zone via Sierra, Information one one niner decimal two seven five, Sierra Bravo Charlie
+[  672.0] PILOT: Krakow Information, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, VFR from Krakow to Nowy Targ, leaving the Krakow control zone via Sierra, two thousand feet
+[  672.0] Kraków Information: Sierra Papa Alpha Bravo Charlie, identified
+[ 1700.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, returning to Krakow due weather, three miles west of Zulu, two thousand feet, information Alpha, request joining via Zulu
+[ 1700.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, enter control zone via ZULU, altitude two thousand feet, report at ZULU
+[ 1700.0] PILOT: Enter control zone via Zulu, two thousand feet, report at Zulu, Sierra Bravo Charlie
+[ 1878.0] PILOT: Sierra Bravo Charlie, at Zulu
+[ 1878.0] Kraków Tower: Sierra Bravo Charlie, join downwind runway two five, report downwind
+[ 1878.0] PILOT: Join downwind runway two five, wilco, Sierra Bravo Charlie
+[ 2063.0] PILOT: Sierra Bravo Charlie, downwind runway two five, full stop
+[ 2063.0] Kraków Tower: Sierra Bravo Charlie, number one, report final
+[ 2063.0] PILOT: Number one, wilco, Sierra Bravo Charlie
+[ 2234.0] PILOT: Sierra Bravo Charlie, final runway two five
+[ 2234.0] Kraków Tower: Sierra Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared to land
+[ 2234.0] PILOT: Runway two five, cleared to land, Sierra Bravo Charlie
+[ 2296.0] Kraków Tower: Sierra Bravo Charlie, vacate, contact Kraków Ground one one eight decimal one zero five, good day
+[ 2296.0] PILOT: Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie
+[ 2404.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five
+[ 2404.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, taxi to stand three five via Charlie, Bravo four
+[ 2404.0] PILOT: Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie
+[ 2555.0] PILOT: Sierra Bravo Charlie, on stand three five
+[ 2555.0] Kraków Ground: Sierra Bravo Charlie, good day

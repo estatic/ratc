@@ -1,0 +1,66 @@
+# Fictional airport ZZZZ for engine tests (navdata: crates/atc-navdata/tests/fixtures/xplane).
+icao = "ZZZZ"
+source = "test fixture"
+airac = "test"
+transition_altitude_ft = 6500
+preferred_runway = "27"
+magnetic_variation_deg = 0.0
+delivery_hours = { summer_utc = [6, 22], winter_utc = [5, 21] }
+ifr = { cruise_ft = 5000 }
+vfr_holds = ["KILO", "ROMEO"]
+vfr_hold_max_ft = 2000
+
+[[circuits]]
+runway = "09"
+side = "Left"
+altitude_ft_msl = 1100
+
+[[circuits]]
+runway = "27"
+side = "Left"
+altitude_ft_msl = 1100
+
+[[positions]]
+role = "Atis"
+callsign = "Zeta ATIS"
+khz = 120000
+
+[[positions]]
+role = "Delivery"
+callsign = "Zeta Delivery"
+khz = 121900
+
+[[positions]]
+role = "Ground"
+callsign = "Zeta Ground"
+khz = 121700
+
+[[positions]]
+role = "Tower"
+callsign = "Zeta Tower"
+khz = 118300
+
+[[positions]]
+role = "Approach"
+callsign = "Zeta Approach"
+khz = 119100
+
+# North of the field.
+[[vfr_points]]
+name = "ROMEO"
+lat = 10.2
+lon = 10.0
+
+# South of the field: the southern entry/exit.
+[[vfr_points]]
+name = "KILO"
+lat = 9.8
+lon = 10.0
+south = true
+
+# South-east of the field: the second southern entry/exit.
+[[vfr_points]]
+name = "SIERRA"
+lat = 9.8
+lon = 10.2
+south = true

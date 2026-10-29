@@ -1,0 +1,149 @@
+# VOR/DME approach on runway 07 with a missed approach (spec 3.3): inbound from the
+# north-west inside the STAR start fixes, the pilot asks for the VOR/DME approach (RNAV is
+# the default on 07), is vectored and cleared for it, goes around, is handed back to
+# Approach, vectored again and lands from the second approach.
+airport = "EPKK"
+navdata = "xplane"
+utc = "13:00"
+day = 200
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 70, wind_speed_kt = 10, visibility_m = 8000, temp_c = 14, dewpoint_c = 10, qnh_hpa = 1009 }
+transponder = { code = 4207, mode = 3 }
+track = "path"
+
+[path]
+start = { lat = 50.43794, lon = 19.45792, alt = 5000, hdg = 150 }
+# Open loop: the legs fly the headings Approach gives (magnetic, `hdg`).
+waypoints = [
+  { hdg = 170, nm = 8.8, alt = 5000, kt = 100 },
+  { hdg = 170, nm = 5, alt = 3000, kt = 100 },
+  { hdg = 170, nm = 9.0, alt = 3000, kt = 100 },
+  { hdg = 100, nm = 2.2, alt = 3000, kt = 90 },
+  { fix = "FD07", alt = 3000, kt = 90 },
+  { lat = 50.06831, lon = 19.71731, alt = 1400, kt = 80 },
+  { lat = 50.07185, lon = 19.74267, alt = 1350, kt = 80 },
+  { hdg = 72, nm = 0.3, alt = 1450, kt = 75 },
+  { hdg = 270, nm = 3, alt = 3000, kt = 90 },
+  { hdg = 270, nm = 7.9, alt = 3000, kt = 90 },
+  { hdg = 250, nm = 0.85, alt = 3000, kt = 90 },
+  { hdg = 160, nm = 2.1, alt = 3000, kt = 90 },
+  { hdg = 100, nm = 3.4, alt = 3000, kt = 90 },
+  { fix = "FD07", alt = 3000, kt = 90 },
+]
+land = "07"
+
+[[say]]
+t = 5.0
+freq = "approach"
+text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, IFR, five thousand feet, inbound Krakow, information Alpha, request VOR DME approach runway zero seven"
+
+[[say]]
+at = "heard:identified"
+freq = "approach"
+text = "Right heading one seven zero, maintain five thousand feet, QNH one zero zero niner, expect VOR DME approach runway zero seven, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:descend"
+freq = "approach"
+text = "Descend three thousand feet, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:cleared vor"
+freq = "approach"
+text = "Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "approach"
+text = "Sierra Bravo Charlie, established VOR DME approach runway zero seven"
+
+[[say]]
+at = "heard:contact kraków tower"
+freq = "approach"
+text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven"
+
+[[say]]
+at = "heard:cleared to land"
+freq = "tower"
+text = "Runway zero seven, cleared to land, Sierra Bravo Charlie"
+
+[[say]]
+t = 1242.0
+freq = "tower"
+text = "Sierra Bravo Charlie, going around"
+
+[[say]]
+at = "heard:contact kraków approach"
+freq = "tower"
+text = "Approach one two one decimal zero seven five, Sierra Bravo Charlie"
+
+[[say]]
+t = 1255.0
+freq = "approach"
+text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, missed approach runway zero seven, climbing four thousand feet"
+
+[[say]]
+at = "heard:heading two seven zero"
+freq = "approach"
+text = "Left heading two seven zero, climb three thousand feet, Sierra Bravo Charlie"
+
+
+[[say]]
+at = "heard:heading two five zero"
+freq = "approach"
+text = "Left heading two five zero, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:heading one six zero"
+freq = "approach"
+text = "Left heading one six zero, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:cleared vor"
+freq = "approach"
+text = "Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
+
+[[say]]
+t = 1926.0
+freq = "approach"
+text = "Sierra Bravo Charlie, established VOR DME approach runway zero seven"
+
+[[say]]
+at = "heard:contact kraków tower"
+freq = "approach"
+text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+t = 1935.0
+freq = "tower"
+text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven"
+
+[[say]]
+at = "heard:cleared to land"
+freq = "tower"
+text = "Runway zero seven, cleared to land, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:contact kraków ground"
+freq = "tower"
+text = "Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:TaxiIn"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five"
+
+[[say]]
+at = "heard:taxi to stand"
+freq = "ground"
+text = "Taxi to stand three five via Delta, Bravo three, Bravo four, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Sierra Bravo Charlie, on stand three five"

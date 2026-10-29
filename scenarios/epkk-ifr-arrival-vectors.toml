@@ -1,0 +1,90 @@
+# IFR arrival from Katowice (spec 3.3, the EPKT -> EPKK acceptance flight): airborne after
+# departing EPKT, the pilot calls Kraków Approach directly; inside the STAR start fixes, no
+# STAR: radar vectors from the far side around a downwind and base onto the ILS 25, the
+# approach clearance on the intercept heading, transfer to Tower and the landing.
+airport = "EPKK"
+navdata = "xplane"
+utc = "12:00"
+day = 200
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+transponder = { code = 4205, mode = 3 }
+track = "path"
+
+[path]
+start = { lat = 50.40857, lon = 19.19819, alt = 4000, hdg = 131 }
+# Open loop: the legs fly the headings Approach gives (magnetic, `hdg`).
+waypoints = [
+  { hdg = 105, nm = 5, alt = 5000, kt = 100 },
+  { hdg = 105, nm = 16.4, alt = 5000, kt = 100 },
+  { hdg = 105, nm = 13.4, alt = 3000, kt = 100 },
+  { hdg = 160, nm = 3.3, alt = 3000, kt = 100 },
+  { hdg = 220, nm = 3.4, alt = 3000, kt = 90 },
+  { fix = "KK371", alt = 3000, kt = 90 },
+]
+land = "25"
+
+[[say]]
+t = 5.0
+freq = "approach"
+text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, IFR, airborne Katowice, passing four thousand feet climbing five thousand feet, inbound Krakow, information Alpha"
+
+[[say]]
+at = "heard:identified"
+freq = "approach"
+text = "Left heading one zero five, climb five thousand feet, QNH one zero one three, expect ILS approach runway two five, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:descend"
+freq = "approach"
+text = "Descend three thousand feet, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:heading one six zero"
+freq = "approach"
+text = "Right heading one six zero, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:cleared ils"
+freq = "approach"
+text = "Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "approach"
+text = "Sierra Bravo Charlie, established ILS runway two five"
+
+[[say]]
+at = "heard:contact kraków tower"
+freq = "approach"
+text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established ILS runway two five"
+
+[[say]]
+at = "heard:cleared to land"
+freq = "tower"
+text = "Runway two five, cleared to land, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:contact kraków ground"
+freq = "tower"
+text = "Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:TaxiIn"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five"
+
+[[say]]
+at = "heard:taxi to stand"
+freq = "ground"
+text = "Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Sierra Bravo Charlie, on stand three five"

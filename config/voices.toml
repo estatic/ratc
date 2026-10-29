@@ -1,0 +1,42 @@
+# (VoiceId, language) -> Piper voice. [delivery], [ground], [tower], [approach], [radar], [atis] are English; [pl.*] Polish.
+# Paths are relative to the repo root; length_scale > 1.0 is slower speech.
+[delivery]
+model = "models/piper/voices/en_US-lessac-medium.onnx"
+length_scale = 0.95
+
+[ground]
+model = "models/piper/voices/en_US-ryan-medium.onnx"
+length_scale = 0.95
+
+[tower]
+model = "models/piper/voices/en_GB-alan-medium.onnx"
+length_scale = 0.9
+
+[approach]
+model = "models/piper/voices/en_GB-northern_english_male-medium.onnx"
+length_scale = 0.9
+
+[radar]
+model = "models/piper/voices/en_US-joe-medium.onnx"
+length_scale = 0.95
+
+[atis]
+model = "models/piper/voices/en_US-amy-medium.onnx"
+length_scale = 1.0
+
+# Polish voices (fetched by tools/fetch-piper.sh); a missing one falls back to English.
+[pl.delivery]
+model = "models/piper/voices/pl_PL-darkman-medium.onnx"
+length_scale = 0.95
+
+[pl.ground]
+model = "models/piper/voices/pl_PL-darkman-medium.onnx"
+length_scale = 0.95
+
+[pl.tower]
+model = "models/piper/voices/pl_PL-mc_speech-medium.onnx"
+length_scale = 0.9
+
+[pl.atis]
+model = "models/piper/voices/pl_PL-gosia-medium.onnx"
+length_scale = 1.0

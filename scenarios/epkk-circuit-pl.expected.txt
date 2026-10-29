@@ -1,0 +1,21 @@
+[    0.0] PILOT: Kraków Ground, Sierra Papa Alfa Bravo Charlie, dzień dobry, proszę o kołowanie do kręgów
+[    0.0] Kraków Ground: Sierra Papa Alfa Bravo Charlie, dzień dobry, aktualna informacja Alfa, QNH dziesięć trzynaście, kołuj do punktu oczekiwania przed pasem dwa pięć drogą Bravo pięć, Bravo sześć, Alfa, oczekuj przed pasem dwa pięć, skłok cztery dwa zero jeden
+[    0.0] PILOT: Kołuję do punktu oczekiwania przed pasem dwa pięć drogą Bravo pięć, Bravo sześć, Alfa, oczekuję przed pasem dwa pięć, QNH dziesięć trzynaście, skłok cztery dwa zero jeden, Sierra Bravo Charlie
+[  140.0] Kraków Ground: Sierra Bravo Charlie, łączność z Kraków Wieża sto dwadzieścia trzy kropka dwa pięć pięć, miłego lotu
+[  140.0] PILOT: Łączność z Kraków Wieża sto dwadzieścia trzy kropka dwa pięć pięć, Sierra Bravo Charlie
+[  140.0] PILOT: Kraków Wieża, Sierra Papa Alfa Bravo Charlie, punkt oczekiwania pas dwa pięć, gotowy do startu
+[  140.0] Kraków Tower: Sierra Papa Alfa Bravo Charlie, wiatr dwieście pięćdziesiąt stopni osiem węzłów, pas dwa pięć, zezwalam startować, zgłoś z wiatrem
+[  140.0] PILOT: Pas dwa pięć, zezwalasz startować, zgłoszę z wiatrem, Sierra Bravo Charlie
+[  340.0] PILOT: Sierra Bravo Charlie, z wiatrem, z pełnym zatrzymaniem
+[  340.0] Kraków Tower: Sierra Bravo Charlie, numer jeden, zgłoś prostą
+[  340.0] PILOT: Numer jeden, zgłoszę prostą, Sierra Bravo Charlie
+[  528.0] PILOT: Sierra Bravo Charlie, prosta
+[  528.0] Kraków Tower: Sierra Bravo Charlie, wiatr dwieście pięćdziesiąt stopni osiem węzłów, pas dwa pięć, zezwalam lądować
+[  528.0] PILOT: Pas dwa pięć, zezwalasz lądować, Sierra Bravo Charlie
+[  580.0] Kraków Tower: Sierra Bravo Charlie, zwolnij pas, łączność z Kraków Ground sto osiemnaście kropka jeden zero pięć, do widzenia
+[  580.0] PILOT: Zwalniam pas, łączność z Kraków Ground sto osiemnaście kropka jeden zero pięć, Sierra Bravo Charlie
+[  667.0] PILOT: Kraków Ground, Sierra Bravo Charlie, proszę o kołowanie do stanowiska
+[  667.0] Kraków Ground: Sierra Bravo Charlie, kołuj do stanowiska trzy pięć drogą Charlie, Bravo cztery
+[  667.0] PILOT: Kołuję do stanowiska trzy pięć drogą Charlie, Bravo cztery, Sierra Bravo Charlie
+[  817.0] PILOT: Kraków Ground, Sierra Bravo Charlie, na stanowisku, do widzenia
+[  817.0] Kraków Ground: Sierra Bravo Charlie, do widzenia

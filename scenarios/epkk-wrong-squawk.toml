@@ -1,0 +1,60 @@
+# The pilot reads the squawk back correctly but leaves the transponder on the VFR code. Tower
+# asks to check the squawk at the holding point until it is set; the readback after setting it
+# gets the take-off clearance.
+airport = "EPKK"
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+track = "synthetic-circuit:25"
+transponder = { code = 7000, mode = 2 }
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, information Alpha, request taxi for circuits"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, squawk four two zero one, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:HoldingShort"
+freq = "ground"
+text = "Contact Krakow Tower one two three decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+t = 141.0
+freq = "tower"
+text = "Squawk four two zero one, Sierra Bravo Charlie"
+
+# The pilot sets the code, then reads it back: cleared for take-off.
+[[say]]
+t = 141.0
+freq = "tower"
+text = "Squawk four two zero one, Sierra Bravo Charlie"
+transponder = { code = 4201 }
+
+[[say]]
+t = 141.0
+freq = "tower"
+text = "Runway two five, cleared for take-off, report downwind, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Downwind"
+freq = "tower"
+text = "Sierra Bravo Charlie, downwind, full stop"
+
+[[say]]
+at = "phase:Downwind"
+freq = "tower"
+text = "Number one, report final, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+text = "Sierra Bravo Charlie, final"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+text = "Runway two five, cleared to land, Sierra Bravo Charlie"

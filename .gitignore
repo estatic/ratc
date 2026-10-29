@@ -1,0 +1,9 @@
+/target
+*.log
+.env
+.vscode/
+.idea/
+.DS_Store
+/data/cache/
+/models/
+.superpowers/

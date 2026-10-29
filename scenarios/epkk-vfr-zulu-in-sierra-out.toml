@@ -1,0 +1,146 @@
+# VFR points (spec 3.4, AIP AD 2.22 §3): a VFR flight to Nowy Targ asks Delivery to leave
+# via SIERRA (from the south only SIERRA or KILO), stays on Tower after take-off, reports at
+# SIERRA and is sent to Kraków Information. Weather in the south: it turns back, calls Tower
+# approaching ZULU, enters the zone via ZULU, joins downwind runway 25 and lands.
+airport = "EPKK"
+navdata = "xplane"
+utc = "09:00"
+day = 200
+pilot = { callsign = "SPABC", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+transponder = { code = 7000, mode = 1 }
+track = "path"
+
+[path]
+start = { stand = "35" }
+runway = "25"
+waypoints = [
+  { lat = 50.06, lon = 19.70, alt = 1500, kt = 85 },
+  { point = "SIERRA", alt = 2000, kt = 90 },
+  { lat = 49.93, lon = 19.83, alt = 2000, kt = 90 },
+  { lat = 49.98, lon = 19.55, alt = 2000, kt = 90 },
+  { lat = 50.12, lon = 19.62, alt = 2000, kt = 90 },
+  { point = "ZULU", alt = 2000, kt = 90 },
+  { lat = 50.08246, lon = 19.75768, alt = 1800, kt = 80 },
+  { lat = 50.0613, lon = 19.76481, alt = 1800, kt = 80 },
+  { lat = 50.07074, lon = 19.83272, alt = 1800, kt = 80 },
+  { lat = 50.08376, lon = 19.82833, alt = 1300, kt = 70 },
+]
+land = "25"
+
+[[say]]
+at = "phase:Parked"
+freq = "delivery"
+text = "Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand three five, information Alpha, VFR to Nowy Targ via Sierra, request clearance"
+
+[[say]]
+at = "heard:cleared to"
+freq = "delivery"
+transponder = { code = 4201 }
+text = "Cleared to Nowy Targ, leave control zone via Sierra, squawk four two zero one, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:ground"
+freq = "delivery"
+text = "Ground one one eight decimal one zero five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand three five, information Alpha, VFR to Nowy Targ, request taxi"
+
+[[say]]
+at = "heard:taxi to"
+freq = "ground"
+transponder = { mode = 3 }
+text = "Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, QNH one zero one three, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:contact kraków tower"
+freq = "ground"
+text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:cleared for take-off"
+freq = "tower"
+text = "Runway two five, cleared for take-off, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:report at sierra"
+freq = "tower"
+text = "Wilco, Sierra Bravo Charlie"
+
+[[say]]
+t = 662.0
+freq = "tower"
+text = "Sierra Bravo Charlie, at Sierra, two thousand feet"
+
+[[say]]
+at = "heard:information"
+freq = "tower"
+text = "Leaving control zone via Sierra, Information one one niner decimal two seven five, Sierra Bravo Charlie"
+
+[[say]]
+t = 672.0
+freq = "information"
+text = "Krakow Information, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, VFR from Krakow to Nowy Targ, leaving the Krakow control zone via Sierra, two thousand feet"
+
+[[say]]
+t = 1700.0
+freq = "tower"
+text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, returning to Krakow due weather, three miles west of Zulu, two thousand feet, information Alpha, request joining via Zulu"
+
+[[say]]
+at = "heard:enter control zone"
+freq = "tower"
+text = "Enter control zone via Zulu, two thousand feet, report at Zulu, Sierra Bravo Charlie"
+
+[[say]]
+t = 1878.0
+freq = "tower"
+text = "Sierra Bravo Charlie, at Zulu"
+
+[[say]]
+at = "heard:join downwind"
+freq = "tower"
+text = "Join downwind runway two five, wilco, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Downwind"
+freq = "tower"
+text = "Sierra Bravo Charlie, downwind runway two five, full stop"
+
+[[say]]
+at = "heard:report final"
+freq = "tower"
+text = "Number one, wilco, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:Final"
+freq = "tower"
+text = "Sierra Bravo Charlie, final runway two five"
+
+[[say]]
+at = "heard:cleared to land"
+freq = "tower"
+text = "Runway two five, cleared to land, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:contact kraków ground"
+freq = "tower"
+text = "Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie"
+
+[[say]]
+at = "phase:TaxiIn"
+freq = "ground"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five"
+
+[[say]]
+at = "heard:taxi to stand"
+freq = "ground"
+text = "Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie"
+
+[[say]]
+t = 2555.0
+freq = "ground"
+text = "Sierra Bravo Charlie, on stand three five"
