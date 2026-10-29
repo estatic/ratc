@@ -11,7 +11,7 @@ use atc_navdata::xplane::resolve_airport;
 
 use super::{
     APT_DAT, META, Meta, PROCEDURES, Prompt, STATION, StationDir, WizardEnv, combined,
-    download_country, fetched_on, mhz, stations, write_meta,
+    download_country, fetched_on, mhz, stations, write_enroute, write_meta,
 };
 use crate::generate::{Choice, generate, offered_positions, write_station};
 use crate::openaip::OpenAipApi;
@@ -122,6 +122,7 @@ fn regenerate_all<R: BufRead, W: Write>(env: &WizardEnv, p: &mut Prompt<R, W>) {
             return;
         }
     };
+    write_enroute(env, &all, p);
     for st in stations(&env.data_dir) {
         match &st.meta {
             None if st.dir.join(STATION).is_file() || st.dir.join(PROCEDURES).is_file() => {

@@ -6,6 +6,7 @@ pub mod store;
 
 pub mod compare;
 pub mod defaults;
+pub mod enroute;
 pub mod generate;
 pub mod overrides;
 pub mod prompt;

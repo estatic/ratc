@@ -231,7 +231,7 @@ struct Around<'a> {
     src: &'a OaAirspace,
 }
 
-fn limit_ft(l: &Limit, field_elev_ft: i32) -> i32 {
+pub(crate) fn limit_ft(l: &Limit, field_elev_ft: i32) -> i32 {
     let ft = match l.unit {
         6 => l.value * 100.0,
         1 => l.value,
@@ -324,14 +324,14 @@ fn tma(arp: [f64; 2], around: &[Around<'_>]) -> Option<Tma> {
     })
 }
 
-fn first_khz(freqs: &[OaFrequency]) -> Option<(u32, Option<&str>)> {
+pub(crate) fn first_khz(freqs: &[OaFrequency]) -> Option<(u32, Option<&str>)> {
     freqs
         .iter()
         .find_map(|f| parsed(f).map(|k| (k, f.name.as_deref())))
 }
 
 /// Sector name without the `FIS ` prefix and a trailing directional suffix.
-fn fis_name(sector: &str) -> String {
+pub(crate) fn fis_name(sector: &str) -> String {
     const DIRS: [&str; 16] = [
         "ZACHOD",
         "ZACHÓD",
