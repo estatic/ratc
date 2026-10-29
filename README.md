@@ -152,6 +152,41 @@ Run everything **from the repository root**: paths in `config/*.toml` are relati
 
 **`config/voices.toml`** — which Piper voice speaks for which position, and the speech rate.
 
+## Adding airports
+
+EPKK (Kraków) ships ready to use. Any other airfield can be added with the airport wizard,
+which builds its stations (ATIS, Delivery, Ground, Tower, Approach, ...), airspaces and VFR
+points from [OpenAIP](https://www.openaip.net) data and the X-Plane scenery layout. It needs
+`xplane_root` in `config/server.toml` and a free OpenAIP API key: register at openaip.net, then
+Profile -> API clients.
+
+```bash
+target/release/atc-server airports        # Windows: atc-server.exe airports
+```
+
+The menu: create stations in an area, update the downloaded data, edit a station, remove a
+station, set the OpenAIP API key, quit. Create asks for an ICAO code or a name, offers every
+airfield within 100 km, then the positions (frequencies) of each one you pick. Before a station
+is written, a value screen lists every setting with its source (OpenAIP, X-Plane, or a default
+such as the national transition altitude), where you can change a value.
+
+Files per airport in `data/airports/<ID>/`:
+
+- `station.toml`: generated, git-ignored, rewritten on every update;
+- `overrides.toml`: yours; the values you changed, each with its source in `[sources]`; never
+  overwritten by the wizard;
+- `wizard.toml`: which OpenAIP airfield the station was made from (git-ignored);
+- `apt.dat`: a copy of the airport's X-Plane layout, so the station also runs without
+  `xplane_root`.
+
+To fly there, set `airport = "<ID>"` in `config/server.toml` and restart the server.
+
+OpenAIP data (licence CC BY-NC 4.0, non-commercial use) is downloaded to your own machine,
+into the per-user data directory, and is never part of this repository. The API key is stored
+in the per-user config directory. Without a key, EPKK still works: the repository carries its
+hand-made `data/airports/EPKK/procedures.toml`, used when there is no `station.toml`. More in
+[docs/RUNNING.md](docs/RUNNING.md#stations-and-the-airport-wizard).
+
 ## Running
 
 1. Start X-Plane and park the aircraft on a stand at the airport set in `config/server.toml`.

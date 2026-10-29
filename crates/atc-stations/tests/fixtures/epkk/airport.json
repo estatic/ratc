@@ -1,0 +1,97 @@
+[
+ {
+  "_id": "epkk",
+  "name": "KRAKÓW BALICE",
+  "icaoCode": "EPKK",
+  "type": 2,
+  "country": "PL",
+  "geometry": {
+   "coordinates": [
+    19.7855,
+    50.0778
+   ]
+  },
+  "elevation": {
+   "value": 791,
+   "unit": 1
+  },
+  "magneticDeclination": 6.0,
+  "frequencies": [
+   {
+    "value": "126.130",
+    "type": 15,
+    "name": "KRAKÓW ATIS",
+    "primary": false
+   },
+   {
+    "value": "121.980",
+    "type": 5,
+    "name": "KRAKÓW DELIVERY",
+    "primary": false
+   },
+   {
+    "value": "118.105",
+    "type": 9,
+    "name": "KRAKÓW GROUND",
+    "primary": false
+   },
+   {
+    "value": "123.255",
+    "type": 14,
+    "name": "KRAKÓW TWR",
+    "primary": true
+   },
+   {
+    "value": "121.075",
+    "type": 0,
+    "name": "KRAKÓW APP",
+    "primary": true
+   },
+   {
+    "value": "126.530",
+    "type": 0,
+    "name": "KRAKÓW APP",
+    "primary": false
+   }
+  ],
+  "runways": [
+   {
+    "designator": "07",
+    "trueHeading": 70.0
+   },
+   {
+    "designator": "25",
+    "trueHeading": 250.0
+   }
+  ],
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+ },
+ {
+  "_id": "epkt",
+  "name": "KATOWICE",
+  "icaoCode": "EPKT",
+  "type": 2,
+  "country": "PL",
+  "geometry": {
+   "coordinates": [
+    19.08,
+    50.4743
+   ]
+  },
+  "elevation": {
+   "value": 995,
+   "unit": 1
+  },
+  "magneticDeclination": null,
+  "frequencies": [
+   {
+    "value": "129.255",
+    "type": 14,
+    "name": "KATOWICE TWR",
+    "primary": true
+   }
+  ],
+  "runways": [],
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+ }
+]

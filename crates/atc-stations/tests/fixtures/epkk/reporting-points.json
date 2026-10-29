@@ -1,0 +1,142 @@
+[
+ {
+  "_id": "p-bravo",
+  "name": "BRAVO",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.434722,
+    50.264722
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-delta",
+  "name": "DELTA",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    20.141667,
+    49.856944
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-india",
+  "name": "INDIA",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.633333,
+    50.15
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-kilo",
+  "name": "KILO",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.8,
+    50.05
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-mike",
+  "name": "MIKE",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    20.033333,
+    50.35
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-oscar",
+  "name": "OSCAR",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.883333,
+    50.2
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-romeo",
+  "name": "ROMEO",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.412778,
+    49.910833
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-sierra",
+  "name": "SIERRA",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.816667,
+    49.983333
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-uniform",
+  "name": "UNIFORM",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.778056,
+    49.791944
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ },
+ {
+  "_id": "p-zulu",
+  "name": "ZULU",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    19.779444,
+    50.109167
+   ]
+  },
+  "airports": [
+   "epkk"
+  ]
+ }
+]
