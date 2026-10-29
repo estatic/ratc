@@ -1,0 +1,45 @@
+[
+ {
+  "_id": "p1",
+  "name": "NOVEMBER",
+  "compulsory": true,
+  "geometry": {
+   "coordinates": [
+    10.0,
+    10.1
+   ]
+  },
+  "airports": [
+   "ap1"
+  ]
+ },
+ {
+  "_id": "p2",
+  "name": "SIERRA",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    10.0,
+    9.9
+   ]
+  },
+  "airports": [
+   "ap1",
+   "ap2"
+  ]
+ },
+ {
+  "_id": "p3",
+  "name": "OSCAR",
+  "compulsory": false,
+  "geometry": {
+   "coordinates": [
+    10.5,
+    10.1
+   ]
+  },
+  "airports": [
+   "ap2"
+  ]
+ }
+]
