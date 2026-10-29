@@ -146,12 +146,16 @@ At start the wizard also checks every downloaded country for changes and asks wh
 
 ### Files in `data/airports/<ID>/`
 
-| File | What | In git |
+Stations you create are git-ignored as a whole (`data/airports/*`); only EPKK, which ships
+with the project, is tracked, and of its files only `overrides.toml`, `procedures.toml`,
+`apt.dat` and `SOURCE.md`. The column below is for EPKK.
+
+| File | What | In git (EPKK) |
 |---|---|---|
 | `station.toml` | generated; each key has a `# source:` comment | no |
 | `overrides.toml` | your values over the generated ones, with `[sources]` | yes |
 | `wizard.toml` | the OpenAIP airfield and country it was made from | no |
-| `apt.dat` | the airport's X-Plane layout (written when absent) | your copy; commit only if its licence allows |
+| `apt.dat` | the airport's X-Plane layout (written when absent) | yes (EPKK's copy) |
 | `procedures.toml` | hand-made station, used only when there is no `station.toml` | yes |
 
 Precedence: `station.toml` + `overrides.toml` win over `procedures.toml`. The server loads one

@@ -180,7 +180,8 @@ airfield within 100 km, then the positions (frequencies) of each one you pick. B
 is written, a value screen lists every setting with its source (OpenAIP, X-Plane, or a default
 such as the national transition altitude), where you can change a value.
 
-Files per airport in `data/airports/<ID>/`:
+Files per airport in `data/airports/<ID>/` (stations you create stay local: the whole folder is
+git-ignored, only the shipped EPKK is tracked):
 
 - `station.toml`: generated, git-ignored, rewritten on every update;
 - `overrides.toml`: yours; the values you changed, each with its source in `[sources]`; the
@@ -188,7 +189,7 @@ Files per airport in `data/airports/<ID>/`:
   file are not kept then;
 - `wizard.toml`: which OpenAIP airfield the station was made from (git-ignored);
 - `apt.dat`: your copy of the airport's X-Plane layout, so the station also runs without
-  `xplane_root`; commit it only if its licence allows.
+  `xplane_root`.
 
 To fly there, set `airport = "<ID>"` in `config/server.toml` and restart the server.
 

@@ -12,3 +12,6 @@ data/airports/*/wizard.toml
 # Personal configs; the repo ships config/*.example.toml
 /config/client.toml
 /config/server.toml
+# Stations made by the airport wizard stay local; EPKK ships with the repo
+/data/airports/*
+!/data/airports/EPKK/
