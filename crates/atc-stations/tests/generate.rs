@@ -89,6 +89,61 @@ fn approach_primary_first_rest_alternate() {
 }
 
 #[test]
+fn approach_without_primary_takes_lowest() {
+    let mut d = data();
+    for f in &mut d.airports[0].frequencies {
+        f.primary = false;
+    }
+    let ap = d.airports[0].clone();
+    let app = offered_positions(&ap)
+        .into_iter()
+        .find(|p| p.role == FreqKind::Approach)
+        .unwrap();
+    assert_eq!(app.khz, 119_100);
+}
+
+#[test]
+fn acc_metre_limit_converts() {
+    let doc = doc();
+    let acc = doc
+        .procs
+        .airspaces
+        .iter()
+        .find(|a| a.name == "ZETA ACC")
+        .unwrap();
+    assert_eq!(acc.upper_ft, 2165);
+}
+
+#[test]
+fn accented_fis_suffix_stripped_and_icao_provenance() {
+    let mut d = data();
+    d.airspaces[3].name = "FIS ZETA-ZACHÓD".into();
+    d.airports[0].icao_code = None;
+    d.airports[0].elevation = None;
+    let ap = d.airports[0].clone();
+    let choice = Choice {
+        positions: offered_positions(&ap),
+    };
+    let doc = generate(&ap, &d, &layout(), &choice, "2026-10-29");
+    assert!(
+        doc.procs
+            .adjacent
+            .iter()
+            .any(|a| a.callsign == "Zeta Information")
+    );
+    assert_eq!(doc.procs.icao, "ZZZZ");
+    assert_eq!(doc.provenance["icao"], "X-Plane apt.dat");
+    // No OpenAIP elevation: the layout's 100 ft is used for the AGL ceiling.
+    let ctr = doc
+        .procs
+        .airspaces
+        .iter()
+        .find(|a| a.name == "ZETA CTR")
+        .unwrap();
+    assert_eq!(ctr.upper_ft, 1600);
+}
+
+#[test]
 fn only_ticked_positions_are_kept() {
     let d = data();
     let ap = d.airports[0].clone();
@@ -125,6 +180,8 @@ fn vfr_points_of_this_airport_only() {
         .collect();
     assert_eq!(names, ["NOVEMBER", "SIERRA"]);
     assert!(doc().procs.vfr_points.iter().all(|p| !p.south));
+    let n = &doc().procs.vfr_points[0];
+    assert_eq!((n.lat, n.lon), (10.1, 10.0));
 }
 
 #[test]
@@ -205,7 +262,7 @@ fn unknown_country_ta_default() {
     assert_eq!(pl.procs.transition_altitude_ft, 6500);
     assert_eq!(
         pl.provenance["transition_altitude_ft"],
-        "AIP Polska ENR 1.7"
+        "default: AIP Polska ENR 1.7"
     );
 }
 

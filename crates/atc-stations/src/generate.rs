@@ -41,7 +41,12 @@ fn parsed(f: &OaFrequency) -> Option<u32> {
     khz(&f.value)
 }
 
-/// One position per OpenAIP frequency that has a role; the approach frequencies form one.
+/// One position per OpenAIP frequency that has a role, except approach.
+///
+/// Extra Tower, Ground, ATIS, ... frequencies stay separate positions: they are distinct
+/// sector or service frequencies the user may tick individually. All approach-type frequencies
+/// serve the same airspace, so they form one Approach position (the primary, else the lowest
+/// frequency) and the others become `approach_alt_khz`.
 pub fn offered_positions(ap: &OaAirport) -> Vec<PositionDef> {
     let mut out: Vec<PositionDef> = Vec::new();
     let mut approach: Vec<&OaFrequency> = Vec::new();
@@ -93,7 +98,13 @@ pub fn generate(
     fetched_on: &str,
 ) -> StationDoc {
     let arp = ap.geometry.lat_lon();
-    let elev = ap.elevation_ft();
+    // AGL limits are converted with the published AIP elevation (OpenAIP), which is what the
+    // limits are referenced to; the X-Plane elevation is only a fallback when OpenAIP has none.
+    let elev = if ap.elevation.is_some() {
+        ap.elevation_ft()
+    } else {
+        layout.elevation_ft
+    };
     let airspaces = airspaces_around(arp, &data.airspaces, elev);
     let (ta, ta_src) = transition_altitude(&ap.country);
 
@@ -150,7 +161,14 @@ pub fn generate(
 
     let d = |rule: &str| format!("default: {rule}");
     let provenance = [
-        ("icao", OPENAIP.to_string()),
+        (
+            "icao",
+            if ap.icao_code.is_some() {
+                OPENAIP.to_string()
+            } else {
+                XPLANE.to_string()
+            },
+        ),
         ("source", d("composed from the fetch date")),
         ("airac", d("left empty")),
         ("transition_altitude_ft", ta_src),
@@ -175,6 +193,7 @@ pub fn generate(
 }
 
 fn circuits(layout: &Airport) -> Vec<CircuitDef> {
+    // Circuits are flown in the simulator world, so they use the X-Plane layout elevation.
     let alt = (layout.elevation_ft + 1000 + 99).div_euclid(100) * 100;
     layout
         .runways
@@ -308,8 +327,22 @@ fn first_khz(freqs: &[OaFrequency]) -> Option<(u32, Option<&str>)> {
 
 /// Sector name without the `FIS ` prefix and a trailing directional suffix.
 fn fis_name(sector: &str) -> String {
-    const DIRS: [&str; 12] = [
-        "ZACHOD", "WSCHOD", "POLNOC", "POLUDNIE", "NORTH", "SOUTH", "EAST", "WEST", "N", "S", "E",
+    const DIRS: [&str; 16] = [
+        "ZACHOD",
+        "ZACHÓD",
+        "WSCHOD",
+        "WSCHÓD",
+        "POLNOC",
+        "PÓŁNOC",
+        "POLUDNIE",
+        "POŁUDNIE",
+        "NORTH",
+        "SOUTH",
+        "EAST",
+        "WEST",
+        "N",
+        "S",
+        "E",
         "W",
     ];
     let mut s = sector.trim();
@@ -318,7 +351,7 @@ fn fis_name(sector: &str) -> String {
     }
     if let Some(i) = s.rfind(['-', ' ']) {
         let tail = &s[i + 1..];
-        if DIRS.iter().any(|d| d.eq_ignore_ascii_case(tail)) {
+        if DIRS.iter().any(|d| d.to_uppercase() == tail.to_uppercase()) {
             s = s[..i].trim();
         }
     }

@@ -76,7 +76,7 @@ pub fn role_word(role: FreqKind) -> &'static str {
 /// National transition altitude (ft) with its source, by ISO country code.
 const TRANSITION_ALTITUDES: &[(&str, i32, &str)] = &[
     // AIP Polska ENR 1.7: transition altitude 6500 ft in the Polish FIR.
-    ("PL", 6500, "AIP Polska ENR 1.7"),
+    ("PL", 6500, "default: AIP Polska ENR 1.7"),
 ];
 
 /// Fallback when no national value is known.
@@ -132,6 +132,51 @@ pub fn callsign_from_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frequency_types_map_to_roles() {
+        let table: &[(u8, Option<FreqKind>)] = &[
+            (15, Some(FreqKind::Atis)),
+            (5, Some(FreqKind::Delivery)),
+            (26, Some(FreqKind::Delivery)),
+            (9, Some(FreqKind::Ground)),
+            (1, Some(FreqKind::Ground)),
+            (14, Some(FreqKind::Tower)),
+            (0, Some(FreqKind::Approach)),
+            (2, Some(FreqKind::Approach)),
+            (6, Some(FreqKind::Approach)),
+            (13, Some(FreqKind::Approach)),
+            (22, Some(FreqKind::Afis)),
+            (10, Some(FreqKind::Afis)),
+            (12, Some(FreqKind::Unicom)),
+            (16, Some(FreqKind::Unicom)),
+            (4, Some(FreqKind::Unicom)),
+            (11, Some(FreqKind::Unicom)),
+            (3, None),
+            (99, None),
+        ];
+        for &(code, role) in table {
+            assert_eq!(role_of_frequency(code), role, "frequency type {code}");
+        }
+    }
+
+    #[test]
+    fn airspace_types_map_to_kinds() {
+        let table: &[(u8, Option<AirspaceKind>)] = &[
+            (4, Some(AirspaceKind::Ctr)),
+            (13, Some(AirspaceKind::Atz)),
+            (7, Some(AirspaceKind::Tma)),
+            (26, Some(AirspaceKind::Cta)),
+            (33, Some(AirspaceKind::Fis)),
+            (27, Some(AirspaceKind::Acc)),
+            (10, Some(AirspaceKind::Fir)),
+            (1, None),
+            (36, None),
+        ];
+        for &(code, kind) in table {
+            assert_eq!(airspace_kind(code), kind, "airspace type {code}");
+        }
+    }
 
     #[test]
     fn title_case_handles_utf8_and_hyphens() {
