@@ -128,6 +128,16 @@ updating the project.
 
 Run everything **from the repository root**: paths in `config/*.toml` are relative to it.
 
+Your own settings live in `config/server.toml` and `config/client.toml`. They are git-ignored;
+create them from the shipped examples once and edit the copies:
+
+```bash
+cp config/server.example.toml config/server.toml
+cp config/client.example.toml config/client.toml
+```
+
+On Windows: `copy config\server.example.toml config\server.toml` (and the same for the client).
+
 **`config/server.toml`**
 
 | Key | Meaning |

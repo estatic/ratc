@@ -7,6 +7,11 @@ are no external services; the internet is needed only to download the models onc
 **Run every command from the repository root**: the paths in `config/*.toml` (models,
 `data/airports`, `config/voices.toml`) are relative to it.
 
+`config/server.toml` and `config/client.toml` are your own, git-ignored files. Create them once
+from the examples (`cp config/server.example.toml config/server.toml`, the same for
+`client`) and edit the copies; the server and the client say so if one is missing. The
+examples change with the project, so compare them with your copies after an update.
+
 ## 1. Build
 
 Prerequisites (Linux):

@@ -61,9 +61,23 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command> {
 }
 
 fn read_config(path: &Path) -> Result<ServerConfig> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
+    let text = std::fs::read_to_string(path).with_context(|| missing_hint("read config", path))?;
     load_config(&text)
+}
+
+/// `"<verb> <path>"`, plus how to create the file from its `.example.toml` when it is missing.
+fn missing_hint(verb: &str, path: &Path) -> String {
+    let example = path.with_extension("example.toml");
+    if !path.exists() && example.exists() {
+        format!(
+            "{verb} {}: not found; copy {} to {} and edit it",
+            path.display(),
+            example.display(),
+            path.display()
+        )
+    } else {
+        format!("{verb} {}", path.display())
+    }
 }
 
 /// Runs the airport wizard on the console (blocking).

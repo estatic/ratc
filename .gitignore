@@ -9,3 +9,6 @@
 .superpowers/
 data/airports/*/station.toml
 data/airports/*/wizard.toml
+# Personal configs; the repo ships config/*.example.toml
+/config/client.toml
+/config/server.toml

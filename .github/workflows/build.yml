@@ -68,6 +68,9 @@ jobs:
             cp target/release/libatc_overlay.so "$DIR/plugin/atc-overlay/64/lin.xpl"
           fi
           cp -R config data scenarios tools docs "$DIR/"
+          # Ready-to-edit personal configs from the examples (git-ignored in the repo).
+          cp config/server.example.toml "$DIR/config/server.toml"
+          cp config/client.example.toml "$DIR/config/client.toml"
           cp README.md LICENSE.md NOTICE.md CONTRIBUTING.md "$DIR/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           echo "ARCHIVE=dist/$NAME.tar.gz" >> "$GITHUB_ENV"

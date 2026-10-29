@@ -101,7 +101,7 @@ pub fn check_models(cfg: &ServerConfig) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const EXAMPLE: &str = include_str!("../../../config/server.toml");
+    const EXAMPLE: &str = include_str!("../../../config/server.example.toml");
 
     #[test]
     fn config_parses_example() {
@@ -109,12 +109,7 @@ mod tests {
         assert_eq!(c.listen, "127.0.0.1:8740");
         assert_eq!(c.airport, "EPKK");
         assert_eq!(c.data_dir, PathBuf::from("data/airports"));
-        assert_eq!(
-            c.xplane_root,
-            Some(PathBuf::from(
-                "/home/estatic/.local/share/Steam/steamapps/common/X-Plane 11"
-            ))
-        );
+        assert_eq!(c.xplane_root, None);
         assert_eq!(c.strictness, StrictnessSetting::Standard);
         assert_eq!(
             c.whisper.model,

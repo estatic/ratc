@@ -1,11 +1,14 @@
-# Virtual ATC server. Paths are relative to the working directory (the repo root).
+# Virtual ATC server. Copy this file to config/server.toml (git-ignored) and edit that copy.
+# Paths are relative to the working directory (the repo root).
 listen = "127.0.0.1:8740"
 airport = "EPKK"
 data_dir = "data/airports"
 # Airport layout (runways, taxiways, stands) from the scenery this X-Plane actually loads, so
 # taxi routes match the sim; without it (or if not found) data_dir/<airport>/apt.dat is used.
 # Procedures and frequencies always come from data_dir.
-xplane_root = "/home/estatic/.local/share/Steam/steamapps/common/X-Plane 11"
+# Linux (Steam): "/home/<you>/.local/share/Steam/steamapps/common/X-Plane 11"
+# Windows: "C:/X-Plane 11"   macOS: "/Users/<you>/X-Plane 11"
+# xplane_root = "/path/to/X-Plane 11"
 # "standard" | "training"
 strictness = "standard"
 
