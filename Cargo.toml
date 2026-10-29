@@ -27,3 +27,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cpal = "0.18.2"
 gilrs = "0.11.2"
 crossterm = "0.29"
+ureq = { version = "3", features = ["json"] }
+directories = "6"
+toml_edit = "0.22"
