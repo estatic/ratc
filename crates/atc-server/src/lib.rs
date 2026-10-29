@@ -9,5 +9,6 @@ pub mod layout;
 pub mod persist;
 mod pipeline;
 mod session;
+pub mod stations;
 
 pub use app::{AppState, StationMap, SttPrompts, router};

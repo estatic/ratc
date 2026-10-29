@@ -18,9 +18,7 @@ use atc_core::readback::Strictness;
 use atc_phraseology::{Lang, station_name};
 use atc_server::config::{ServerConfig, StrictnessSetting, check_models, load_config};
 use atc_server::hub::Hub;
-use atc_server::layout::{
-    adjacent_names, load_airport, load_destinations_near, load_procedure_set_for, load_procedures,
-};
+use atc_server::stations::{LoadedStation, load_stations};
 use atc_server::{AppState, StationMap, SttPrompts, persist, router};
 use atc_voice::{PiperTts, VoiceError, WhisperStt, initial_prompt, load_voices_config};
 use tracing_subscriber::EnvFilter;
@@ -112,10 +110,34 @@ fn restore_state(engine: &Mutex<AtcEngine>, path: &Path, fresh: bool) {
     }
 }
 
-fn build_state(cfg: &ServerConfig) -> Result<AppState> {
-    let dir = cfg.data_dir.join(&cfg.airport);
-    let airport = load_airport(cfg.xplane_root.as_deref(), &dir, &cfg.airport)?;
-    let procs = load_procedures(&dir)?;
+fn build_state(cfg: &ServerConfig) -> Result<(AppState, String)> {
+    let strictness = match cfg.strictness {
+        StrictnessSetting::Standard => Strictness::Standard,
+        StrictnessSetting::Training => Strictness::Training,
+    };
+    let engine_cfg = EngineConfig {
+        language: cfg.whisper.language_mode()?,
+        ..EngineConfig::new(strictness)
+    };
+    let mut loaded = load_stations(
+        &cfg.data_dir,
+        cfg.airport.as_deref(),
+        cfg.xplane_root.as_deref(),
+        &engine_cfg,
+    )?;
+    if loaded.len() > 1 {
+        tracing::warn!(
+            "several stations loaded; until the network dispatcher lands only {} answers",
+            loaded[0].id
+        );
+    }
+    let LoadedStation {
+        id,
+        procs,
+        airport,
+        engine,
+        ..
+    } = loaded.remove(0);
     let stations = StationMap::new(&procs);
     // The prompt is in the language the aircraft speaks, with the stations as said in it.
     let prompt_in = |lang: Lang, code: &str| {
@@ -130,24 +152,6 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
         en: prompt_in(Lang::En, "en"),
         pl: prompt_in(Lang::Pl, "pl"),
     };
-    let strictness = match cfg.strictness {
-        StrictnessSetting::Standard => Strictness::Standard,
-        StrictnessSetting::Training => Strictness::Training,
-    };
-    let engine_cfg = EngineConfig {
-        language: cfg.whisper.language_mode()?,
-        ..EngineConfig::new(strictness)
-    };
-    let set = load_procedure_set_for(cfg.xplane_root.as_deref(), &cfg.airport);
-    let destinations = load_destinations_near(
-        cfg.xplane_root.as_deref(),
-        &airport,
-        &adjacent_names(&procs),
-    );
-    let mut engine = AtcEngine::new(airport, procs, engine_cfg).with_destinations(destinations);
-    if let Some(set) = set {
-        engine = engine.with_procedure_set(set);
-    }
 
     let stt = WhisperStt::new(&cfg.whisper.model, cfg.whisper.language.as_deref())
         .context("load whisper")?;
@@ -155,14 +159,15 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
         .with_context(|| format!("read {}", cfg.piper.voices.display()))?;
     let voices = load_voices_config(&voices_text, Path::new("."))?;
     let tts = PiperTts::new(cfg.piper.bin.clone(), voices).context("load piper")?;
-    Ok(AppState {
-        engine: Arc::new(Mutex::new(engine)),
+    let state = AppState {
+        engine: Arc::new(engine),
         hub: Arc::new(Mutex::new(Hub::default())),
         stt: Arc::new(stt),
         tts: Arc::new(tts),
         stations,
         stt_prompts,
-    })
+    };
+    Ok((state, id))
 }
 
 async fn run() -> Result<()> {
@@ -173,13 +178,13 @@ async fn run() -> Result<()> {
     let cfg = read_config(&path)?;
     check_models(&cfg).map_err(|e| anyhow::Error::new(ModelsMissing(e)))?;
     // Model loading is blocking (seconds on a cold start).
-    let state = tokio::task::spawn_blocking(move || build_state(&cfg).map(|s| (s, cfg))).await??;
-    let (state, cfg) = state;
+    let built = tokio::task::spawn_blocking(move || build_state(&cfg).map(|s| (s, cfg))).await??;
+    let ((state, station_id), cfg) = built;
     let listener = tokio::net::TcpListener::bind(&cfg.listen)
         .await
         .with_context(|| format!("bind {}", cfg.listen))?;
     let engine = state.engine.clone();
-    let state_path = persist::state_path(&cfg.airport);
+    let state_path = persist::state_path(&station_id);
     restore_state(&engine, &state_path, fresh);
     let saver = tokio::spawn(persist::save_loop(engine.clone(), state_path.clone()));
     tracing::info!("listening on {}", listener.local_addr()?);

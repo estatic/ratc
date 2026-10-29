@@ -1,6 +1,7 @@
 # Virtual ATC server. Copy this file to config/server.toml (git-ignored) and edit that copy.
 # Paths are relative to the working directory (the repo root).
 listen = "127.0.0.1:8740"
+# Omit `airport` to run every station directory of data_dir.
 airport = "EPKK"
 data_dir = "data/airports"
 # Airport layout (runways, taxiways, stands) from the scenery this X-Plane actually loads, so
