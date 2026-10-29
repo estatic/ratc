@@ -10,6 +10,8 @@ use atc_navdata::parse_apt_dat;
 use atc_navdata::procedures::parse_procedures;
 use atc_server::app::{AppState, StationMap, SttPrompts, router};
 use atc_server::hub::Hub;
+use atc_server::network::Network;
+use atc_server::stations::LoadedStation;
 use atc_voice::{FakeStt, FakeTts};
 
 pub const GROUND: u32 = 118_105;
@@ -43,9 +45,20 @@ pub struct TestServer {
 pub async fn start_on(listener: tokio::net::TcpListener) -> TestServer {
     let (ap, procs) = epkk();
     let stations = StationMap::new(&procs);
-    let engine = AtcEngine::new(ap, procs, EngineConfig::new(Strictness::Standard));
+    let engine = AtcEngine::new(
+        ap.clone(),
+        procs.clone(),
+        EngineConfig::new(Strictness::Standard),
+    );
+    let station = LoadedStation {
+        id: "EPKK".into(),
+        dir: DATA.into(),
+        procs,
+        airport: ap,
+        engine: Mutex::new(engine),
+    };
     let state = AppState {
-        engine: Arc::new(Mutex::new(engine)),
+        network: Arc::new(Network::new(vec![station])),
         hub: Arc::new(Mutex::new(Hub::default())),
         stt: Arc::new(FakeStt::default()),
         tts: Arc::new(FakeTts::default()),

@@ -14,6 +14,8 @@ use atc_navdata::procedures::{Procedures, parse_procedures};
 use atc_proto::{AudioFrame, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame, WeatherFrame};
 use atc_server::app::{AppState, StationMap, SttPrompts, router};
 use atc_server::hub::Hub;
+use atc_server::network::Network;
+use atc_server::stations::LoadedStation;
 use atc_voice::{FakeStt, FakeTts, TextToSpeech, Transcript};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -34,6 +36,7 @@ const PROCS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../data/airports/EPKK/procedures.toml"
 );
+pub const STATION_FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stations");
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn epkk() -> (Airport, Procedures) {
@@ -113,12 +116,51 @@ async fn start_with_destinations(
     destinations: Vec<Destination>,
 ) -> TestServer {
     let (ap, procs) = epkk();
-    let stations = StationMap::new(&procs);
     let cfg = EngineConfig {
         language,
         ..EngineConfig::new(Strictness::Standard)
     };
-    let engine = AtcEngine::new(ap, procs, cfg).with_destinations(destinations);
+    let engine = AtcEngine::new(ap.clone(), procs.clone(), cfg).with_destinations(destinations);
+    let station = LoadedStation {
+        id: "EPKK".into(),
+        dir: PROCS.into(),
+        procs,
+        airport: ap,
+        engine: Mutex::new(engine),
+    };
+    start_network(vec![station], stt, tts).await
+}
+
+/// The synthetic station `id` of `tests/fixtures/stations` with `extra` TOML appended to its
+/// `procedures.toml` (more positions, adjacent units), in English.
+pub fn fixture_station(id: &str, extra: &str) -> LoadedStation {
+    let dir = std::path::Path::new(STATION_FIXTURES).join(id);
+    let text = std::fs::read_to_string(dir.join("procedures.toml")).unwrap() + extra;
+    let procs = parse_procedures(&text).unwrap();
+    let apt = std::fs::read_to_string(dir.join("apt.dat")).unwrap();
+    let airport = parse_apt_dat(&apt, id).unwrap();
+    let cfg = EngineConfig {
+        language: LanguageMode::Fixed(atc_phraseology::Lang::En),
+        ..EngineConfig::new(Strictness::Standard)
+    };
+    let engine = AtcEngine::new(airport.clone(), procs.clone(), cfg);
+    LoadedStation {
+        id: id.into(),
+        dir,
+        procs,
+        airport,
+        engine: Mutex::new(engine),
+    }
+}
+
+/// A server answering for `stations`, STT replying with `stt` in order.
+pub async fn start_network(
+    stations: Vec<LoadedStation>,
+    stt: Vec<Transcript>,
+    tts: Arc<dyn TextToSpeech>,
+) -> TestServer {
+    let network = Network::new(stations);
+    let stations = StationMap::union(network.stations().iter().map(|s| &s.procs));
     let fake_stt = Arc::new(FakeStt::default());
     fake_stt
         .reply
@@ -126,7 +168,7 @@ async fn start_with_destinations(
         .unwrap()
         .extend(stt.into_iter().map(Ok));
     let state = AppState {
-        engine: Arc::new(Mutex::new(engine)),
+        network: Arc::new(network),
         hub: Arc::new(Mutex::new(Hub::default())),
         stt: fake_stt.clone(),
         tts,
@@ -259,11 +301,20 @@ pub fn parked(com1_khz: u32) -> TelemetryFrame {
     let (ap, procs) = epkk();
     let s = circuit_track(&ap, &procs, "25", 1.0).remove(0);
     TelemetryFrame {
-        t: 10.0,
-        lat: s.pos.lat,
-        lon: s.pos.lon,
         alt_ft_msl: s.alt_ft_msl,
         heading_deg: s.heading_deg,
+        ..parked_at(com1_khz, s.pos.lat, s.pos.lon)
+    }
+}
+
+/// Standing still on the ground at `lat`/`lon` on `com1_khz`.
+pub fn parked_at(com1_khz: u32, lat: f64, lon: f64) -> TelemetryFrame {
+    TelemetryFrame {
+        t: 10.0,
+        lat,
+        lon,
+        alt_ft_msl: 100.0,
+        heading_deg: 0.0,
         ias_kt: 0.0,
         gs_kt: 0.0,
         vs_fpm: 0.0,

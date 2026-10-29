@@ -7,6 +7,7 @@
 //! `atc-server airports [--config <path>]` runs the interactive airport wizard (stations from
 //! OpenAIP) instead of serving.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -18,7 +19,8 @@ use atc_core::readback::Strictness;
 use atc_phraseology::{Lang, station_name};
 use atc_server::config::{ServerConfig, StrictnessSetting, check_models, load_config};
 use atc_server::hub::Hub;
-use atc_server::stations::{LoadedStation, load_stations};
+use atc_server::network::Network;
+use atc_server::stations::load_stations;
 use atc_server::{AppState, StationMap, SttPrompts, persist, router};
 use atc_voice::{PiperTts, VoiceError, WhisperStt, initial_prompt, load_voices_config};
 use tracing_subscriber::EnvFilter;
@@ -95,6 +97,13 @@ fn run_wizard(config: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Restores every station's saved flights unless `fresh`.
+fn restore_all(network: &Network, fresh: bool) {
+    for s in network.stations() {
+        restore_state(&s.engine, &persist::state_path(&s.id), fresh);
+    }
+}
+
 /// Restores the saved flights unless `fresh`; logs what happened.
 fn restore_state(engine: &Mutex<AtcEngine>, path: &Path, fresh: bool) {
     if fresh {
@@ -110,7 +119,7 @@ fn restore_state(engine: &Mutex<AtcEngine>, path: &Path, fresh: bool) {
     }
 }
 
-fn build_state(cfg: &ServerConfig) -> Result<(AppState, String)> {
+fn build_state(cfg: &ServerConfig) -> Result<AppState> {
     let strictness = match cfg.strictness {
         StrictnessSetting::Standard => Strictness::Standard,
         StrictnessSetting::Training => Strictness::Training,
@@ -119,34 +128,25 @@ fn build_state(cfg: &ServerConfig) -> Result<(AppState, String)> {
         language: cfg.whisper.language_mode()?,
         ..EngineConfig::new(strictness)
     };
-    let mut loaded = load_stations(
+    let loaded = load_stations(
         &cfg.data_dir,
         cfg.airport.as_deref(),
         cfg.xplane_root.as_deref(),
         &engine_cfg,
     )?;
-    if loaded.len() > 1 {
-        tracing::warn!(
-            "several stations loaded; until the network dispatcher lands only {} answers",
-            loaded[0].id
-        );
-    }
-    let LoadedStation {
-        id,
-        procs,
-        airport,
-        engine,
-        ..
-    } = loaded.remove(0);
-    let stations = StationMap::new(&procs);
-    // The prompt is in the language the aircraft speaks, with the stations as said in it.
+    let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();
+    tracing::info!("stations: {}", ids.join(", "));
+    let stations = StationMap::union(loaded.iter().map(|s| &s.procs));
+    // The prompt is in the language the aircraft speaks, with the stations as said in it
+    // (every station's for now).
     let prompt_in = |lang: Lang, code: &str| {
-        let names: Vec<String> = procs
-            .positions
+        let airports: Vec<&str> = loaded.iter().map(|s| s.airport.name.as_str()).collect();
+        let names: Vec<String> = loaded
             .iter()
+            .flat_map(|s| &s.procs.positions)
             .map(|p| station_name(&p.callsign, lang))
             .collect();
-        initial_prompt(&airport.name, &names, &[], code)
+        initial_prompt(&airports.join(", "), &names, &[], code)
     };
     let stt_prompts = SttPrompts {
         en: prompt_in(Lang::En, "en"),
@@ -160,14 +160,14 @@ fn build_state(cfg: &ServerConfig) -> Result<(AppState, String)> {
     let voices = load_voices_config(&voices_text, Path::new("."))?;
     let tts = PiperTts::new(cfg.piper.bin.clone(), voices).context("load piper")?;
     let state = AppState {
-        engine: Arc::new(engine),
+        network: Arc::new(Network::new(loaded)),
         hub: Arc::new(Mutex::new(Hub::default())),
         stt: Arc::new(stt),
         tts: Arc::new(tts),
         stations,
         stt_prompts,
     };
-    Ok((state, id))
+    Ok(state)
 }
 
 async fn run() -> Result<()> {
@@ -179,14 +179,13 @@ async fn run() -> Result<()> {
     check_models(&cfg).map_err(|e| anyhow::Error::new(ModelsMissing(e)))?;
     // Model loading is blocking (seconds on a cold start).
     let built = tokio::task::spawn_blocking(move || build_state(&cfg).map(|s| (s, cfg))).await??;
-    let ((state, station_id), cfg) = built;
+    let (state, cfg) = built;
     let listener = tokio::net::TcpListener::bind(&cfg.listen)
         .await
         .with_context(|| format!("bind {}", cfg.listen))?;
-    let engine = state.engine.clone();
-    let state_path = persist::state_path(&station_id);
-    restore_state(&engine, &state_path, fresh);
-    let saver = tokio::spawn(persist::save_loop(engine.clone(), state_path.clone()));
+    let network = state.network.clone();
+    restore_all(&network, fresh);
+    let saver = tokio::spawn(persist::save_loop(network.clone()));
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, router(state))
         .with_graceful_shutdown(async {
@@ -194,8 +193,8 @@ async fn run() -> Result<()> {
         })
         .await?;
     saver.abort();
-    persist::save(&engine, &state_path, &mut String::new());
-    tracing::info!("state saved to {}", state_path.display());
+    persist::save_all(&network, &mut HashMap::new());
+    tracing::info!("state saved to {}", persist::STATE_DIR);
     Ok(())
 }
 

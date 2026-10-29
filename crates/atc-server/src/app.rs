@@ -1,6 +1,6 @@
 //! Shared server state and the axum router (`GET /ws`).
 //!
-//! Locking: `engine`, `hub` and the internal maps are `std::sync::Mutex`es, locked only for
+//! Locking: the network's engines, `hub` and the internal maps are `std::sync::Mutex`es, locked only for
 //! short synchronous sections and never held across an `.await` (STT/TTS run in
 //! `spawn_blocking` with no lock held).
 
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use atc_core::engine::{AtcEngine, VehicleOrder};
+use atc_core::engine::VehicleOrder;
 use atc_navdata::model::FreqKind;
 use atc_navdata::procedures::Procedures;
 use atc_phraseology::Lang;
@@ -24,10 +24,11 @@ use tokio::sync::mpsc;
 
 use crate::atis::AtisCache;
 use crate::hub::{ClientId, Hub};
+use crate::network::Network;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub engine: Arc<Mutex<AtcEngine>>,
+    pub network: Arc<Network>,
     pub hub: Arc<Mutex<Hub>>,
     pub stt: Arc<dyn SpeechToText>,
     pub tts: Arc<dyn TextToSpeech>,
@@ -68,6 +69,32 @@ pub struct StationMap {
 
 impl StationMap {
     pub fn new(procs: &Procedures) -> Self {
+        Self::union([procs])
+    }
+
+    /// The frequencies of several stations: every station's positions first, then the
+    /// adjacent units they emulate; of two entries on the same kHz the first is kept (a real
+    /// station's voice wins over an emulated unit's).
+    pub fn union<'a>(all: impl IntoIterator<Item = &'a Procedures>) -> Self {
+        let all: Vec<&Procedures> = all.into_iter().collect();
+        let mut stations = Vec::new();
+        for procs in &all {
+            stations.extend(Self::positions(procs));
+        }
+        for procs in &all {
+            stations.extend(procs.adjacent.iter().map(|u| Station {
+                khz: u.khz,
+                name: u.callsign.clone(),
+                voice: VoiceId::Radar,
+            }));
+        }
+        let mut seen = std::collections::HashSet::new();
+        stations.retain(|s| seen.insert(s.khz));
+        StationMap { stations }
+    }
+
+    /// The staffed positions of one station and its alternate Approach frequencies.
+    fn positions(procs: &Procedures) -> Vec<Station> {
         let mut stations: Vec<Station> = procs
             .positions
             .iter()
@@ -98,12 +125,7 @@ impl StationMap {
                 voice: VoiceId::Approach,
             }));
         }
-        stations.extend(procs.adjacent.iter().map(|u| Station {
-            khz: u.khz,
-            name: u.callsign.clone(),
-            voice: VoiceId::Radar,
-        }));
-        StationMap { stations }
+        stations
     }
 
     /// The published name of the station on the same carrier as `freq_khz` (a 25 kHz
@@ -122,13 +144,6 @@ impl StationMap {
     /// `None` for an unstaffed frequency.
     pub fn voice_for(&self, freq_khz: u32) -> Option<VoiceId> {
         self.get(freq_khz).map(|s| s.voice)
-    }
-
-    pub fn atis_khz(&self) -> Option<u32> {
-        self.stations
-            .iter()
-            .find(|s| s.voice == VoiceId::Atis)
-            .map(|s| s.khz)
     }
 
     /// Station callsign on `freq_khz`, e.g. `"Kraków ATIS"`.
@@ -270,7 +285,6 @@ mod tests {
         );
         let procs = parse_procedures(&std::fs::read_to_string(path).unwrap()).unwrap();
         let m = StationMap::new(&procs);
-        assert_eq!(m.atis_khz(), Some(126_130));
         assert_eq!(m.voice_for(126_130), Some(VoiceId::Atis));
         assert_eq!(m.voice_for(121_980), Some(VoiceId::Delivery));
         assert_eq!(m.voice_for(118_105), Some(VoiceId::Ground));

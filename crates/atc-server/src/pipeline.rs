@@ -1,4 +1,4 @@
-//! Speech pipeline: pilot audio -> STT -> engine -> text + TTS to the frequency's listeners.
+//! Speech pipeline: pilot audio -> STT -> network -> text + TTS to the frequency's listeners.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -44,13 +44,14 @@ pub(crate) async fn worker(
     callsign: String,
     mut jobs: mpsc::UnboundedReceiver<Job>,
 ) {
+    let cs = Callsign::new(&callsign);
     while let Some(job) = jobs.recv().await {
         match job {
             Job::Voice { freq_khz, pcm, t } => {
                 voice(&server, id, &callsign, freq_khz, pcm, t).await
             }
             Job::Text { freq_khz, text, t } => {
-                transmission(&server, freq_khz, &text, Lang::En, t, 0).await
+                transmission(&server, &cs, freq_khz, &text, Lang::En, t, 0).await
             }
         }
     }
@@ -65,14 +66,10 @@ async fn voice(
     t: f64,
 ) {
     let start = Instant::now();
-    let (mode, session) = {
-        let engine = server.state.engine.lock().unwrap();
-        // The aircraft's language; the ATIS language if it has no strip (yet).
-        let session = engine
-            .strip(&Callsign::new(callsign))
-            .map_or_else(|| engine.atis_lang(), |s| s.lang);
-        (engine.language(), session)
-    };
+    let cs = Callsign::new(callsign);
+    let network = &server.state.network;
+    // The aircraft's language; the ATIS language if it has no strip (yet).
+    let (mode, session) = (network.language(), network.pilot_lang(&cs, freq_khz));
     let (stt, prompt) = (
         server.state.stt.clone(),
         server.stt_prompt(freq_khz, session),
@@ -105,17 +102,12 @@ async fn voice(
     if tr.confidence < MIN_CONFIDENCE {
         tracing::info!("transcript unclear: say again");
         // In the speaker's language: another pilot's language would not be understood.
-        let outputs = server
-            .state
-            .engine
-            .lock()
-            .unwrap()
-            .say_again(freq_khz, session);
+        let outputs = network.say_again(&cs, freq_khz, session);
         emit_all(server, outputs).await;
         return;
     }
     let lang = transcript_lang(&tr.lang);
-    transmission(server, freq_khz, &tr.text, lang, t, stt_ms).await;
+    transmission(server, &cs, freq_khz, &tr.text, lang, t, stt_ms).await;
 }
 
 /// The engine language of a transcript language code: Polish for `"pl"`, else English.
@@ -152,8 +144,10 @@ fn transcribe(
     stt.transcribe(pcm, prompt, Some(forced))
 }
 
+/// A transmission from `from` (the client that keyed the PTT) through the network.
 async fn transmission(
     server: &Arc<Server>,
+    from: &Callsign,
     freq_khz: u32,
     text: &str,
     lang: Lang,
@@ -161,11 +155,9 @@ async fn transmission(
     stt_ms: u128,
 ) {
     let start = Instant::now();
-    let (outputs, orders) = {
-        let mut engine = server.state.engine.lock().unwrap();
-        let outputs = engine.on_transmission(freq_khz, text, lang, SimTime(t));
-        (outputs, engine.take_vehicle_orders())
-    };
+    let network = &server.state.network;
+    let outputs = network.on_transmission(from, freq_khz, text, lang, SimTime(t));
+    let orders = network.take_vehicle_orders();
     let engine_ms = start.elapsed().as_millis();
     // The car is shown while Ground's "on the way" is still being synthesized.
     server.send_vehicle_orders(orders);

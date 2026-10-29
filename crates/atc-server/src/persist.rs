@@ -1,14 +1,17 @@
-//! The engine's dynamic state on disk ([`EngineSnapshot`]), so a server restart keeps the
-//! flights in progress. One JSON file per airport under `data/cache/` (git-ignored), written
+//! The engines' dynamic state on disk ([`EngineSnapshot`]), so a server restart keeps the
+//! flights in progress. One JSON file per station under `data/cache/` (git-ignored), written
 //! atomically (temporary file, then rename) while the server runs and once more on shutdown.
 //! A snapshot older than [`MAX_AGE`], of another format or airport, or unreadable is not
 //! restored: the server starts afresh and logs why.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use atc_core::engine::{AtcEngine, EngineSnapshot};
+use atc_core::engine::EngineSnapshot;
+
+use crate::network::Network;
 
 /// Directory of the snapshot files, relative to the working directory (the repo root).
 pub const STATE_DIR: &str = "data/cache";
@@ -68,11 +71,10 @@ fn write_atomic(path: &Path, json: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Saves the engine's snapshot to `path` when it differs from `last` (the JSON last written,
-/// updated here). Errors are logged, not returned: a failed save must not stop the server.
-pub fn save(engine: &Mutex<AtcEngine>, path: &Path, last: &mut String) {
-    let snapshot = engine.lock().unwrap().snapshot();
-    let json = match serde_json::to_string(&snapshot) {
+/// Saves `snapshot` to `path` when it differs from `last` (the JSON last written, updated
+/// here). Errors are logged, not returned: a failed save must not stop the server.
+pub fn save(snapshot: &EngineSnapshot, path: &Path, last: &mut String) {
+    let json = match serde_json::to_string(snapshot) {
         Ok(j) => j,
         Err(e) => {
             tracing::error!("state snapshot not serialisable: {e}");
@@ -88,16 +90,28 @@ pub fn save(engine: &Mutex<AtcEngine>, path: &Path, last: &mut String) {
     }
 }
 
+/// Saves every station's snapshot to its [`state_path`]; `last` holds the JSON last
+/// written per station id.
+pub fn save_all(network: &Network, last: &mut HashMap<String, String>) {
+    for (id, snapshot) in network.snapshots() {
+        save(
+            &snapshot,
+            &state_path(&id),
+            last.entry(id.clone()).or_default(),
+        );
+    }
+}
+
 /// Saves every [`SAVE_PERIOD`] until the task is dropped.
-pub async fn save_loop(engine: Arc<Mutex<AtcEngine>>, path: PathBuf) {
-    let mut last = String::new();
+pub async fn save_loop(network: Arc<Network>) {
+    let mut last = HashMap::new();
     let mut tick = tokio::time::interval(SAVE_PERIOD);
     loop {
         tick.tick().await;
-        let (engine, path) = (engine.clone(), path.clone());
+        let network = network.clone();
         let mut prev = std::mem::take(&mut last);
         last = tokio::task::spawn_blocking(move || {
-            save(&engine, &path, &mut prev);
+            save_all(&network, &mut prev);
             prev
         })
         .await

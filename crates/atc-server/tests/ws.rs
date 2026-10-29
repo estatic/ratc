@@ -496,7 +496,7 @@ async fn stale_atis_synthesis_is_dropped() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     {
-        let mut engine = srv.state.engine.lock().unwrap();
+        let mut engine = srv.state.network.stations()[0].engine.lock().unwrap();
         engine.on_weather(Weather {
             wind: Wind {
                 dir_deg: 100,
@@ -622,8 +622,7 @@ async fn third_language_is_transcribed_again() {
     let texts = atc_texts(&got);
     assert_eq!(texts.len(), 1, "{texts:?}");
     assert!(texts[0].1.contains("powtórz"), "{texts:?}");
-    let strip_lang = srv
-        .state
+    let strip_lang = srv.state.network.stations()[0]
         .engine
         .lock()
         .unwrap()
@@ -719,5 +718,60 @@ async fn ifr_request_without_cifp_is_unable_and_vfr_still_works() {
             .iter()
             .any(|(st, t)| st == "Kraków Delivery" && t.contains("cleared to Katowice")),
         "{texts:?}"
+    );
+}
+
+/// Two pilots at two airports: each is answered by its own station on its own frequency and
+/// hears nothing of the other's exchange.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_clients_two_stations() {
+    let zeta = r#"
+[[positions]]
+role = "Ground"
+callsign = "Zeta Ground"
+khz = 121700
+"#;
+    let srv = start_network(
+        vec![fixture_station("ZZZY", ""), fixture_station("ZZZZ", zeta)],
+        vec![],
+        Arc::new(FakeTts::default()),
+    )
+    .await;
+    let mut a = Client::hello(&srv.url, "SP-AAA").await;
+    let mut b = Client::hello(&srv.url, "SP-BBB").await;
+    a.send(ClientMsg::Weather(weather())).await;
+    a.send(ClientMsg::Telemetry(parked_at(121_700, 10.0012, 10.0)))
+        .await;
+    b.send(ClientMsg::Telemetry(parked_at(118_500, 10.5, 10.0)))
+        .await;
+    srv.wait_listeners(121_700, 1).await;
+    srv.wait_listeners(118_500, 1).await;
+    say(&mut a, 121_700, "Zeta Ground, SP-AAA, request taxi").await;
+    let got = atc_texts(&a.recv_until(is_audio_end).await);
+    assert!(
+        !got.is_empty() && got.iter().all(|(st, _)| st == "Zeta Ground"),
+        "{got:?}"
+    );
+    say(
+        &mut b,
+        118_500,
+        "Testville Tower, SP-BBB, request radio check",
+    )
+    .await;
+    let got = b.recv_until(is_audio_end).await;
+    let texts = atc_texts(&got);
+    assert!(
+        !texts.is_empty() && texts.iter().all(|(st, _)| st == "Testville Tower"),
+        "{got:?}"
+    );
+    use atc_server::network::Owner;
+    let net = &srv.state.network;
+    assert_eq!(
+        net.owner(&atc_phraseology::Callsign::new("SP-AAA")),
+        Some(Owner::Station(1))
+    );
+    assert_eq!(
+        net.owner(&atc_phraseology::Callsign::new("SP-BBB")),
+        Some(Owner::Station(0))
     );
 }

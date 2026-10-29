@@ -6,6 +6,7 @@ pub mod config;
 mod convert;
 pub mod hub;
 pub mod layout;
+pub mod network;
 pub mod persist;
 mod pipeline;
 mod session;
