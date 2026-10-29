@@ -10,7 +10,14 @@ fn table(text: &str) -> toml::Table {
 }
 
 fn unique_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("atc-station-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "atc-station-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -97,4 +104,52 @@ fn load_station_error_names_file_and_line() {
 fn airspaces_default_empty() {
     let p = parse_procedures(&epkk_text()).unwrap();
     assert!(p.airspaces.is_empty());
+}
+
+#[test]
+fn overrides_type_error_names_overrides_file() {
+    let dir = unique_dir("over-type");
+    std::fs::write(dir.join("station.toml"), epkk_text()).unwrap();
+    std::fs::write(dir.join("overrides.toml"), "preferred_runway = 25\n").unwrap();
+    let err = load_station(&dir).unwrap_err().to_string();
+    assert!(err.contains("overrides.toml"), "{err}");
+    assert!(!err.contains("line 0"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn station_type_error_names_station_file_and_line() {
+    let dir = unique_dir("station-type");
+    std::fs::write(dir.join("station.toml"), "icao = 5\n").unwrap();
+    let err = load_station(&dir).unwrap_err().to_string();
+    assert!(err.contains("station.toml"), "{err}");
+    assert!(err.contains("line 1"), "{err}");
+    assert!(!err.contains("line 0"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn round_trip_fully_populated() {
+    use atc_navdata::procedures::{AirspaceDef, AirspaceKind, DeliveryHours, IfrDefaults, Tma};
+    let mut p = parse_procedures(&epkk_text()).unwrap();
+    p.tma = Some(Tma {
+        radius_nm: 30.0,
+        ceiling_ft: 9500,
+    });
+    p.ifr = Some(IfrDefaults { cruise_ft: 5000 });
+    p.delivery_hours = Some(DeliveryHours {
+        summer_utc: [5, 20],
+        winter_utc: [6, 21],
+    });
+    p.approach_alt_khz = vec![118_000, 119_000];
+    p.airspaces = vec![AirspaceDef {
+        kind: AirspaceKind::Ctr,
+        name: "TEST CTR".into(),
+        class: Some('C'),
+        lower_ft: 0,
+        upper_ft: 3500,
+        polygon: vec![[50.0, 19.0], [50.1, 19.2], [49.9, 19.3]],
+    }];
+    let again = parse_procedures(&toml::to_string(&p).unwrap()).unwrap();
+    assert_eq!(p, again);
 }

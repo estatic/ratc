@@ -9,12 +9,20 @@ use crate::procedures::Procedures;
 pub enum StationError {
     #[error("cannot read {file}: {reason}")]
     Io { file: String, reason: String },
-    #[error("{file}: line {line}: {reason}")]
+    #[error("{}", toml_message(.file, .line, .reason))]
     Toml {
         file: String,
-        line: usize,
+        /// 1-based line, when known.
+        line: Option<usize>,
         reason: String,
     },
+}
+
+fn toml_message(file: &str, line: &Option<usize>, reason: &str) -> String {
+    match line {
+        Some(l) => format!("{file}: line {l}: {reason}"),
+        None => format!("{file}: {reason}"),
+    }
 }
 
 /// Merges `overrides` over `base`: tables merge recursively, arrays and scalars are replaced
@@ -52,9 +60,7 @@ fn read(path: &Path) -> Result<Option<String>, StationError> {
 fn toml_error(path: &Path, text: &str, e: &toml::de::Error) -> StationError {
     StationError::Toml {
         file: path.display().to_string(),
-        line: e
-            .span()
-            .map_or(0, |s| text[..s.start].matches('\n').count() + 1),
+        line: e.span().map(|s| text[..s.start].matches('\n').count() + 1),
         reason: e.message().to_string(),
     }
 }
@@ -71,25 +77,25 @@ pub fn load_station(dir: &Path) -> Result<Procedures, StationError> {
         })?;
         return toml::from_str(&text).map_err(|e| toml_error(&path, &text, &e));
     };
+    // Station alone first, so its errors carry a real line.
+    let station: Procedures =
+        toml::from_str(&station_text).map_err(|e| toml_error(&station_path, &station_text, &e))?;
+    let over_path = dir.join("overrides.toml");
+    let Some(over_text) = read(&over_path)? else {
+        return Ok(station);
+    };
+    let over: toml::Table = over_text
+        .parse()
+        .map_err(|e| toml_error(&over_path, &over_text, &e))?;
     let base: toml::Table = station_text
         .parse()
         .map_err(|e| toml_error(&station_path, &station_text, &e))?;
-    let over_path = dir.join("overrides.toml");
-    let merged = match read(&over_path)? {
-        Some(text) => {
-            let over: toml::Table = text
-                .parse()
-                .map_err(|e| toml_error(&over_path, &text, &e))?;
-            merge_overrides(base, &over)
-        }
-        None => base,
-    };
-    // The merged table has no source text; line numbers are only known for the files above.
-    merged
+    // The merged table has no source text, so the line is unknown; the override is to blame.
+    merge_overrides(base, &over)
         .try_into()
         .map_err(|e: toml::de::Error| StationError::Toml {
-            file: station_path.display().to_string(),
-            line: 0,
+            file: over_path.display().to_string(),
+            line: None,
             reason: e.message().to_string(),
         })
 }
