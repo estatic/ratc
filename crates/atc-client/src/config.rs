@@ -37,9 +37,23 @@ pub struct PttConfig {
 
 impl ClientConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let src =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let src = std::fs::read_to_string(path).with_context(|| missing_hint("reading", path))?;
         toml::from_str(&src).with_context(|| format!("parsing {}", path.display()))
+    }
+}
+
+/// `"<verb> <path>"`, plus how to create the file from its `.example.toml` when it is missing.
+fn missing_hint(verb: &str, path: &Path) -> String {
+    let example = path.with_extension("example.toml");
+    if !path.exists() && example.exists() {
+        format!(
+            "{verb} {}: not found; copy {} to {} and edit it",
+            path.display(),
+            example.display(),
+            path.display()
+        )
+    } else {
+        format!("{verb} {}", path.display())
     }
 }
 
@@ -50,8 +64,19 @@ mod tests {
     /// The repo's config parses; its values are the user's to edit, so none are pinned.
     #[test]
     fn repo_client_toml_parses() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/client.toml");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/client.example.toml");
         let c = ClientConfig::load(&path).unwrap();
         assert!(!c.callsign.is_empty());
+    }
+
+    #[test]
+    fn missing_config_names_its_example() {
+        let dir = std::env::temp_dir().join(format!("atc-client-hint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("client.example.toml"), "").unwrap();
+        let err = ClientConfig::load(&dir.join("client.toml")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("client.example.toml"), "{msg}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
