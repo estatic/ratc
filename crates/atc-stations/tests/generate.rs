@@ -133,6 +133,12 @@ fn accented_fis_suffix_stripped_and_icao_provenance() {
     );
     assert_eq!(doc.procs.icao, "ZZZZ");
     assert_eq!(doc.provenance["icao"], "X-Plane apt.dat");
+    // A blank ICAO code is no code either.
+    let mut blank = ap.clone();
+    blank.icao_code = Some("  ".into());
+    let doc2 = generate(&blank, &d, &layout(), &choice, "2026-10-29");
+    assert_eq!(doc2.procs.icao, "ZZZZ");
+    assert_eq!(doc2.provenance["icao"], "X-Plane apt.dat");
     // No OpenAIP elevation: the layout's 100 ft is used for the AGL ceiling.
     let ctr = doc
         .procs

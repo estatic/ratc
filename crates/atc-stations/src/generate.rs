@@ -127,7 +127,7 @@ pub fn generate(
     alt.dedup();
 
     let procs = Procedures {
-        icao: ap.icao_code.clone().unwrap_or_else(|| layout.icao.clone()),
+        icao: icao_code(ap).map_or_else(|| layout.icao.clone(), str::to_string),
         source: format!("OpenAIP {fetched_on}, X-Plane apt.dat"),
         airac: String::new(),
         transition_altitude_ft: ta,
@@ -163,7 +163,7 @@ pub fn generate(
     let provenance = [
         (
             "icao",
-            if ap.icao_code.is_some() {
+            if icao_code(ap).is_some() {
                 OPENAIP.to_string()
             } else {
                 XPLANE.to_string()
@@ -190,6 +190,11 @@ pub fn generate(
     .map(|(k, v)| (k.to_string(), v))
     .collect();
     StationDoc { procs, provenance }
+}
+
+/// The OpenAIP ICAO code, `None` when absent or blank.
+fn icao_code(ap: &OaAirport) -> Option<&str> {
+    ap.icao_code.as_deref().filter(|s| !s.trim().is_empty())
 }
 
 fn circuits(layout: &Airport) -> Vec<CircuitDef> {
@@ -403,7 +408,7 @@ fn adjacent(ap: &OaAirport, data: &CountryData, around: &[Around<'_>]) -> Vec<Ad
                         callsign,
                         khz: k,
                         kind: AdjacentKind::Tower,
-                        airport: o.icao_code.clone(),
+                        airport: icao_code(o).map(str::to_string),
                         min_level_ft: None,
                     },
                 )
@@ -435,5 +440,17 @@ pub fn write_station(doc: &StationDoc, path: &Path) -> io::Result<()> {
             _ => key.leaf_decor_mut().set_prefix(comment),
         }
     }
-    std::fs::write(path, ed.to_string())
+    write_atomic(path, ed.to_string().as_bytes())
+}
+
+/// Writes `bytes` to `<path>.tmp`, then renames it over `path`, so a reader never sees a
+/// half-written file.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }

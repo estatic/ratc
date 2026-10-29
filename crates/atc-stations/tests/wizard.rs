@@ -163,6 +163,33 @@ fn create_station_writes_station_and_overrides() {
         .unwrap();
     assert_eq!(wiz["openaip_id"].as_str(), Some("ap1"));
     assert_eq!(wiz["country"].as_str(), Some("ZZ"));
+    // Written through a temporary file that is renamed away.
+    for f in ["station.toml.tmp", "wizard.toml.tmp", "apt.dat.tmp"] {
+        assert!(!dir.join(f).exists(), "{f}");
+    }
+}
+
+#[test]
+fn unreadable_stored_country_stops_generation() {
+    let c = ctx("badstore").with_key();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    let before = std::fs::read_to_string(c.station("ZZZZ").join("station.toml")).unwrap();
+    // A second stored country whose airspaces file is damaged.
+    c.api.set_airspaces("YY", airspaces());
+    c.env
+        .store
+        .fetch_country(&*c.api, "YY", "2026-10-01T00:00:00Z")
+        .unwrap();
+    std::fs::write(c.root.join("store/YY/airspaces.json"), "[{").unwrap();
+    let out = c.run(&format!("{CREATE_ZZZZ}6\n"));
+    assert!(
+        out.contains("Nothing created: cannot read the stored OpenAIP data of YY"),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(c.station("ZZZZ").join("station.toml")).unwrap(),
+        before
+    );
 }
 
 #[test]

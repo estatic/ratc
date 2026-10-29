@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::prompt::Prompt;
 
+use crate::generate::write_atomic;
 use crate::openaip::{ApiError, Endpoint, OaAirport, OpenAipApi};
 use crate::store::{CountryData, Store, StoreError, load_key_from, save_key_in};
 
@@ -204,7 +205,7 @@ fn stations(data_dir: &Path) -> Vec<StationDir> {
 
 fn write_meta(dir: &Path, meta: &Meta) -> Result<(), String> {
     let text = toml::to_string(meta).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(META), text).map_err(|e| e.to_string())
+    write_atomic(&dir.join(META), text.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Downloads `cc` into the store, printing progress per page and the unreadable records left
@@ -239,7 +240,9 @@ fn download_country<R: BufRead, W: Write>(
 }
 
 /// Every downloaded country in one data set, so neighbours' airspaces and towers count too.
-fn combined(store: &Store) -> CountryData {
+/// A country that cannot be read is an error naming it: generating without it would silently
+/// drop its airspaces and towers.
+fn combined(store: &Store) -> Result<CountryData, String> {
     let mut all = CountryData {
         airports: Vec::new(),
         airspaces: Vec::new(),
@@ -247,13 +250,22 @@ fn combined(store: &Store) -> CountryData {
         synced_at: String::new(),
     };
     for cc in store.countries() {
-        if let Ok(Some(d)) = store.load_country(&cc) {
-            all.airports.extend(d.airports);
-            all.airspaces.extend(d.airspaces);
-            all.points.extend(d.points);
+        match store.load_country(&cc) {
+            Ok(Some(d)) => {
+                all.airports.extend(d.airports);
+                all.airspaces.extend(d.airspaces);
+                all.points.extend(d.points);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(format!(
+                    "cannot read the stored OpenAIP data of {cc} ({e}); download it again \
+                     (Update data) or delete it"
+                ));
+            }
         }
     }
-    all
+    Ok(all)
 }
 
 /// The date the country was downloaded, else today.

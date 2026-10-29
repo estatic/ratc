@@ -12,7 +12,9 @@ use super::{
     APT_DAT, Meta, OVERRIDES, PROCEDURES, Prompt, STATION, WizardEnv, combined, download_country,
     fetched_on, lat_lon, mhz, write_meta,
 };
-use crate::generate::{Choice, StationDoc, generate, offered_positions, write_station};
+use crate::generate::{
+    Choice, StationDoc, generate, offered_positions, write_atomic, write_station,
+};
 use crate::openaip::{OaAirport, OpenAipApi, khz};
 use crate::overrides::{Overrides, orphans};
 use crate::store::CountryData;
@@ -55,6 +57,13 @@ pub(super) fn create<R: BufRead, W: Write>(
         return;
     }
     let home = &found[n - 1];
+    if home.country.trim().is_empty() {
+        p.say(format!(
+            "{} has no country in OpenAIP; it cannot be downloaded.",
+            home.name
+        ));
+        return;
+    }
 
     let mut countries = vec![home.country.to_uppercase()];
     let extra = p.ask(
@@ -86,7 +95,13 @@ pub(super) fn create<R: BufRead, W: Write>(
         return;
     }
 
-    let all = combined(&env.store);
+    let all = match combined(&env.store) {
+        Ok(a) => a,
+        Err(e) => {
+            p.say(format!("Nothing created: {e}."));
+            return;
+        }
+    };
     let centre = lat_lon(home);
     let mut near: Vec<(f64, &OaAirport)> = all
         .airports
@@ -155,6 +170,12 @@ fn create_one<R: BufRead, W: Write>(
     p: &mut Prompt<R, W>,
 ) {
     let name = &ap.name;
+    if ap.country.trim().is_empty() {
+        p.say(format!(
+            "Skipping {name}: no country in OpenAIP; nothing created."
+        ));
+        return;
+    }
     let no_layout = format!(
         "No X-Plane layout for {name}: install its scenery or check xplane_root; nothing created."
     );
@@ -285,7 +306,7 @@ fn write_new_station(
     }
     let apt = dir.join(APT_DAT);
     if !apt.exists() {
-        std::fs::write(&apt, apt_dat_text(resolved, id)).map_err(|e| e.to_string())?;
+        write_atomic(&apt, apt_dat_text(resolved, id).as_bytes()).map_err(|e| e.to_string())?;
     }
     write_meta(dir, meta)
 }

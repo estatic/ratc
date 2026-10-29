@@ -204,11 +204,17 @@ fn is_model_missing(e: &anyhow::Error) -> bool {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    if std::env::args().nth(1).as_deref() == Some("airports") {
+        // The wizard owns stdout; log lines go to stderr as plain text (bare Windows console).
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if is_model_missing(&e) => {

@@ -115,7 +115,13 @@ fn download<R: BufRead, W: Write>(
 /// Regenerates every wizard station: generation uses all stored countries, so a change in
 /// one country can touch stations of another (adjacent towers, airspaces).
 fn regenerate_all<R: BufRead, W: Write>(env: &WizardEnv, p: &mut Prompt<R, W>) {
-    let all = combined(&env.store);
+    let all = match combined(&env.store) {
+        Ok(a) => a,
+        Err(e) => {
+            p.say(format!("Stations not regenerated: {e}."));
+            return;
+        }
+    };
     for st in stations(&env.data_dir) {
         match &st.meta {
             None if st.dir.join(STATION).is_file() || st.dir.join(PROCEDURES).is_file() => {
