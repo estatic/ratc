@@ -7,7 +7,8 @@ use std::rc::Rc;
 
 use atc_navdata::procedures::Procedures;
 use atc_stations::openaip::{
-    ApiError, Endpoint, FakeApi, OaAirport, OaAirspace, OaFrequency, OaReportingPoint, OpenAipApi,
+    ApiError, Endpoint, FakeApi, Listed, OaAirport, OaAirspace, OaFrequency, OaReportingPoint,
+    OpenAipApi, Progress,
 };
 use atc_stations::store::{Store, save_key_in};
 use atc_stations::wizard::{Prompt, WizardEnv, run};
@@ -660,5 +661,71 @@ fn empty_answer_keeps_the_stored_country() {
     assert_eq!(
         c.env.store.load_country("ZZ").unwrap().unwrap(),
         before_store
+    );
+}
+
+/// The shared fake, but its airspaces come in two pages with three unreadable records.
+struct Paged(Rc<FakeApi>);
+
+impl OpenAipApi for Paged {
+    fn airports(&self, c: &str, u: Option<&str>) -> Result<Vec<OaAirport>, ApiError> {
+        self.0.airports(c, u)
+    }
+    fn airspaces(&self, c: &str, u: Option<&str>) -> Result<Vec<OaAirspace>, ApiError> {
+        self.0.airspaces(c, u)
+    }
+    fn reporting_points(
+        &self,
+        c: &str,
+        u: Option<&str>,
+    ) -> Result<Vec<OaReportingPoint>, ApiError> {
+        self.0.reporting_points(c, u)
+    }
+    fn changed_count(&self, e: Endpoint, c: &str, u: &str) -> Result<u64, ApiError> {
+        self.0.changed_count(e, c, u)
+    }
+    fn search_airports(&self, q: &str) -> Result<Vec<OaAirport>, ApiError> {
+        self.0.search_airports(q)
+    }
+    fn airspaces_listed(
+        &self,
+        c: &str,
+        progress: Progress<'_>,
+    ) -> Result<Listed<OaAirspace>, ApiError> {
+        progress(1, 2);
+        progress(2, 2);
+        Ok(Listed {
+            items: self.0.airspaces(c, None)?,
+            skipped: 3,
+        })
+    }
+}
+
+#[test]
+fn download_reports_pages_and_skipped_records() {
+    let c = ctx("paged").with_key();
+    c.env
+        .store
+        .fetch_country(&*c.api, "ZZ", "2026-10-01T00:00:00Z")
+        .unwrap();
+    let api = c.api.clone();
+    let mut prompt = Prompt::new(Cursor::new(b"y\n6\n".to_vec()), Vec::new());
+    run(
+        &c.env,
+        move |_: &str| -> Box<dyn OpenAipApi> { Box::new(Paged(api.clone())) },
+        &mut prompt,
+    )
+    .unwrap();
+    let out = String::from_utf8(prompt.into_output()).unwrap();
+    assert!(out.contains("ZZ airspaces: page 1/2"), "{out}");
+    assert!(out.contains("ZZ airspaces: page 2/2"), "{out}");
+    assert!(
+        out.contains("ZZ airspaces: 3 records skipped (unreadable)"),
+        "{out}"
+    );
+    assert!(!out.contains("airports: 0 records"), "{out}");
+    assert_eq!(
+        c.env.store.load_country("ZZ").unwrap().unwrap().synced_at,
+        NOW
     );
 }

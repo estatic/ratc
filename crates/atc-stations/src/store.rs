@@ -42,12 +42,20 @@ pub struct CountryData {
     pub synced_at: String,
 }
 
-/// Number of records changed upstream since the last sync.
+/// Record counts per endpoint: changed upstream since the last sync, or skipped in a download.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangeCount {
     pub airports: u64,
     pub airspaces: u64,
     pub points: u64,
+}
+
+/// A country download and the records it had to leave out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fetched {
+    pub data: CountryData,
+    /// Unreadable records per endpoint, not stored.
+    pub skipped: ChangeCount,
 }
 
 #[derive(Debug, Clone)]
@@ -79,18 +87,41 @@ impl Store {
         cc: &str,
         now_utc: &str,
     ) -> Result<CountryData, StoreError> {
+        Ok(self
+            .fetch_country_with(api, cc, now_utc, &mut |_, _, _| {})?
+            .data)
+    }
+
+    /// As [`Store::fetch_country`], calling `progress(endpoint, page, pages)` after each page
+    /// and returning how many records of each endpoint were unreadable and left out.
+    pub fn fetch_country_with(
+        &self,
+        api: &dyn OpenAipApi,
+        cc: &str,
+        now_utc: &str,
+        progress: &mut dyn FnMut(Endpoint, u64, u64),
+    ) -> Result<Fetched, StoreError> {
         let cc = cc.to_uppercase();
-        let airports = api.airports(&cc, None)?;
-        let airspaces = api.airspaces(&cc, None)?;
-        let points = api.reporting_points(&cc, None)?;
+        let airports =
+            api.airports_listed(&cc, &mut |n, of| progress(Endpoint::Airports, n, of))?;
+        let airspaces =
+            api.airspaces_listed(&cc, &mut |n, of| progress(Endpoint::Airspaces, n, of))?;
+        let points = api.reporting_points_listed(&cc, &mut |n, of| {
+            progress(Endpoint::ReportingPoints, n, of)
+        })?;
+        let skipped = ChangeCount {
+            airports: airports.skipped,
+            airspaces: airspaces.skipped,
+            points: points.skipped,
+        };
         let data = CountryData {
-            airports,
-            airspaces,
-            points,
+            airports: airports.items,
+            airspaces: airspaces.items,
+            points: points.items,
             synced_at: now_utc.to_string(),
         };
         if data.airports.is_empty() && data.airspaces.is_empty() && data.points.is_empty() {
-            return Ok(data);
+            return Ok(Fetched { data, skipped });
         }
 
         let dir = self.dir(&cc);
@@ -124,7 +155,7 @@ impl Store {
             let dst = dir.join(name);
             std::fs::rename(&tmp, &dst).map_err(io_err(&dst))?;
         }
-        Ok(data)
+        Ok(Fetched { data, skipped })
     }
 
     /// `None` when the country has never been downloaded.

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub use crate::prompt::Prompt;
 
 use crate::openaip::{ApiError, Endpoint, OaAirport, OpenAipApi};
-use crate::store::{CountryData, Store, load_key_from, save_key_in};
+use crate::store::{CountryData, Store, StoreError, load_key_from, save_key_in};
 
 mod create;
 mod update;
@@ -205,6 +205,37 @@ fn stations(data_dir: &Path) -> Vec<StationDir> {
 fn write_meta(dir: &Path, meta: &Meta) -> Result<(), String> {
     let text = toml::to_string(meta).map_err(|e| e.to_string())?;
     std::fs::write(dir.join(META), text).map_err(|e| e.to_string())
+}
+
+/// Downloads `cc` into the store, printing progress per page and the unreadable records left
+/// out.
+fn download_country<R: BufRead, W: Write>(
+    env: &WizardEnv,
+    api: &dyn OpenAipApi,
+    cc: &str,
+    p: &mut Prompt<R, W>,
+) -> Result<CountryData, StoreError> {
+    let cc = cc.to_uppercase();
+    let fetched = env
+        .store
+        .fetch_country_with(api, &cc, &env.now(), &mut |e, n, of| {
+            p.say(format!("{cc} {}: page {n}/{of}", e.path()));
+        })?;
+    let s = fetched.skipped;
+    for (e, n) in [
+        (Endpoint::Airports, s.airports),
+        (Endpoint::Airspaces, s.airspaces),
+        (Endpoint::ReportingPoints, s.points),
+    ] {
+        if n > 0 {
+            let records = if n == 1 { "record" } else { "records" };
+            p.say(format!(
+                "{cc} {}: {n} {records} skipped (unreadable)",
+                e.path()
+            ));
+        }
+    }
+    Ok(fetched.data)
 }
 
 /// Every downloaded country in one data set, so neighbours' airspaces and towers count too.

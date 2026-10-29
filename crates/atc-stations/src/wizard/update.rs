@@ -10,8 +10,8 @@ use atc_navdata::procedures::{PositionDef, Procedures};
 use atc_navdata::xplane::resolve_airport;
 
 use super::{
-    APT_DAT, META, Meta, PROCEDURES, Prompt, STATION, StationDir, WizardEnv, combined, fetched_on,
-    mhz, stations, write_meta,
+    APT_DAT, META, Meta, PROCEDURES, Prompt, STATION, StationDir, WizardEnv, combined,
+    download_country, fetched_on, mhz, stations, write_meta,
 };
 use crate::generate::{Choice, generate, offered_positions, write_station};
 use crate::openaip::OpenAipApi;
@@ -94,7 +94,7 @@ fn download<R: BufRead, W: Write>(
     cc: &str,
     p: &mut Prompt<R, W>,
 ) -> bool {
-    match env.store.fetch_country(api, cc, &env.now()) {
+    match download_country(env, api, cc, p) {
         // The store keeps its previous copy when every list is empty.
         Ok(d) if d.airports.is_empty() && d.airspaces.is_empty() && d.points.is_empty() => {
             p.say(format!(

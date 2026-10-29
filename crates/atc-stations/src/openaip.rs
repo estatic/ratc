@@ -169,6 +169,17 @@ pub fn khz(mhz: &str) -> Option<u32> {
     Some((v * 1000.0).round() as u32)
 }
 
+/// A whole endpoint downloaded: the records read and how many could not be read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listed<T> {
+    pub items: Vec<T>,
+    /// Records left out because they did not decode.
+    pub skipped: u64,
+}
+
+/// Called after each downloaded page with (page, pages).
+pub type Progress<'a> = &'a mut dyn FnMut(u64, u64);
+
 /// Object-safe OpenAIP access.
 pub trait OpenAipApi {
     fn airports(
@@ -193,11 +204,41 @@ pub trait OpenAipApi {
         updated_after: &str,
     ) -> Result<u64, ApiError>;
     fn search_airports(&self, query: &str) -> Result<Vec<OaAirport>, ApiError>;
+
+    /// The whole airport list of `country`, reporting page progress and unreadable records.
+    /// The default wraps [`OpenAipApi::airports`] (no progress, nothing skipped).
+    fn airports_listed(
+        &self,
+        country: &str,
+        _progress: Progress<'_>,
+    ) -> Result<Listed<OaAirport>, ApiError> {
+        let items = self.airports(country, None)?;
+        Ok(Listed { items, skipped: 0 })
+    }
+    /// As [`OpenAipApi::airports_listed`], for airspaces.
+    fn airspaces_listed(
+        &self,
+        country: &str,
+        _progress: Progress<'_>,
+    ) -> Result<Listed<OaAirspace>, ApiError> {
+        let items = self.airspaces(country, None)?;
+        Ok(Listed { items, skipped: 0 })
+    }
+    /// As [`OpenAipApi::airports_listed`], for reporting points.
+    fn reporting_points_listed(
+        &self,
+        country: &str,
+        _progress: Progress<'_>,
+    ) -> Result<Listed<OaReportingPoint>, ApiError> {
+        let items = self.reporting_points(country, None)?;
+        Ok(Listed { items, skipped: 0 })
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListResponse<T> {
+    #[serde(default = "Vec::new")]
     items: Vec<T>,
     #[serde(default)]
     total_count: u64,
@@ -253,7 +294,7 @@ pub struct HttpApi {
     key: String,
     base: String,
     transport: Box<dyn Transport>,
-    /// Waits before retry 1, 2, 3 for HTTP 429/5xx.
+    /// Waits before retry 1, 2, 3 for HTTP 429/5xx and network errors.
     retry_waits: Vec<Duration>,
 }
 
@@ -272,9 +313,13 @@ impl HttpApi {
     }
 
     pub fn with_base(key: impl Into<String>, base: impl Into<String>) -> Self {
+        // No global timeout: a large country's page can take minutes on a slow line. A dead
+        // server is caught by the connect timeout, a stalled transfer by the receive ones.
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(60)))
+            .timeout_connect(Some(Duration::from_secs(15)))
+            .timeout_recv_response(Some(Duration::from_secs(300)))
+            .timeout_recv_body(Some(Duration::from_secs(300)))
             .build()
             .into();
         Self {
@@ -294,19 +339,23 @@ impl HttpApi {
         let url = format!("{}/{}", self.base.trim_end_matches('/'), path);
         let mut attempt = 0;
         loop {
-            let (status, body) = self.transport.get(&url, query, &self.key)?;
-            match status {
-                200..=299 => return Ok(body),
-                401 | 403 => return Err(ApiError::Auth),
-                429 | 500..=599 if attempt < self.retry_waits.len() => {
-                    let wait = self.retry_waits[attempt];
+            let retry = attempt < self.retry_waits.len();
+            match self.transport.get(&url, query, &self.key) {
+                Ok((200..=299, body)) => return Ok(body),
+                Ok((401 | 403, _)) => return Err(ApiError::Auth),
+                Ok((status @ (429 | 500..=599), _)) if retry => {
                     tracing::warn!(status, attempt = attempt + 1, "OpenAIP busy, retrying");
-                    attempt += 1;
-                    if !wait.is_zero() {
-                        std::thread::sleep(wait);
-                    }
                 }
-                s => return Err(ApiError::Status(s)),
+                Ok((s, _)) => return Err(ApiError::Status(s)),
+                Err(ApiError::Network(e)) if retry => {
+                    tracing::warn!(error = %e, attempt = attempt + 1, "OpenAIP unreachable, retrying");
+                }
+                Err(e) => return Err(e),
+            }
+            let wait = self.retry_waits[attempt];
+            attempt += 1;
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
             }
         }
     }
@@ -324,43 +373,103 @@ impl HttpApi {
         serde_json::from_str(&body).map_err(|e| ApiError::Decode(e.to_string()))
     }
 
+    /// Every page of `endpoint`; records that do not decode are skipped and counted.
     fn list_all<T: serde::de::DeserializeOwned>(
         &self,
         endpoint: Endpoint,
         country: &str,
         updated_after: Option<&str>,
-    ) -> Result<Vec<T>, ApiError> {
-        let mut out = Vec::new();
+        progress: Progress<'_>,
+    ) -> Result<Listed<T>, ApiError> {
+        let mut out = Listed {
+            items: Vec::new(),
+            skipped: 0,
+        };
         let mut page = 1;
         loop {
             let mut q = vec![("country", country.to_string())];
             if let Some(u) = updated_after {
                 q.push(("updatedAfter", u.to_string()));
             }
-            let r: ListResponse<T> = self.page(endpoint, q, page, 1000)?;
-            let last = page >= r.pages(1000);
-            out.extend(r.items);
-            if last {
+            let r: ListResponse<serde_json::Value> = self.page(endpoint, q, page, 1000)?;
+            let pages = r.pages(1000).max(1);
+            progress(page, pages);
+            let (items, skipped) = decode_items(endpoint, r.items);
+            out.items.extend(items);
+            out.skipped += skipped;
+            if page >= pages {
                 return Ok(out);
             }
             page += 1;
         }
     }
+
+    fn plain<T: serde::de::DeserializeOwned>(
+        &self,
+        endpoint: Endpoint,
+        country: &str,
+        updated_after: Option<&str>,
+    ) -> Result<Vec<T>, ApiError> {
+        Ok(self
+            .list_all(endpoint, country, updated_after, &mut |_, _| {})?
+            .items)
+    }
+}
+
+/// Decodes each record on its own; returns the readable ones and the count of the others.
+fn decode_items<T: serde::de::DeserializeOwned>(
+    endpoint: Endpoint,
+    raw: Vec<serde_json::Value>,
+) -> (Vec<T>, u64) {
+    let mut skipped = 0;
+    let items = raw
+        .into_iter()
+        .filter_map(|v| match serde_json::from_value(v) {
+            Ok(x) => Some(x),
+            Err(e) => {
+                tracing::warn!(endpoint = endpoint.path(), error = %e, "skipping an unreadable OpenAIP record");
+                skipped += 1;
+                None
+            }
+        })
+        .collect();
+    (items, skipped)
 }
 
 impl OpenAipApi for HttpApi {
     fn airports(&self, c: &str, u: Option<&str>) -> Result<Vec<OaAirport>, ApiError> {
-        self.list_all(Endpoint::Airports, c, u)
+        self.plain(Endpoint::Airports, c, u)
     }
     fn airspaces(&self, c: &str, u: Option<&str>) -> Result<Vec<OaAirspace>, ApiError> {
-        self.list_all(Endpoint::Airspaces, c, u)
+        self.plain(Endpoint::Airspaces, c, u)
     }
     fn reporting_points(
         &self,
         c: &str,
         u: Option<&str>,
     ) -> Result<Vec<OaReportingPoint>, ApiError> {
-        self.list_all(Endpoint::ReportingPoints, c, u)
+        self.plain(Endpoint::ReportingPoints, c, u)
+    }
+    fn airports_listed(
+        &self,
+        c: &str,
+        progress: Progress<'_>,
+    ) -> Result<Listed<OaAirport>, ApiError> {
+        self.list_all(Endpoint::Airports, c, None, progress)
+    }
+    fn airspaces_listed(
+        &self,
+        c: &str,
+        progress: Progress<'_>,
+    ) -> Result<Listed<OaAirspace>, ApiError> {
+        self.list_all(Endpoint::Airspaces, c, None, progress)
+    }
+    fn reporting_points_listed(
+        &self,
+        c: &str,
+        progress: Progress<'_>,
+    ) -> Result<Listed<OaReportingPoint>, ApiError> {
+        self.list_all(Endpoint::ReportingPoints, c, None, progress)
     }
     fn changed_count(
         &self,
@@ -377,8 +486,8 @@ impl OpenAipApi for HttpApi {
     }
     fn search_airports(&self, query: &str) -> Result<Vec<OaAirport>, ApiError> {
         let q = vec![("search", query.to_string())];
-        let r: ListResponse<OaAirport> = self.page(Endpoint::Airports, q, 1, 50)?;
-        Ok(r.items)
+        let r: ListResponse<serde_json::Value> = self.page(Endpoint::Airports, q, 1, 50)?;
+        Ok(decode_items(Endpoint::Airports, r.items).0)
     }
 }
 
@@ -642,7 +751,11 @@ mod tests {
         fn get(&self, _u: &str, q: &[(&str, String)], _k: &str) -> Result<(u16, String), ApiError> {
             let page = q.iter().find(|(k, _)| *k == "page").map(|(_, v)| v.clone());
             self.1.borrow_mut().push(page.unwrap_or_default());
-            Ok(self.0.borrow_mut().pop_front().expect("script exhausted"))
+            // Status 0 scripts a network failure.
+            match self.0.borrow_mut().pop_front().expect("script exhausted") {
+                (0, why) => Err(ApiError::Network(why)),
+                answer => Ok(answer),
+            }
         }
     }
 
@@ -675,6 +788,38 @@ mod tests {
         ]);
         assert_eq!(api.airports("ZZ", None).unwrap().len(), 1);
         assert_eq!(pages.borrow().len(), 3);
+    }
+
+    #[test]
+    fn network_error_is_retried() {
+        let (api, pages) = scripted(vec![
+            (0, "connection reset".into()),
+            (0, "timed out".into()),
+            (200, list_body(1, 1, 1)),
+        ]);
+        assert_eq!(api.airports("ZZ", None).unwrap().len(), 1);
+        assert_eq!(pages.borrow().len(), 3);
+        let (api, pages) = scripted(vec![(0, "down".into()); 4]);
+        assert_eq!(
+            api.airports("ZZ", None),
+            Err(ApiError::Network("down".into()))
+        );
+        assert_eq!(pages.borrow().len(), 4);
+    }
+
+    #[test]
+    fn bad_record_is_skipped_and_counted() {
+        let bad = r#"{"_id":"broken","name":"NO GEOMETRY","type":2}"#;
+        let page1 = format!(r#"{{"items":[{AIRPORT},{bad}],"totalCount":3,"totalPages":2}}"#);
+        let page2 = format!(r#"{{"items":[{AIRPORT}],"totalCount":3,"totalPages":2}}"#);
+        let (api, _) = scripted(vec![(200, page1), (200, page2)]);
+        let mut seen = Vec::new();
+        let got = api
+            .airports_listed("ZZ", &mut |n, of| seen.push((n, of)))
+            .unwrap();
+        assert_eq!(got.items.len(), 2);
+        assert_eq!(got.skipped, 1);
+        assert_eq!(seen, [(1, 2), (2, 2)]);
     }
 
     #[test]

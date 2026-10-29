@@ -9,8 +9,8 @@ use atc_navdata::xplane::{ResolvedAirport, load_destinations, resolve_airport};
 
 use super::values::value_screen;
 use super::{
-    APT_DAT, Meta, OVERRIDES, PROCEDURES, Prompt, STATION, WizardEnv, combined, fetched_on,
-    lat_lon, mhz, write_meta,
+    APT_DAT, Meta, OVERRIDES, PROCEDURES, Prompt, STATION, WizardEnv, combined, download_country,
+    fetched_on, lat_lon, mhz, write_meta,
 };
 use crate::generate::{Choice, StationDoc, generate, offered_positions, write_station};
 use crate::openaip::{OaAirport, OpenAipApi, khz};
@@ -136,10 +136,7 @@ fn ensure_country<R: BufRead, W: Write>(
         return Ok(());
     }
     p.say(format!("Downloading OpenAIP data for {cc}..."));
-    let d = env
-        .store
-        .fetch_country(api, cc, &env.now())
-        .map_err(|e| e.to_string())?;
+    let d = download_country(env, api, cc, p).map_err(|e| e.to_string())?;
     if d.airports.is_empty() && d.airspaces.is_empty() && d.points.is_empty() {
         p.say(format!("OpenAIP has no data for {cc}."));
     }
