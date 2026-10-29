@@ -122,4 +122,4 @@
 - Reminder uses the existing "read back <items>" phrase; movement threshold 3 kt.
 - The sign/beacon/signals are a separate roof object instance over `crew_car.obj` rather than a new car model.
 - Polish phrases for the destination as listed in Global Constraints.
-- The departure case "follow the follow-me car" immediately followed by "contact Tower" is left open until the user recalls whether the aircraft had already reached the holding point.
+- Departure case (user confirmed 2026-10-29 the aircraft had already reached the holding point): "follow the follow-me car" fires a fixed `READY_S` after "on the way" regardless of where the aircraft is. Added to Task 3: no car when the remaining route is under 150 m (answer with the normal taxi instruction instead), and `follow_me_update` drops the car silently (cancel order, no "follow…") when the aircraft is within 30 m of the path's end. Tests `no_car_for_a_short_route`, `no_follow_call_when_already_at_the_end`.
