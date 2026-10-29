@@ -1,165 +1,278 @@
-# Запуск Virtual ATC (X-Plane 11, EPKK)
+# Running Virtual ATC (X-Plane 11, EPKK)
 
-Всё работает локально: сервер (Whisper STT + Piper TTS + диспетчерский движок) и клиент (микрофон/динамики, чтение X-Plane по UDP) общаются по WebSocket на `127.0.0.1`. Внешних сервисов нет; интернет нужен только для первой загрузки моделей.
+Everything runs locally: the server (Whisper STT + Piper TTS + the controller engine) and the
+client (microphone/speakers, reading X-Plane over UDP) talk over WebSocket on `127.0.0.1`. There
+are no external services; the internet is needed only to download the models once.
 
-**Все команды запускайте из корня репозитория** — пути в `config/*.toml` (модели, `data/airports`, `config/voices.toml`) заданы относительно него.
+**Run every command from the repository root**: the paths in `config/*.toml` (models,
+`data/airports`, `config/voices.toml`) are relative to it.
 
-## 1. Сборка
+## 1. Build
 
-Предварительно (Linux) нужны:
+Prerequisites (Linux):
 
-- для `whisper-rs` (Vulkan-сборка): Vulkan-тулчейн с `glslc` (shaderc), `cmake`, `libclang`;
-- для `cpal` (звук): заголовки ALSA (`libasound2-dev` / `alsa-lib`);
-- для `gilrs` (джойстик): `libudev` (`libudev-dev` / `systemd-libs`) и права на чтение `/dev/input/*` (обычно группа `input`).
+- for `whisper-rs` (Vulkan build): a Vulkan toolchain with `glslc` (shaderc), `cmake`, `libclang`;
+- for `cpal` (audio): ALSA headers (`libasound2-dev` / `alsa-lib`);
+- for `gilrs` (joystick): `libudev` (`libudev-dev` / `systemd-libs`) and read access to
+  `/dev/input/*` (usually the `input` group).
 
-Учтите: у `atc-server` фичи `whisper`/`piper` включены по умолчанию, поэтому даже `cargo test --workspace` собирает `whisper-rs` (долго, нужен тот же тулчейн).
+Note: the `whisper`/`piper` features of `atc-server` are on by default, so even
+`cargo test --workspace` builds `whisper-rs` (slow, and it needs the same toolchain).
 
 ```
 cargo build --release -p atc-server -p atc-client
 ```
 
-Бинарники: `target/release/atc-server`, `target/release/atc-client`. Release важен: Whisper в debug-сборке заметно медленнее.
+Binaries: `target/release/atc-server`, `target/release/atc-client`. Release matters: Whisper is
+much slower in a debug build.
 
-## 2. Модели
+## 2. Models
 
 ```
-tools/fetch-whisper.sh   # models/whisper/: ggml-large-v3-turbo-q5_0.bin (~574 МБ) и ggml-small.en-q5_1.bin (~181 МБ)
-tools/fetch-piper.sh     # models/piper/: бинарник Piper и голоса: Ground, Tower, ATIS, Delivery, Approach, Radar (английские) и польские
+tools/fetch-whisper.sh   # models/whisper/: ggml-large-v3-turbo-q5_0.bin (~574 MB) and ggml-small.en-q5_1.bin (~181 MB)
+tools/fetch-piper.sh     # models/piper/: the Piper binary and the voices: Ground, Tower, ATIS, Delivery, Approach, Radar (English) and Polish
 ```
 
-Скрипты идемпотентны (повторный запуск пропускает уже скачанное). `models/` в git-ignore. Состав голосов и их соответствие станциям — `tools/MODELS.md`, скорость речи (`length_scale`) — `config/voices.toml`.
+The scripts are idempotent (a second run skips what is already there). `models/` is
+git-ignored. Which voice speaks for which station: `tools/MODELS.md`; speech rate
+(`length_scale`): `config/voices.toml`.
 
-Если модели нет, сервер завершается с кодом 2 и подсказкой, какой скрипт запустить.
+Without a model the server exits with code 2 and names the script to run.
 
-### Выбор модели Whisper
+### Choosing the Whisper model
 
-В `config/server.toml`, секция `[whisper]`:
+In `config/server.toml`, section `[whisper]`:
 
-- по умолчанию `models/whisper/ggml-large-v3-turbo-q5_0.bin` (многоязычная). **Выбор предварительный** — см. `docs/benchmarks/2026-10-voice.md`: STT p95 около 0.17 с, но VRAM рядом с запущенным X-Plane ещё не измерен;
-- переключиться на английскую `small.en`: `model = "models/whisper/ggml-small.en-q5_1.bin"` (быстрее, вдвое меньше VRAM; на синтетическом тесте не хуже);
-- `language` — язык радиообмена:
-  - `"en"` (в конфиге по умолчанию) фиксирует английский;
-  - `"pl"` фиксирует польский: польская подсказка Whisper, разбор польских реплик, польские ответы, ATIS и голоса (`[pl.*]` в `config/voices.toml`);
-  - строка не указана — автоопределение: каждому борту отвечают на языке его последней понятой реплики (до первой — по-английски), ATIS — на языке последней понятой реплики. Если Whisper определил третий язык (например, `ru` при акценте), запись распознаётся повторно на языке борта. Короткие английские фразы с акцентом иногда определяются неверно, поэтому при полётах только на одном языке лучше его зафиксировать.
+- the default is `models/whisper/ggml-large-v3-turbo-q5_0.bin` (multilingual). **The choice is
+  provisional**, see `docs/benchmarks/2026-10-voice.md`: STT p95 is about 0.17 s, but video
+  memory next to a running X-Plane has not been measured yet;
+- to switch to the English-only `small.en`: `model = "models/whisper/ggml-small.en-q5_1.bin"`
+  (faster, half the video memory; no worse on the synthetic test);
+- `language` is the language of the radio exchange:
+  - `"en"` (the config default) fixes English;
+  - `"pl"` fixes Polish: Polish Whisper prompt, Polish parsing, Polish replies, ATIS and voices
+    (`[pl.*]` in `config/voices.toml`);
+  - line removed: auto-detection. Each aircraft is answered in the language of its last
+    understood transmission (English before the first one), and the ATIS in the language of the
+    last understood transmission. If Whisper detects a third language (for example `ru` for an
+    accent), the recording is transcribed again in the aircraft's language. Short accented
+    English phrases are sometimes detected wrongly, so when you fly in one language only, fix it.
 
-  Польская модель Whisper — та же многоязычная `large-v3-turbo` (`small.en` понимает только английский).
+  The Polish Whisper model is the same multilingual `large-v3-turbo` (`small.en` understands
+  English only).
 
-Прочие параметры сервера: `listen` (по умолчанию `127.0.0.1:8740`), `airport = "EPKK"`, `strictness = "standard" | "training"`.
+Other server settings: `listen` (default `127.0.0.1:8740`), `airport = "EPKK"`,
+`strictness = "standard" | "training"`.
 
-### Схема аэропорта из X-Plane (`xplane_root`)
+### Airport layout from X-Plane (`xplane_root`)
 
-`xplane_root = "/путь/к/X-Plane 11"` в `config/server.toml`: схему аэропорта (ВПП, рулёжки, стоянки — часть apt.dat) сервер берёт из той сцены, которую грузит сам X-Plane, чтобы маршруты руления называли рулёжки, видимые в симуляторе. Порядок поиска — как у X-Plane: папки `Custom Scenery`, ещё не попавшие в `scenery_packs.ini` (X-Plane допишет их наверх при следующем старте), затем включённые `SCENERY_PACK` из ini по порядку (`SCENERY_PACK_DISABLED` пропускаются), затем `Custom Scenery/Global Airports`, затем `Resources/default scenery/default apt dat`. Частоты и процедуры всегда из `data/airports/<ICAO>/`. В логе при старте: `airport layout: <файл> (X-Plane scenery): ...; taxiways: ...`. Без `xplane_root` или если аэропорт не найден — предупреждение и `data/airports/<ICAO>/apt.dat` из репозитория. Поставили или убрали сцену аэропорта — перезапустите и X-Plane, и сервер.
+`xplane_root = "/path/to/X-Plane 11"` in `config/server.toml`: the server takes the airport
+layout (runways, taxiways, stands, the apt.dat part) from the scenery X-Plane itself loads, so
+that taxi routes name the taxiways you see in the simulator. The search order is X-Plane's:
+`Custom Scenery` folders not yet in `scenery_packs.ini` (X-Plane adds them at the top on its next
+start), then the enabled `SCENERY_PACK` lines of the ini in order (`SCENERY_PACK_DISABLED` is
+skipped), then `Custom Scenery/Global Airports`, then
+`Resources/default scenery/default apt dat`. Frequencies and procedures always come from
+`data/airports/<ICAO>/`. At start the log shows
+`airport layout: <file> (X-Plane scenery): ...; taxiways: ...`. Without `xplane_root`, or if the
+airport is not found, there is a warning and the repository's `data/airports/<ICAO>/apt.dat` is
+used. After installing or removing airport scenery, restart both X-Plane and the server.
 
-### IFR и точки VFR
+### IFR and VFR points
 
-- Три новых английских голоса (Delivery, Approach, Radar) скачиваются тем же `tools/fetch-piper.sh`; запустите его один раз до старта сервера (`tools/MODELS.md`).
-- Процедуры (SID, STAR, заходы) сервер читает из CIFP установки X-Plane (`Resources/default data/CIFP/EPKK.dat`) по `xplane_root`. Без CIFP на IFR-запрос диспетчер отвечает `IFR not available, VFR only`.
-- Пошаговое руководство по вылету и прилёту по приборам и входу по точке VFR на C172 G1000 — `docs/user-guide/ru/ifr-and-vfr-points.md`; формулировки с источниками — `docs/phraseology/en.md`.
+- Three more English voices (Delivery, Approach, Radar) are downloaded by the same
+  `tools/fetch-piper.sh`; run it once before starting the server (`tools/MODELS.md`).
+- The server reads the procedures (SID, STAR, approaches) from the X-Plane install's CIFP
+  (`Resources/default data/CIFP/EPKK.dat`) through `xplane_root`. Without CIFP the controller
+  answers an IFR request with `IFR not available, VFR only`.
+- A step-by-step guide to instrument departures and arrivals and to VFR entry via the reporting
+  points on a C172 G1000 (in Russian): `docs/user-guide/ru/ifr-and-vfr-points.md`; the wording
+  with its sources: `docs/phraseology/en.md`.
 
-### Языки: английский и польский
+### Languages: English and Polish
 
-- Язык обмена — `[whisper] language` в `config/server.toml` (см. выше): `"en"`, `"pl"` или автоопределение (строка не указана).
-- Голоса: `tools/fetch-piper.sh` скачивает английские (`[ground]`, `[tower]`, `[atis]`) и польские (`[pl.ground]`, `[pl.tower]`, `[pl.atis]`) голоса из `config/voices.toml`; без польского голоса станция говорит английским.
-- Польская фразеология (что понимает разбор и что отвечает диспетчер) — `docs/phraseology/pl.md`; пошаговый польский круг — `docs/user-guide/ru/polish-circuit.md`.
+- The exchange language is `[whisper] language` in `config/server.toml` (see above): `"en"`,
+  `"pl"` or auto-detection (line removed).
+- Voices: `tools/fetch-piper.sh` downloads the English (`[ground]`, `[tower]`, `[atis]`) and
+  Polish (`[pl.ground]`, `[pl.tower]`, `[pl.atis]`) voices of `config/voices.toml`; without a
+  Polish voice a station speaks with its English one.
+- Polish phraseology (what the parser understands and what the controller answers):
+  `docs/phraseology/pl.md`; a step-by-step Polish circuit (in Russian):
+  `docs/user-guide/ru/polish-circuit.md`.
 
 ## 3. X-Plane 11
 
-Для связи плагины не нужны, настройки Settings → Network для RREF менять не нужно: X-Plane сам отвечает на UDP-порту 49000 (клиент только читает позицию, COM1 и COM2 с аудиопанелью, транспондер и погоду). Запустите X-Plane, поставьте самолёт (C172) на стоянку EPKK. Если X-Plane на другой машине или порту — поправьте `xplane = "host:port"` в `config/client.toml`.
+No plugin is needed for the link and no Settings → Network change for RREF: X-Plane answers on
+UDP port 49000 by itself (the client only reads the position, COM1 and COM2 with the audio
+panel, the transponder and the weather). Start X-Plane and put the aircraft (C172) on a stand at
+EPKK. If X-Plane runs on another machine or port, set `xplane = "host:port"` in
+`config/client.toml`.
 
-### Текст переговоров на экране (необязательно)
+### Exchange text on screen (optional)
 
-Плагин `atc-overlay` показывает в X-Plane окно с последними репликами диспетчера (белым), тем, что распознано из вашей речи (зелёным), и состоянием PTT (красным во время передачи). Реплики старше минуты тускнеют.
+The `atc-overlay` plugin shows a window in X-Plane with the controller's latest lines (white),
+what was understood from your speech (green) and the PTT state (red while transmitting). Lines
+older than a minute fade.
 
 ```
-tools/install-xplane-plugin.sh                  # Steam-путь по умолчанию
-tools/install-xplane-plugin.sh "/путь/к/X-Plane 11"
+tools/install-xplane-plugin.sh                  # Steam's default path
+tools/install-xplane-plugin.sh "/path/to/X-Plane 11"
 ```
 
-Скрипт собирает плагин и кладёт его в `Resources/plugins/atc-overlay/64/lin.xpl`; после установки перезапустите X-Plane. Окно можно перетаскивать и менять его размер. Показать или скрыть окно — команда `atc/overlay/toggle` (назначается на клавишу или кнопку в Settings → Keyboard / Joystick). Клиент шлёт строки на UDP `127.0.0.1:48010`; другой адрес — `overlay = "host:port"` в `config/client.toml`.
+The script builds the plugin and puts it in `Resources/plugins/atc-overlay/64/lin.xpl`; restart
+X-Plane after installing. The window can be moved and resized. The command
+`atc/overlay/toggle` shows or hides it (bind it to a key or button in Settings → Keyboard /
+Joystick). The client sends the lines to UDP `127.0.0.1:48010`; another address:
+`overlay = "host:port"` in `config/client.toml`.
 
-### Follow-me: машина сопровождения
+### Follow-me car
 
-На стоянках EPKK (схема Global Airports) нет разметки на бетоне, поэтому найти свою стоянку в конце руления трудно. Ground помогает так:
+The EPKK stands (Global Airports layout) have no markings on the apron, so finding your stand at
+the end of the taxi is hard. Ground helps like this:
 
-- «…, I am lost, I need help» (любая просьба о помощи с рулением) — маршрут заново, а если цель — стоянка ближе 500 м, ещё и где она: `stand two zero is one hundred twenty metres ahead` (расстояние до 10 м; ahead / on your right / behind you / on your left — по направлению от носа самолёта, сектора по 90°);
-- вторая просьба о помощи после того же разрешения на руление, или «request follow-me» / «follow me» / «request marshaller» — `hold position, follow-me car is on the way` (прочитать «holding position»); через 12 с симуляторного времени — `follow the follow-me car` (ответ «wilco» или «follow the follow-me», строгой квитанции нет);
-- «on stand» на стоянке (самолёт стоит, до назначенной стоянки ≤ 25 м) — `good day` (на пожелание — `thank you, you too`); не на стоянке — где она, тем же оборотом.
+- "…, I am lost, I need help" (any request for taxi help): the route again, and when the target
+  is a stand closer than 500 m, also where it is: `stand two zero is one hundred twenty metres
+  ahead` (distance to 10 m; ahead / on your right / behind you / on your left, relative to the
+  aircraft's nose, 90° sectors);
+- a second request for help after the same taxi clearance, or "request follow-me" / "follow me"
+  / "request marshaller": `hold position, follow-me car is on the way` (read back "holding
+  position"); 12 s of simulator time later: `follow the follow-me car` (answer "wilco" or
+  "follow the follow-me"; no strict readback);
+- "on stand" at the stand (aircraft stopped, at most 25 m from the assigned stand): `good day`
+  (to a wish: `thank you, you too`); not at the stand: where it is, in the same words.
 
-Машина (crew car из библиотеки X-Plane 11, `lib/airport/vehicles/servicing/crew_car.obj`) появляется сразу метрах в 40 впереди самолёта на маршруте и едет по рулёжкам до стоянки, держась в 30–50 м впереди: ждёт, пока самолёт стоит или отстал больше чем на 80 м, назад не ездит, не быстрее 15 узлов, плавно поворачивает. В конце пути отъезжает на 12 м вправо и исчезает через 20 с после того, как самолёт доехал. При рулении на исполнительный машина останавливается за 20 м до него; дальше, как обычно, Ground передаёт на Tower. Новое разрешение на руление отзывает машину.
+The car (the crew car of the X-Plane 11 library, `lib/airport/vehicles/servicing/crew_car.obj`)
+appears right away about 40 m ahead of the aircraft on the route and drives along the taxiways
+to the stand, staying 30–50 m ahead: it waits while the aircraft is stopped or more than 80 m
+behind, never reverses, drives at most 15 knots and turns smoothly. At the end it pulls 12 m to
+the right and disappears 20 s after the aircraft arrives. On a taxi to the holding point the car
+stops 20 m before it; from there Ground hands over to Tower as usual. A new taxi clearance
+recalls the car.
 
-Машину рисует тот же плагин `atc-overlay` (клиент пересылает ему команды по тому же UDP 48010). После обновления **переустановите плагин** (`tools/install-xplane-plugin.sh`) и перезапустите X-Plane; нужен X-Plane 11.10+ (API инстансинга).
+The car is drawn by the same `atc-overlay` plugin (the client forwards the commands on the same
+UDP 48010). After an update **reinstall the plugin** (`tools/install-xplane-plugin.sh`) and
+restart X-Plane; X-Plane 11.10+ is needed (instancing API).
 
-## 4. Сервер
+## 4. Server
 
 ```
 target/release/atc-server                       # config/server.toml
-target/release/atc-server --config путь.toml
-target/release/atc-server --fresh               # не восстанавливать сохранённые полёты
+target/release/atc-server --config path.toml
+target/release/atc-server --fresh               # don't restore the saved flights
 ```
 
-Первый старт грузит модели несколько секунд, затем в логе `listening on 127.0.0.1:8740`. Уровень логов — `RUST_LOG` (по умолчанию `info`). В логе каждой передачи видны времена `stt_ms`, `engine_ms`, `tts_ms`.
+The first start loads the models for a few seconds, then the log shows
+`listening on 127.0.0.1:8740`. Log level: `RUST_LOG` (default `info`). The log of each
+transmission shows the times `stt_ms`, `engine_ms`, `tts_ms`.
 
-Сервер сохраняет полёты в работе между запусками: выданные разрешения, фазу полёта, ожидаемые квитанции, код транспондера, букву ATIS. Снимок пишется каждые 2 с и при остановке (Ctrl-C) в `data/cache/state-<ICAO>.json` (в git не попадает). При старте он восстанавливается, если ему не больше 2 часов и он сделан для того же аэропорта; в логе — `flights in progress restored from …` или `starting afresh (…)` с причиной. Начать с чистого листа: `target/release/atc-server --fresh` (или удалить файл).
+The server keeps the flights in progress between runs: issued clearances, flight phase,
+expected readbacks, transponder code, ATIS letter. The snapshot is written every 2 s and on stop
+(Ctrl-C) to `data/cache/state-<ICAO>.json` (not in git). At start it is restored when it is at
+most 2 hours old and made for the same airport; the log says
+`flights in progress restored from …` or `starting afresh (…)` with the reason. To start from a
+clean slate: `target/release/atc-server --fresh` (or delete the file).
 
-Сервер отвергает WebSocket-подключения с заголовком `Origin` — то есть из браузера подключиться нельзя, это сделано намеренно (защита от чужих веб-страниц). Нативный клиент `Origin` не шлёт.
+The server rejects WebSocket connections that carry an `Origin` header, so a browser cannot
+connect; this is on purpose (protection from foreign web pages). The native client sends no
+`Origin`.
 
-## 5. Клиент
+## 5. Client
 
-Настройки — `config/client.toml`: `server`, `callsign` (SP-ABC), `aircraft_type`, `xplane`, `field_elev_ft` (791 для EPKK), `overlay` (адрес плагина на экране, по умолчанию `127.0.0.1:48010`), `input_device` / `output_device` (подстрока имени устройства; без них — системные по умолчанию).
+Settings: `config/client.toml`: `server`, `callsign` (SP-ABC), `aircraft_type`, `xplane`,
+`field_elev_ft` (791 for EPKK), `overlay` (the on-screen plugin's address, default
+`127.0.0.1:48010`), `input_device` / `output_device` (part of the device name; system defaults
+without them).
 
 ```
 target/release/atc-client --help
 # usage: atc-client [--config <file>] [--text] [--record <track.csv>]
 ```
 
-### Голосовой режим (по умолчанию)
+### Voice mode (default)
 
 ```
 target/release/atc-client
 ```
 
-Станция, с которой вы говорите, определяется частотой радиостанции, выбранной на передачу на аудиопанели X-Plane (COM1 MIC или COM2 MIC; по умолчанию COM1). Ответы слышны на ней и на любой другой COM, включённой на прослушивание. Любая слушаемая COM на 126.130 включает ATIS — он играет по кругу (например, ATIS на COM2, пока вы на связи с Ground на COM1). При смене станций клиент печатает `COM 118.105, also listening 126.130`.
+The station you talk to is the frequency of the radio selected for transmission on X-Plane's
+audio panel (COM1 MIC or COM2 MIC; COM1 by default). Replies are heard on it and on any other
+COM selected for listening. Any listened COM on 126.130 starts the ATIS, which plays in a loop
+(for example the ATIS on COM2 while you talk to Ground on COM1). When stations change the client
+prints `COM 118.105, also listening 126.130`.
 
-Транспондер: Ground выдаёт код в конце разрешения на руление («…, QNH one zero one three, squawk four two zero one»; коды по порядку из пула 4201–4277, только восьмеричные цифры), его нужно прочитать в readback и выставить. После перехода от Ground Tower сам вызывает вас на пороге ВПП (если COM1 на частоте Tower), а на «ready for departure» отвечает так же, и сверяет транспондер X-Plane: другой код — «check squawk four two zero one», режим OFF/STBY — «squawk Charlie», разрешения на взлёт нет. Выставьте и ответьте («Squawk four two zero one, …» / «wilco, …») — Tower проверит снова и сразу даст взлёт либо повторит указание. Ставьте режим ALT.
+Transponder: Ground gives a code at the end of the taxi clearance ("…, QNH one zero one three,
+squawk four two zero one"; codes in turn from the pool 4201–4277, octal digits only); read it
+back and set it. After the hand-off from Ground, Tower calls you at the runway holding point
+(when COM1 is on the Tower frequency), answers "ready for departure" the same way, and checks
+X-Plane's transponder: a different code gives "check squawk four two zero one", mode OFF/STBY
+gives "squawk Charlie", and no take-off clearance. Set it and answer ("Squawk four two zero one,
+…" / "wilco, …"): Tower checks again and either clears you for take-off right away or repeats the
+instruction. Use mode ALT.
 
-PTT (секция `[ptt]`):
+PTT (section `[ptt]`):
 
-- **клавиатура** (`key = "space"`) — **переключатель**: нажмите пробел, чтобы начать передачу, нажмите снова, чтобы закончить. Терминал не отдаёт события отпускания клавиши, поэтому hold-to-talk с клавиатуры невозможен. Зажатая клавиша не завершает передачу: пока автоповтор идёт (каждое нажатие повторяется не позже чем через 1 с после предыдущего), нажатия игнорируются; новый «тап» засчитывается после паузы не менее 1 с с последнего нажатия. Итого: тап — начало, тап — конец;
-- **кнопка джойстика** (`joystick_button = 0`) — обычный hold-to-talk: держите — передача идёт, отпустили — конец. Уберите строку, чтобы оставить только клавишу. На Linux номера считаются от `BTN_TRIGGER`: кнопка 0 — это курок (trigger), 1, 2, ... — следующие кнопки. Если не уверены, какой номер у нужной кнопки, запустите с `RUST_LOG=debug` — клиент пишет `joystick button N pressed`;
-- выход: `q`, `Esc` или `Ctrl-C`.
+- **keyboard** (`key = "space"`) is a **toggle**: press space to start transmitting, press it
+  again to stop. A terminal gives no key-release events, so hold-to-talk on the keyboard is not
+  possible. A held key does not end the transmission: while auto-repeat goes on (each press
+  repeated at most 1 s after the previous one) the presses are ignored; a new tap counts after a
+  pause of at least 1 s since the last press. In short: tap to start, tap to stop;
+- **joystick button** (`joystick_button = 0`) is ordinary hold-to-talk: hold to transmit,
+  release to stop. Remove the line to keep only the key. On Linux the numbers count from
+  `BTN_TRIGGER`: button 0 is the trigger, 1, 2, ... the next buttons. If you are not sure which
+  number a button has, run with `RUST_LOG=debug`: the client logs `joystick button N pressed`;
+- quit: `q`, `Esc` or `Ctrl-C`.
 
-### Текстовый режим (отладка)
+### Text mode (debugging)
 
 ```
 target/release/atc-client --text
 ```
 
-Микрофон, динамики и PTT не открываются. Печатаете реплику пилота и Enter — она уходит на частоту радиостанции, выбранной на передачу; ответ диспетчера печатается текстом. Выход — Ctrl-D. Удобно, чтобы проверить сервер и движок без голоса. Если X-Plane не запущен, клиент ответит `no telemetry from X-Plane yet (is it running? check xplane in the config) - line dropped`.
+The microphone, speakers and PTT are not opened. Type a pilot transmission and press Enter: it
+goes out on the frequency of the radio selected for transmission; the controller's reply is
+printed as text. Quit with Ctrl-D. Handy for checking the server and the engine without voice.
+If X-Plane is not running the client answers
+`no telemetry from X-Plane yet (is it running? check xplane in the config) - line dropped`.
 
-## 6. Запись трека и воспроизведение
-
-```
-target/release/atc-client --record track.csv        # можно вместе с --text
-```
-
-Пишется CSV (заголовок `t,lat,lon,alt_ft,hdg,ias,gs,vs,on_ground,com1_khz,xpdr_code,xpdr_mode`, строка на кадр телеметрии, кадры на паузе пропускаются; файл сбрасывается построчно, переживёт убийство клиента). `xpdr_mode` — как в X-Plane: 0 off, 1 standby, 2 on (в X-Plane это же и ALT), 3 test; пустое поле — неизвестно. Старые записи без двух последних колонок тоже читаются.
-
-Воспроизведение через `atc-replay`: он принимает **сценарий** TOML, а не CSV. Скопируйте `scenarios/epkk-circuit-vmc.toml`, замените строку `track = "synthetic-circuit:25"` на `track_file = "track.csv"` (путь относительно папки сценария; ровно одно из `track` / `track_file`), при необходимости поправьте реплики `[[say]]` и погоду (транспондер задаётся `transponder = { code = 7000, mode = 2 }` — в начале сценария или в `[[say]]`, тогда пилот выставляет его перед репликой; пример — `scenarios/epkk-wrong-squawk.toml`), затем:
+## 6. Recording a track and replaying it
 
 ```
-cargo run --release -p atc-replay -- scenarios/мой-сценарий.toml
+target/release/atc-client --record track.csv        # also works with --text
 ```
 
-Язык в сценарии: `language = "auto" | "en" | "pl"` в начале файла — режим языка, как `[whisper] language` (по умолчанию `"en"`), и `lang = "pl"` в `[[say]]` — язык, который определил бы Whisper (по умолчанию `"en"`); примеры — `scenarios/epkk-circuit-pl.toml` и `scenarios/epkk-language-switch.toml`.
+This writes a CSV (header
+`t,lat,lon,alt_ft,hdg,ias,gs,vs,on_ground,com1_khz,xpdr_code,xpdr_mode`, one line per telemetry
+frame, frames while paused are skipped; the file is flushed line by line and survives the client
+being killed). `xpdr_mode` is X-Plane's: 0 off, 1 standby, 2 on (the same as ALT in X-Plane),
+3 test; an empty field means unknown. Older recordings without the last two columns are read
+too.
 
-Транскрипт печатается в stdout (формат `[время] КТО: текст`) и детерминирован; эталоны — `scenarios/*.expected.txt`. Проверка штатного сценария: `cargo run -q -p atc-replay -- scenarios/epkk-circuit-vmc.toml | diff - scenarios/epkk-circuit-vmc.expected.txt`.
+Replay with `atc-replay`: it takes a TOML **scenario**, not the CSV. Copy
+`scenarios/epkk-circuit-vmc.toml`, replace the line `track = "synthetic-circuit:25"` with
+`track_file = "track.csv"` (a path relative to the scenario's folder; exactly one of `track` /
+`track_file`), adjust the `[[say]]` lines and the weather if needed (the transponder is set with
+`transponder = { code = 7000, mode = 2 }`, at the start of the scenario or in a `[[say]]`, where
+the pilot sets it before the line; example: `scenarios/epkk-wrong-squawk.toml`), then:
 
-## Частые проблемы
+```
+cargo run --release -p atc-replay -- scenarios/my-scenario.toml
+```
 
-| Симптом | Причина |
+Language in a scenario: `language = "auto" | "en" | "pl"` at the top of the file is the language
+mode, like `[whisper] language` (default `"en"`), and `lang = "pl"` in a `[[say]]` is the
+language Whisper would have detected (default `"en"`); examples:
+`scenarios/epkk-circuit-pl.toml` and `scenarios/epkk-language-switch.toml`.
+
+The transcript is printed to stdout (format `[time] WHO: text`) and is deterministic; the
+reference transcripts are `scenarios/*.expected.txt`. Checking the standard scenario:
+`cargo run -q -p atc-replay -- scenarios/epkk-circuit-vmc.toml | diff - scenarios/epkk-circuit-vmc.expected.txt`.
+
+## Common problems
+
+| Symptom | Cause |
 |---|---|
-| сервер выходит с кодом 2 | нет модели: `tools/fetch-whisper.sh` / `tools/fetch-piper.sh` |
-| `no telemetry from X-Plane yet` | X-Plane не запущен, не тот `xplane` в `config/client.toml` или UDP 49000 блокирует файрвол |
-| ошибка чтения `config/...` или `data/airports/...` | запуск не из корня репозитория |
-| клиент не подключается из браузера/через `Origin` | так задумано, см. п. 4 |
-| Ground называет рулёжки, которых нет в симуляторе | не задан `xplane_root` или X-Plane не перезапущен после установки сцены; см. `airport layout:` в логе сервера |
+| the server exits with code 2 | a model is missing: `tools/fetch-whisper.sh` / `tools/fetch-piper.sh` |
+| `no telemetry from X-Plane yet` | X-Plane is not running, wrong `xplane` in `config/client.toml`, or a firewall blocks UDP 49000 |
+| error reading `config/...` or `data/airports/...` | not started from the repository root |
+| the client cannot connect from a browser / with `Origin` | on purpose, see section 4 |
+| Ground names taxiways that are not in the simulator | `xplane_root` not set, or X-Plane not restarted after installing scenery; see `airport layout:` in the server log |
