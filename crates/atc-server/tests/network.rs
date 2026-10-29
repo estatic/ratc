@@ -327,6 +327,10 @@ fn handoff_moves_flight_with_plan() {
     net.on_transmission(&c, ZETA_APP, rb, Lang::En, SimTime(t + 1.0));
     assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
     assert!(!registered(&net, ZZZZ, &c));
+    // Still within 30 NM of Zeta: its telemetry does not bring back a ghost strip there.
+    net.on_telemetry(sample(&c, t + 2.0, at(lat), 2000.0, 150.0, TESTVILLE_TWR));
+    net.on_telemetry(sample(&c, t + 4.0, at(lat), 2000.0, 150.0, TESTVILLE_TWR));
+    assert!(!registered(&net, ZZZZ, &c));
     let testville = net.stations()[ZZZY].engine.lock().unwrap();
     let strip = testville.strip(&c).expect("handed in");
     assert!(strip.handed_in);
@@ -384,4 +388,38 @@ fn station_map_is_the_union() {
     assert_eq!(m.voice_for(ZETA_GROUND), Some(VoiceId::Ground));
     assert_eq!(m.station_name(ZETA_APP), Some("Zeta Approach"));
     assert_eq!(net.atis_khzs(), Vec::<u32>::new());
+}
+
+/// An ATIS (or any unstaffed) frequency of another station owns nothing: a call there moves
+/// no flight and nobody answers.
+#[test]
+fn call_on_other_stations_atis_moves_nothing() {
+    let atis = r#"
+[[positions]]
+role = "Atis"
+callsign = "Testville ATIS"
+khz = 120500
+"#;
+    let net = network(atis, ZZZZ_EXTRA);
+    let c = join(&net, "SPTST");
+    net.on_telemetry(sample(&c, 0.0, at(10.0012), 100.0, 0.0, ZETA_GROUND));
+    net.on_transmission(
+        &c,
+        ZETA_GROUND,
+        "Zeta Ground, SPTST, request taxi",
+        Lang::En,
+        SimTime(1.0),
+    );
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    let out = net.on_transmission(
+        &c,
+        120_500,
+        "Testville ATIS, SPTST, request taxi",
+        Lang::En,
+        SimTime(2.0),
+    );
+    assert!(out.is_empty(), "{out:?}");
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    assert!(registered(&net, ZZZZ, &c));
+    assert_eq!(net.atis_khzs(), vec![120_500]);
 }

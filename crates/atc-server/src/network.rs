@@ -15,13 +15,13 @@
 //! Locking: `owners` is held for a whole dispatch, engines are locked one at a time inside it
 //! and never the other way round; `pilots` is a leaf lock.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use atc_core::atis::Weather;
 use atc_core::engine::{AtcEngine, AtcOutput, EngineSnapshot, LanguageMode, VehicleOrder};
 use atc_core::state::{AircraftState, SimTime};
-use atc_core::strip::PilotProfile;
+use atc_core::strip::{PilotProfile, Role};
 use atc_geo::{LatLon, distance_m};
 use atc_navdata::model::{Airport, FreqKind};
 use atc_phraseology::{Callsign, Lang};
@@ -58,6 +58,9 @@ impl Owner {
 struct Pilot {
     profile: Option<PilotProfile>,
     pos: Option<LatLon>,
+    /// Stations that handed the flight away to another owner: they do not register it
+    /// again from telemetry (no ghost strip) until it comes back.
+    handed_away: HashSet<usize>,
 }
 
 pub struct Network {
@@ -66,8 +69,9 @@ pub struct Network {
     refs: Vec<Option<LatLon>>,
     owners: Mutex<HashMap<Callsign, Owner>>,
     pilots: Mutex<HashMap<Callsign, Pilot>>,
-    /// Who works each position frequency (station positions and alternate Approach
-    /// frequencies), in station order.
+    /// Who works each staffed position frequency (positions the engine answers, alternate
+    /// Approach frequencies), in station order. ATIS, Unicom, Departure and AFIS
+    /// frequencies own nothing: a call there moves no flight.
     freq_index: HashMap<u32, Vec<Owner>>,
     /// The stations emulating each adjacent unit frequency.
     emulated: HashMap<u32, Vec<usize>>,
@@ -84,11 +88,13 @@ fn reference_point(ap: &Airport) -> Option<LatLon> {
     })
 }
 
-/// The entry of `map` for `khz`, or for another name of the same 25 kHz carrier.
+/// The entry of `map` for `khz`, or for another name of the same 25 kHz carrier (the lowest
+/// such key, so the result does not depend on the map's order).
 fn on_channel<V>(map: &HashMap<u32, V>, khz: u32) -> Option<&V> {
     map.get(&khz).or_else(|| {
         map.iter()
-            .find(|(k, _)| atc_proto::same_channel(**k, khz))
+            .filter(|(k, _)| atc_proto::same_channel(**k, khz))
+            .min_by_key(|(k, _)| **k)
             .map(|(_, v)| v)
     })
 }
@@ -104,7 +110,12 @@ impl Network {
             let p = &s.procs;
             let has_approach = p.positions.iter().any(|q| q.role == FreqKind::Approach);
             let alt = p.approach_alt_khz.iter().filter(|_| has_approach);
-            for khz in p.positions.iter().map(|q| q.khz).chain(alt.copied()) {
+            let staffed = p
+                .positions
+                .iter()
+                .filter(|q| Role::from_freq_kind(q.role).is_some())
+                .map(|q| q.khz);
+            for khz in staffed.chain(alt.copied()) {
                 let owners = freq_index.entry(khz).or_default();
                 if !owners.contains(&Owner::Station(i)) {
                     owners.push(Owner::Station(i));
@@ -194,7 +205,7 @@ impl Network {
                 continue;
             }
             let mut engine = st.engine.lock().unwrap();
-            self.ensure_registered(&mut engine, &cs);
+            self.ensure_registered(i, &mut engine, &cs);
             let o = engine.on_telemetry(s.clone());
             if speaker == Some(i) {
                 out = o;
@@ -228,7 +239,7 @@ impl Network {
         owners.insert(from.clone(), Owner::Station(target));
         let out = {
             let mut engine = self.stations[target].engine.lock().unwrap();
-            self.ensure_registered(&mut engine, from);
+            self.ensure_registered(target, &mut engine, from);
             engine.on_transmission(freq_khz, text, lang, t)
         };
         self.check_handoff(&mut owners, from, pos);
@@ -302,15 +313,21 @@ impl Network {
         }
     }
 
-    /// Each station's id and engine snapshot.
+    /// Each station's id and engine snapshot, taken under the ownership lock so that no
+    /// flight is half-way between two engines (and the owners -> engine lock order holds).
     pub fn snapshots(&self) -> Vec<(String, EngineSnapshot)> {
+        let _owners = self.owners.lock().unwrap();
         self.stations
             .iter()
             .map(|s| (s.id.clone(), s.engine.lock().unwrap().snapshot()))
             .collect()
     }
 
-    /// The vehicle orders of every engine.
+    /// The vehicle orders of every engine, drained. Taking non-owners' orders too is right:
+    /// only the owner orders a car (orders come from transmissions it answered), while an
+    /// engine that exported a flight queues the cancellation of a car leading it, which must
+    /// still reach the aircraft. Each order names its aircraft, so whoever drains it delivers
+    /// it to the right client.
     pub fn take_vehicle_orders(&self) -> Vec<VehicleOrder> {
         self.stations
             .iter()
@@ -322,17 +339,20 @@ impl Network {
         self.pilots.lock().unwrap().get(cs).and_then(|p| p.pos)
     }
 
-    /// Registers `cs` in `engine` unless it has a strip there.
-    fn ensure_registered(&self, engine: &mut AtcEngine, cs: &Callsign) {
+    /// Registers `cs` in `engine` (station `i`) unless it has a strip there or station `i`
+    /// handed it away.
+    fn ensure_registered(&self, i: usize, engine: &mut AtcEngine, cs: &Callsign) {
         if engine.strip(cs).is_some() {
             return;
         }
-        let profile = self
-            .pilots
-            .lock()
-            .unwrap()
-            .get(cs)
-            .and_then(|p| p.profile.clone());
+        let profile = {
+            let pilots = self.pilots.lock().unwrap();
+            let p = pilots.get(cs);
+            if p.is_some_and(|p| p.handed_away.contains(&i)) {
+                return;
+            }
+            p.and_then(|p| p.profile.clone())
+        };
         engine.register_pilot(profile.unwrap_or_else(|| PilotProfile {
             callsign: cs.clone(),
             aircraft_type: String::new(),
@@ -370,6 +390,12 @@ impl Network {
     /// Hands flight `cs` from station `from` to station `to`.
     fn move_flight(&self, from: usize, to: usize, cs: &Callsign) {
         let handover = self.stations[from].engine.lock().unwrap().export_flight(cs);
+        {
+            let mut pilots = self.pilots.lock().unwrap();
+            let away = &mut pilots.entry(cs.clone()).or_default().handed_away;
+            away.insert(from);
+            away.remove(&to);
+        }
         if let Some(h) = handover {
             tracing::info!(callsign = %cs.0, from = %self.stations[from].id, to = %self.stations[to].id, "flight handed over");
             self.stations[to].engine.lock().unwrap().import_flight(h);
