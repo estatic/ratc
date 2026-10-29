@@ -390,12 +390,12 @@ fn area_line(dist_m: f64, ap: &OaAirport) -> String {
     let main = ap
         .frequencies
         .iter()
-        .find(|f| f.kind == 14)
+        .find(|f| f.kind == Some(14))
         .or_else(|| ap.frequencies.iter().find(|f| f.primary))
         .or_else(|| ap.frequencies.first());
     let freq = main.map_or_else(String::new, |f| {
         let v = khz(&f.value).map_or_else(|| f.value.clone(), mhz);
-        format!("  {} {v}", freq_word(f.kind))
+        format!("  {} {v}", f.kind.map_or("", freq_word))
     });
     format!(
         "{:>3} km  {}  {}  {}{freq}",

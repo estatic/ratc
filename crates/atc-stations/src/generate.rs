@@ -51,7 +51,7 @@ pub fn offered_positions(ap: &OaAirport) -> Vec<PositionDef> {
     let mut out: Vec<PositionDef> = Vec::new();
     let mut approach: Vec<&OaFrequency> = Vec::new();
     for f in &ap.frequencies {
-        let (Some(role), Some(k)) = (role_of_frequency(f.kind), parsed(f)) else {
+        let (Some(role), Some(k)) = (f.kind.and_then(role_of_frequency), parsed(f)) else {
             continue;
         };
         if role == FreqKind::Approach {
@@ -117,7 +117,7 @@ pub fn generate(
         Some(main) => ap
             .frequencies
             .iter()
-            .filter(|f| role_of_frequency(f.kind) == Some(FreqKind::Approach))
+            .filter(|f| f.kind.and_then(role_of_frequency) == Some(FreqKind::Approach))
             .filter_map(parsed)
             .filter(|&k| k != main)
             .collect(),
@@ -394,7 +394,7 @@ fn adjacent(ap: &OaAirport, data: &CountryData, around: &[Around<'_>]) -> Vec<Ad
         .filter(|o| o.id != ap.id)
         .filter_map(|o| {
             let dist = distance_m(arp, ll(o.geometry.lat_lon()));
-            let twr = o.frequencies.iter().filter(|f| f.kind == 14);
+            let twr = o.frequencies.iter().filter(|f| f.kind == Some(14));
             let f = twr.clone().find(|f| f.primary).or(twr.clone().next())?;
             let k = parsed(f)?;
             let callsign = match f.name.as_deref().filter(|n| !n.trim().is_empty()) {

@@ -320,7 +320,7 @@ fn update_keeps_position_choice() {
     aps[0].frequencies.retain(|f| f.value != "121.900");
     aps[0].frequencies.push(OaFrequency {
         value: "121.800".into(),
-        kind: 9,
+        kind: Some(9),
         name: Some("ZETA GND".into()),
         primary: false,
     });

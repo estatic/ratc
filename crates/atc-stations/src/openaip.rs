@@ -76,8 +76,9 @@ pub struct Elevation {
 pub struct OaFrequency {
     /// MHz as text, e.g. "121.980".
     pub value: String,
-    #[serde(rename = "type")]
-    pub kind: u8,
+    /// Frequency type code; airspace frequencies (FIS/ACC sectors) carry none.
+    #[serde(rename = "type", default)]
+    pub kind: Option<u8>,
     pub name: Option<String>,
     #[serde(default)]
     pub primary: bool,
@@ -427,7 +428,7 @@ fn decode_items<T: serde::de::DeserializeOwned>(
         .filter_map(|v| match serde_json::from_value(v) {
             Ok(x) => Some(x),
             Err(e) => {
-                tracing::warn!(endpoint = endpoint.path(), error = %e, "skipping an unreadable OpenAIP record");
+                tracing::debug!(endpoint = endpoint.path(), error = %e, "skipping an unreadable OpenAIP record");
                 skipped += 1;
                 None
             }
@@ -715,6 +716,20 @@ mod tests {
         assert_eq!(s.upper_limit.value, 2500.0);
         assert!(s.frequencies.is_empty());
         assert_eq!(s.geometry.outer_ring_lat_lon()[1], [50.0, 20.0]);
+    }
+
+    #[test]
+    fn airspace_frequency_without_type_decodes() {
+        let s: OaAirspace = serde_json::from_str(
+            r#"{"_id":"eee555","name":"FIS TESTLAND","type":33,"country":"ZZ",
+            "frequencies":[{"value":"120.500","unit":2,"name":"TESTLAND INFORMATION","primary":true}],
+            "lowerLimit":{"value":0,"unit":1,"referenceDatum":0},
+            "upperLimit":{"value":95,"unit":6,"referenceDatum":2},
+            "geometry":{"type":"Polygon","coordinates":[[[19.0,50.0],[20.0,50.0],[20.0,51.0],[19.0,50.0]]]}}"#,
+        )
+        .unwrap();
+        assert_eq!(s.frequencies[0].kind, None);
+        assert_eq!(khz(&s.frequencies[0].value), Some(120500));
     }
 
     #[test]
