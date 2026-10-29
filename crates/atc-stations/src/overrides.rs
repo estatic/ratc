@@ -220,6 +220,15 @@ kind = "Fis"
             "{text}"
         );
         assert!(text.find("preferred_runway").unwrap() < text.find("[tma]").unwrap());
+        let mut plain = Overrides::default();
+        plain.set("preferred_runway", val("\"25\""), "user");
+        plain.set("airac", val("\"2601\""), "user");
+        plain.save(&dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("overrides.toml")).unwrap(),
+            "airac = \"2601\"\npreferred_runway = \"25\"\n\n[sources]\nairac = \"user\"\npreferred_runway = \"user\"\n"
+        );
+        ov.save(&dir).unwrap();
         assert!(!dir.join("overrides.toml.tmp").exists());
         let back = Overrides::load(&dir).unwrap();
         assert_eq!(back, ov);
