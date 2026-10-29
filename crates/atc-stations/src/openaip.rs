@@ -99,9 +99,10 @@ pub struct OaAirport {
     pub icao_code: Option<String>,
     #[serde(rename = "type")]
     pub kind: u8,
+    #[serde(default)]
     pub country: String,
     pub geometry: Point,
-    pub elevation: Elevation,
+    pub elevation: Option<Elevation>,
     pub magnetic_declination: Option<f64>,
     #[serde(default)]
     pub frequencies: Vec<OaFrequency>,
@@ -112,9 +113,10 @@ pub struct OaAirport {
 
 impl OaAirport {
     pub fn elevation_ft(&self) -> i32 {
-        match self.elevation.unit {
-            1 => self.elevation.value.round() as i32,
-            _ => (self.elevation.value * 3.28084).round() as i32,
+        match &self.elevation {
+            None => 0,
+            Some(e) if e.unit == 1 => e.value.round() as i32,
+            Some(e) => (e.value * 3.28084).round() as i32,
         }
     }
 }
@@ -141,6 +143,7 @@ pub struct OaAirspace {
     #[serde(default)]
     pub frequencies: Vec<OaFrequency>,
     pub geometry: Polygon,
+    #[serde(default)]
     pub country: String,
 }
 
@@ -198,8 +201,15 @@ struct ListResponse<T> {
     items: Vec<T>,
     #[serde(default)]
     total_count: u64,
-    #[serde(default)]
-    total_pages: u64,
+    total_pages: Option<u64>,
+}
+
+impl<T> ListResponse<T> {
+    /// `totalPages`, or derived from `totalCount` when the field is missing.
+    fn pages(&self, limit: u64) -> u64 {
+        self.total_pages
+            .unwrap_or_else(|| self.total_count.div_ceil(limit))
+    }
 }
 
 /// One HTTP GET: returns status and body text.
@@ -231,6 +241,8 @@ impl Transport for UreqTransport {
         let status = resp.status().as_u16();
         let body = resp
             .body_mut()
+            .with_config()
+            .limit(256 * 1024 * 1024)
             .read_to_string()
             .map_err(|e| ApiError::Network(e.to_string()))?;
         Ok((status, body))
@@ -326,8 +338,9 @@ impl HttpApi {
                 q.push(("updatedAfter", u.to_string()));
             }
             let r: ListResponse<T> = self.page(endpoint, q, page, 1000)?;
+            let last = page >= r.pages(1000);
             out.extend(r.items);
-            if page >= r.total_pages {
+            if last {
                 return Ok(out);
             }
             page += 1;
@@ -477,6 +490,8 @@ pub mod fake {
             };
             Ok(n as u64)
         }
+        /// Matches case-insensitive substrings of name or ICAO across all
+        /// countries. Records a call with country "" and no `updated_after`.
         fn search_airports(&self, query: &str) -> Result<Vec<OaAirport>, ApiError> {
             self.record(Endpoint::Airports, "", None)?;
             let q = query.to_lowercase();
@@ -540,6 +555,25 @@ mod tests {
         .unwrap();
         assert!(a.frequencies.is_empty() && a.runways.is_empty() && a.icao_code.is_none());
         assert_eq!(a.elevation_ft(), 10);
+    }
+
+    #[test]
+    fn airport_without_elevation_or_country_decodes() {
+        let a: OaAirport = serde_json::from_str(
+            r#"{"_id":"b","name":"N","type":0,"geometry":{"type":"Point","coordinates":[1,2]},"updatedAt":"x"}"#,
+        )
+        .unwrap();
+        assert_eq!(a.elevation_ft(), 0);
+        assert_eq!(a.country, "");
+    }
+
+    #[test]
+    fn missing_total_pages_falls_back_to_total_count() {
+        let item = AIRPORT;
+        let body = |n: u32| format!(r#"{{"items":[{item}],"totalCount":{n}}}"#);
+        let (api, pages) = scripted(vec![(200, body(1001)), (200, body(1001))]);
+        assert_eq!(api.airports("ZZ", None).unwrap().len(), 2);
+        assert_eq!(*pages.borrow(), vec!["1", "2"]);
     }
 
     #[test]
