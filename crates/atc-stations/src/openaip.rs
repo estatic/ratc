@@ -1,6 +1,6 @@
 //! OpenAIP REST types and client.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const AUTH_MESSAGE: &str =
@@ -36,7 +36,7 @@ impl Endpoint {
 }
 
 /// GeoJSON point; coordinates are `[lon, lat]`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub coordinates: [f64; 2],
 }
@@ -49,7 +49,7 @@ impl Point {
 }
 
 /// GeoJSON polygon; rings of `[lon, lat]`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Polygon {
     pub coordinates: Vec<Vec<[f64; 2]>>,
 }
@@ -64,14 +64,14 @@ impl Polygon {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Elevation {
     pub value: f64,
     /// 0 = metres, 1 = feet.
     pub unit: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OaFrequency {
     /// MHz as text, e.g. "121.980".
@@ -83,14 +83,14 @@ pub struct OaFrequency {
     pub primary: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OaRunway {
     pub designator: String,
     pub true_heading: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OaAirport {
     #[serde(rename = "_id")]
@@ -121,7 +121,7 @@ impl OaAirport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Limit {
     pub value: f64,
@@ -129,7 +129,7 @@ pub struct Limit {
     pub reference_datum: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OaAirspace {
     #[serde(rename = "_id")]
@@ -147,7 +147,7 @@ pub struct OaAirspace {
     pub country: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OaReportingPoint {
     #[serde(rename = "_id")]
