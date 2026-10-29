@@ -1,0 +1,112 @@
+airac = "AIRAC AMDT 10-26 (2026-10-01)"
+approach_alt_khz = [126530, 135405]
+delivery_hours = { summer_utc = [6, 22], winter_utc = [5, 21] }
+preferred_runway = "25"
+source = "AIP Polska eAIP IFR, AD 2 EPKK: AD 2.17 (transition altitude), AD 2.18 (frequencies). Circuits and preferred runway are NOT in AIP: ICAO standard, user-approved."
+tma = { radius_nm = 40.0, ceiling_ft = 9500 }
+vfr_hold_max_ft = 2000
+vfr_holds = ["KILO", "ZULU"]
+
+[[vfr_points]]
+name = "BRAVO"
+lat = 50.264722
+lon = 19.434722
+
+[[vfr_points]]
+name = "DELTA"
+lat = 49.856944
+lon = 20.141667
+
+[[vfr_points]]
+name = "ECHO"
+lat = 50.041944
+lon = 20.097778
+
+[[vfr_points]]
+name = "HOTEL"
+lat = 50.318056
+lon = 19.237222
+
+[[vfr_points]]
+name = "INDIA"
+lat = 50.15
+lon = 19.633333
+
+[[vfr_points]]
+name = "KILO"
+lat = 50.05
+lon = 19.8
+south = true
+
+[[vfr_points]]
+name = "LIMA"
+lat = 50.136389
+lon = 20.114444
+
+[[vfr_points]]
+name = "MIKE"
+lat = 50.35
+lon = 20.033333
+
+[[vfr_points]]
+name = "OSCAR"
+lat = 50.2
+lon = 19.883333
+
+[[vfr_points]]
+name = "ROMEO"
+lat = 49.910833
+lon = 19.412778
+
+[[vfr_points]]
+name = "SIERRA"
+lat = 49.983333
+lon = 19.816667
+south = true
+
+[[vfr_points]]
+name = "UNIFORM"
+lat = 49.791944
+lon = 19.778056
+
+[[vfr_points]]
+name = "ZULU"
+lat = 50.109167
+lon = 19.779444
+
+[[positions]]
+role = "Atis"
+callsign = "Kraków ATIS"
+khz = 126130
+
+[[positions]]
+role = "Delivery"
+callsign = "Kraków Delivery"
+khz = 121980
+
+[[positions]]
+role = "Ground"
+callsign = "Kraków Ground"
+khz = 118105
+
+[[positions]]
+role = "Tower"
+callsign = "Kraków Tower"
+khz = 123255
+
+[[positions]]
+role = "Approach"
+callsign = "Kraków Approach"
+khz = 121075
+
+[sources]
+airac = "AIP Polska eAIP IFR, AIRAC AMDT 10-26"
+approach_alt_khz = "AIP AD 2.18 + AD 2 EPKT 2.18"
+delivery_hours = "AIP AD 2.20"
+positions = "AIP AD 2.18 (callsigns spelled Kraków; OpenAIP has KRAKOW for some)"
+preferred_runway = "user ruling 2026-10-19"
+source = "AIP Polska eAIP IFR, AD 2 EPKK"
+tma = "user ruling 2026-10-19"
+vfr_hold_max_ft = "AIP AD 2.22 3.3"
+vfr_holds = "AIP AD 2.22 3.3"
+vfr_points = "AIP AD 2.22 3.1"

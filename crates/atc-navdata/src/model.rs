@@ -36,6 +36,8 @@ pub enum FreqKind {
     Tower,
     Approach,
     Departure,
+    /// Aerodrome flight information service (data only; the engine serves none yet).
+    Afis,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

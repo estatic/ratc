@@ -1,0 +1,280 @@
+[
+ {
+  "_id": "as1",
+  "name": "ZETA CTR",
+  "type": 4,
+  "icaoClass": 3,
+  "lowerLimit": {
+   "value": 0,
+   "unit": 1,
+   "referenceDatum": 0
+  },
+  "upperLimit": {
+   "value": 1500,
+   "unit": 1,
+   "referenceDatum": 0
+  },
+  "frequencies": [],
+  "geometry": {
+   "coordinates": [
+    [
+     [
+      9.9,
+      9.9
+     ],
+     [
+      10.1,
+      9.9
+     ],
+     [
+      10.1,
+      10.1
+     ],
+     [
+      9.9,
+      10.1
+     ],
+     [
+      9.9,
+      9.9
+     ]
+    ]
+   ]
+  },
+  "country": "ZZ"
+ },
+ {
+  "_id": "as2",
+  "name": "ZETA TMA",
+  "type": 7,
+  "icaoClass": 3,
+  "lowerLimit": {
+   "value": 1500,
+   "unit": 1,
+   "referenceDatum": 1
+  },
+  "upperLimit": {
+   "value": 65,
+   "unit": 6,
+   "referenceDatum": 2
+  },
+  "frequencies": [],
+  "geometry": {
+   "coordinates": [
+    [
+     [
+      9.5,
+      9.5
+     ],
+     [
+      10.5,
+      9.5
+     ],
+     [
+      10.5,
+      10.5
+     ],
+     [
+      9.5,
+      10.5
+     ],
+     [
+      9.5,
+      9.5
+     ]
+    ]
+   ]
+  },
+  "country": "ZZ"
+ },
+ {
+  "_id": "as3",
+  "name": "ZETA BIG TMA",
+  "type": 7,
+  "icaoClass": 3,
+  "lowerLimit": {
+   "value": 3500,
+   "unit": 1,
+   "referenceDatum": 1
+  },
+  "upperLimit": {
+   "value": 100,
+   "unit": 6,
+   "referenceDatum": 2
+  },
+  "frequencies": [],
+  "geometry": {
+   "coordinates": [
+    [
+     [
+      9.0,
+      9.0
+     ],
+     [
+      11.0,
+      9.0
+     ],
+     [
+      11.0,
+      11.0
+     ],
+     [
+      9.0,
+      11.0
+     ],
+     [
+      9.0,
+      9.0
+     ]
+    ]
+   ]
+  },
+  "country": "ZZ"
+ },
+ {
+  "_id": "as4",
+  "name": "FIS ZETA-ZACHOD",
+  "type": 33,
+  "icaoClass": null,
+  "lowerLimit": {
+   "value": 0,
+   "unit": 1,
+   "referenceDatum": 0
+  },
+  "upperLimit": {
+   "value": 95,
+   "unit": 6,
+   "referenceDatum": 2
+  },
+  "frequencies": [
+   {
+    "value": "119.500",
+    "type": 0,
+    "name": "ZETA INFORMATION",
+    "primary": false
+   }
+  ],
+  "geometry": {
+   "coordinates": [
+    [
+     [
+      8.0,
+      8.0
+     ],
+     [
+      12.0,
+      8.0
+     ],
+     [
+      12.0,
+      12.0
+     ],
+     [
+      8.0,
+      12.0
+     ],
+     [
+      8.0,
+      8.0
+     ]
+    ]
+   ]
+  },
+  "country": "ZZ"
+ },
+ {
+  "_id": "as5",
+  "name": "FAR CTA",
+  "type": 26,
+  "icaoClass": 2,
+  "lowerLimit": {
+   "value": 0,
+   "unit": 1,
+   "referenceDatum": 0
+  },
+  "upperLimit": {
+   "value": 2000,
+   "unit": 1,
+   "referenceDatum": 1
+  },
+  "frequencies": [],
+  "geometry": {
+   "coordinates": [
+    [
+     [
+      9.5,
+      19.5
+     ],
+     [
+      10.5,
+      19.5
+     ],
+     [
+      10.5,
+      20.5
+     ],
+     [
+      9.5,
+      20.5
+     ],
+     [
+      9.5,
+      19.5
+     ]
+    ]
+   ]
+  },
+  "country": "ZZ"
+ },
+ {
+  "_id": "as6",
+  "name": "ZETA ACC",
+  "type": 27,
+  "icaoClass": null,
+  "lowerLimit": {
+   "value": 9500,
+   "unit": 1,
+   "referenceDatum": 1
+  },
+  "upperLimit": {
+   "value": 660,
+   "unit": 0,
+   "referenceDatum": 1
+  },
+  "frequencies": [
+   {
+    "value": "133.250",
+    "type": 0,
+    "name": "ZETA CONTROL",
+    "primary": false
+   }
+  ],
+  "geometry": {
+   "coordinates": [
+    [
+     [
+      7.0,
+      7.0
+     ],
+     [
+      13.0,
+      7.0
+     ],
+     [
+      13.0,
+      13.0
+     ],
+     [
+      7.0,
+      13.0
+     ],
+     [
+      7.0,
+      7.0
+     ]
+    ]
+   ]
+  },
+  "country": "ZZ"
+ }
+]

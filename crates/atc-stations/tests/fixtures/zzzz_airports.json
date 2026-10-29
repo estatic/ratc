@@ -1,0 +1,180 @@
+[
+ {
+  "_id": "ap1",
+  "name": "ZETA INTERNATIONAL",
+  "icaoCode": "ZZZZ",
+  "type": 0,
+  "country": "ZZ",
+  "geometry": {
+   "coordinates": [
+    10.0,
+    10.0
+   ]
+  },
+  "elevation": {
+   "value": 100,
+   "unit": 1
+  },
+  "magneticDeclination": 4.5,
+  "frequencies": [
+   {
+    "value": "127.000",
+    "type": 15,
+    "name": "ZETA ATIS",
+    "primary": false
+   },
+   {
+    "value": "121.900",
+    "type": 5,
+    "name": "ZETA DEL",
+    "primary": false
+   },
+   {
+    "value": "121.700",
+    "type": 9,
+    "name": "ZETA GND",
+    "primary": false
+   },
+   {
+    "value": "118.300",
+    "type": 14,
+    "name": "ZETA TWR",
+    "primary": true
+   },
+   {
+    "value": "119.100",
+    "type": 0,
+    "name": "ZETA APP",
+    "primary": false
+   },
+   {
+    "value": "119.900",
+    "type": 0,
+    "name": "ZETA APP",
+    "primary": true
+   }
+  ],
+  "runways": [
+   {
+    "designator": "09",
+    "trueHeading": 90.0
+   },
+   {
+    "designator": "27",
+    "trueHeading": 270.0
+   }
+  ],
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+ },
+ {
+  "_id": "ap2",
+  "name": "YONDER FIELD",
+  "icaoCode": "YYYY",
+  "type": 0,
+  "country": "ZZ",
+  "geometry": {
+   "coordinates": [
+    10.5,
+    10.0
+   ]
+  },
+  "elevation": {
+   "value": 100,
+   "unit": 1
+  },
+  "magneticDeclination": null,
+  "frequencies": [
+   {
+    "value": "122.500",
+    "type": 14,
+    "name": "YONDER TWR",
+    "primary": true
+   }
+  ],
+  "runways": [
+   {
+    "designator": "09",
+    "trueHeading": 90.0
+   },
+   {
+    "designator": "27",
+    "trueHeading": 270.0
+   }
+  ],
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+ },
+ {
+  "_id": "ap3",
+  "name": "NEARBY STRIP",
+  "icaoCode": null,
+  "type": 0,
+  "country": "ZZ",
+  "geometry": {
+   "coordinates": [
+    10.2,
+    10.0
+   ]
+  },
+  "elevation": {
+   "value": 100,
+   "unit": 1
+  },
+  "magneticDeclination": null,
+  "frequencies": [
+   {
+    "value": "123.450",
+    "type": 12,
+    "name": "NEARBY RADIO",
+    "primary": false
+   }
+  ],
+  "runways": [
+   {
+    "designator": "09",
+    "trueHeading": 90.0
+   },
+   {
+    "designator": "27",
+    "trueHeading": 270.0
+   }
+  ],
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+ },
+ {
+  "_id": "ap4",
+  "name": "DISTANT FIELD",
+  "icaoCode": "XXXX",
+  "type": 0,
+  "country": "ZZ",
+  "geometry": {
+   "coordinates": [
+    12.0,
+    10.0
+   ]
+  },
+  "elevation": {
+   "value": 100,
+   "unit": 1
+  },
+  "magneticDeclination": null,
+  "frequencies": [
+   {
+    "value": "124.000",
+    "type": 14,
+    "name": "DISTANT TWR",
+    "primary": true
+   }
+  ],
+  "runways": [
+   {
+    "designator": "09",
+    "trueHeading": 90.0
+   },
+   {
+    "designator": "27",
+    "trueHeading": 270.0
+   }
+  ],
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+ }
+]

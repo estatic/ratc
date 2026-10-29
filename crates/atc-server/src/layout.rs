@@ -196,3 +196,9 @@ pub fn load_procedure_set_for(xplane_root: Option<&Path>, icao: &str) -> Option<
         }
     }
 }
+
+/// The station's positions and procedures: `station.toml` (+ `overrides.toml`) when present,
+/// else `procedures.toml`. Errors name the offending file.
+pub fn load_procedures(dir: &Path) -> Result<Procedures> {
+    Ok(atc_navdata::station::load_station(dir)?)
+}

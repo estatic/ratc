@@ -5,6 +5,7 @@ pub mod cifp;
 pub mod fixes;
 pub mod model;
 pub mod procedures;
+pub mod station;
 pub mod xplane;
 
 pub use apt::{NavdataError, parse_apt_dat};

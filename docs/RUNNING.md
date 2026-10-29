@@ -100,6 +100,105 @@ used. After installing or removing airport scenery, restart both X-Plane and the
   `docs/phraseology/pl.md`; a step-by-step Polish circuit (in Russian):
   `docs/user-guide/ru/polish-circuit.md`.
 
+## Stations and the airport wizard
+
+A station set (positions, VFR points, airspaces, transition altitude, circuits) is described by
+a `Procedures` table. For EPKK it is the hand-made, AIP-sourced
+`data/airports/EPKK/procedures.toml`. For any other airport the airport wizard generates it
+from OpenAIP and the X-Plane layout:
+
+```
+target/release/atc-server airports        # Windows: atc-server.exe airports
+```
+
+Requirements: `xplane_root` in `config/server.toml` (the wizard reads the airport layout from
+your scenery and refuses to create a station without it) and an OpenAIP API key (openaip.net ->
+register -> Profile -> API clients; free). Menu 5 asks for the key and checks it.
+
+### Menu
+
+1. **Create stations in an area.** Search by ICAO code or name, optionally load neighbouring
+   countries (ISO codes, e.g. `SK CZ`), then pick airfields from the list of those within
+   100 km (closed ones cannot be picked). For each: pick the positions, review the value
+   screen, confirm. Neighbouring airfields' towers within 100 km become adjacent units.
+2. **Update data.** Downloads the OpenAIP changes and regenerates every station the wizard made
+   (those with a `wizard.toml`). Your ticked positions are kept; one OpenAIP has moved to another
+   frequency is followed and printed as `<ID>: positions: Tower 118.300 -> 118.350 (frequency
+   changed)`. Frequencies new in OpenAIP are listed (`New in OpenAIP: <callsign> <MHz> (use
+   Create to add it)`) but not added. The download prints its progress per page
+   (`PL airspaces: page 3/12`) and a count of records it could not read
+   (`PL airspaces: 3 records skipped (unreadable)`), which are left out.
+3. **Edit a station.** The value screen: every setting with its source (an override shows its
+   `[sources]` text, e.g. `[override: AIP AD 2.22 3.1]`). "Change a value" takes a TOML value,
+   "Revert a value to generated" drops one override, "Back without saving" leaves everything as
+   it was. `overrides.toml` is written only when something changed, and then without the
+   comments it may have had.
+4. **Remove a station.** Deletes `station.toml` and `wizard.toml`; `overrides.toml` only if you
+   agree. EPKK falls back to its `procedures.toml`.
+5. **Set the OpenAIP API key.**
+
+At start the wizard also checks every downloaded country for changes and asks whether to update.
+
+### Files in `data/airports/<ID>/`
+
+| File | What | In git |
+|---|---|---|
+| `station.toml` | generated; each key has a `# source:` comment | no |
+| `overrides.toml` | your values over the generated ones, with `[sources]` | yes |
+| `wizard.toml` | the OpenAIP airfield and country it was made from | no |
+| `apt.dat` | the airport's X-Plane layout (written when absent) | your copy; commit only if its licence allows |
+| `procedures.toml` | hand-made station, used only when there is no `station.toml` | yes |
+
+Precedence: `station.toml` + `overrides.toml` win over `procedures.toml`. The server loads one
+or the other, not a merge of both. To fly at an airport set `airport = "<ID>"` in
+`config/server.toml`.
+
+### Overrides
+
+`overrides.toml` holds top-level `Procedures` keys. Tables merge field by field; arrays (such as
+`vfr_points` or `approach_alt_khz`) and scalars replace the generated value whole, so list every
+element you want. The `[sources]` table, last in the file, says where each value comes from; it
+is not merged into the station.
+
+```toml
+preferred_runway = "25"
+vfr_holds = ["KILO", "ZULU"]
+tma = { radius_nm = 40.0, ceiling_ft = 9500 }
+delivery_hours = { summer_utc = [6, 22], winter_utc = [5, 21] }
+
+[sources]
+preferred_runway = "user ruling 2026-10-19"
+vfr_holds = "AIP AD 2.22 3.3"
+tma = "user ruling 2026-10-19"
+delivery_hours = "AIP AD 2.20"
+```
+
+OpenAIP does not carry everything: VFR holds, delivery hours and some VFR points have to come
+from the AIP. EPKK's `overrides.toml` is a worked example, and the test
+`cargo test -p atc-stations --test epkk` checks that a station generated from an EPKK-shaped
+fixture plus these overrides equals the hand-made `procedures.toml`.
+
+When an update finds that an override names something the previous generated station had and
+OpenAIP no longer has (a VFR point, a hold, a position, an adjacent unit), the wizard prints
+`<ID>: <key>: <name> is not in OpenAIP any more`. The warning is printed once, on the update
+where the item disappears; points, holds or units you added yourself and OpenAIP never had are
+not reported. The override is kept; check it and remove or fix it in `overrides.toml`. A
+frequency you had ticked that has disappeared is reported the same way.
+
+### Where the key and the data live
+
+The key (`openaip.toml`) and the downloaded OpenAIP data (`openaip/<COUNTRY>/`) stay on your
+machine, in the per-user directories (the `directories` crate, application `vatc`):
+
+| OS | Key | OpenAIP data |
+|---|---|---|
+| Linux | `~/.config/vatc` | `~/.local/share/vatc/openaip` |
+| macOS | `~/Library/Application Support/vatc` | `~/Library/Application Support/vatc/openaip` |
+| Windows | `%APPDATA%\vatc\config` | `%APPDATA%\vatc\data\openaip` |
+
+OpenAIP data is licensed CC BY-NC 4.0 (non-commercial, attribution); it is not committed to this
+repository, and the generated `station.toml` is git-ignored for the same reason.
+
 ## 3. X-Plane 11
 
 No plugin is needed for the link and no Settings → Network change for RREF: X-Plane answers on
