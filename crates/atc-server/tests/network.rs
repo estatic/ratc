@@ -943,3 +943,77 @@ kind = "Acc"
         vec![AtcItem::Identified, AtcItem::Qnh(1013)]
     );
 }
+
+/// Alpha Information reaching from 9.0 to 11.0 N: under (and around) Testville's TMA.
+fn wide_alpha() -> EnrouteUnitDef {
+    EnrouteUnitDef {
+        sectors: vec![box_sector("FIS ALPHA", 9.0, 11.0, 9500)],
+        ..alpha()
+    }
+}
+
+/// Still inside the FIS sector, an inbound entering Testville's TMA is handed to Approach.
+#[test]
+fn inbound_under_fis_enters_tma_and_is_handed_to_approach() {
+    let extra = format!("{TESTVILLE_TMA}{TESTVILLE_APPROACH}");
+    let net = network(&extra, ZZZZ_EXTRA).with_units(vec![wide_alpha()]);
+    let c = join(&net, "SPTST");
+    identified_by_alpha(&net, &c, 10.2);
+    let (contact, lat, t) = fly_until(&net, &c, 10.2, 0.02, 4000.0, ALPHA, 1.0, |o| {
+        !o.message.items.is_empty()
+    });
+    assert!(lat > 10.35 && lat < 10.4, "{lat}");
+    assert_eq!(contact.station, "Alpha Information");
+    assert_eq!(
+        contact.message.items,
+        vec![AtcItem::Contact {
+            station: "Testville Approach".into(),
+            khz: TESTVILLE_APP
+        }]
+    );
+    net.on_transmission(
+        &c,
+        ALPHA,
+        "one one niner decimal niner, SPTST",
+        Lang::En,
+        SimTime(t + 1.0),
+    );
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
+}
+
+/// A flight taken by the unit while inside the TMA is not handed straight back; leaving it
+/// and flying on under the FIS, nothing is said.
+#[test]
+fn departure_imported_inside_tma_is_not_handed_back() {
+    let extra = format!("{TESTVILLE_TMA}{TESTVILLE_APPROACH}");
+    let net = network(&extra, ZZZZ_EXTRA).with_units(vec![wide_alpha()]);
+    let c = join(&net, "SPTST");
+    net.on_telemetry(sample(&c, 0.0, at(10.5), 4000.0, 150.0, TESTVILLE_APP));
+    net.on_transmission(
+        &c,
+        TESTVILLE_APP,
+        "Testville Approach, SPTST, four thousand feet",
+        Lang::En,
+        SimTime(1.0),
+    );
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
+    let out = net.on_transmission(
+        &c,
+        ALPHA,
+        "Alpha Information, SPTST, four thousand feet",
+        Lang::En,
+        SimTime(2.0),
+    );
+    assert_eq!(stations(&out), vec!["Alpha Information"]);
+    assert_eq!(net.owner(&c), Some(Owner::Unit(0)));
+    let mut heard = Vec::new();
+    let (mut lat, mut t) = (10.5, 2.0);
+    for _ in 0..15 {
+        lat += 0.02;
+        t += 10.0;
+        heard.extend(net.on_telemetry(sample(&c, t, at(lat), 4000.0, 150.0, ALPHA)));
+    }
+    assert!(lat > 10.65 && lat < 11.0);
+    assert!(heard.is_empty(), "{heard:?}");
+    assert_eq!(net.owner(&c), Some(Owner::Unit(0)));
+}

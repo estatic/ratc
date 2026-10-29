@@ -129,6 +129,13 @@ impl EnrouteUnit {
             .is_some_and(|f| f.service != Service::Released)
     }
 
+    /// `true` while the unit works flight `cs` with no hand-off in progress.
+    pub fn active(&self, cs: &Callsign) -> bool {
+        self.flights
+            .get(cs)
+            .is_some_and(|f| f.service == Service::Active)
+    }
+
     /// The language the flight last spoke to the unit in (English before).
     pub fn lang_of(&self, cs: &Callsign) -> Lang {
         self.flights.get(cs).map_or(Lang::En, |f| f.lang)

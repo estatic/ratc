@@ -13,9 +13,11 @@
 //!    that does (the flight moves). A real en-route unit on that frequency wins (rule 1);
 //! 3. otherwise nobody answers.
 //!
-//! En-route units ([`EnrouteUnit`]): when a flight a unit works leaves all its sectors, the
-//! unit hands it to the next unit containing the aircraft, else to the station whose CTR or
-//! TMA contains it (its Approach, else Tower, else another staffed position: "contact"), a
+//! En-route units ([`EnrouteUnit`]): when a flight a unit works enters a station's CTR, TMA
+//! or ATZ (outside at the previous sample, inside now, within its level limits), the unit
+//! hands it to that station even inside its own sector. When the flight leaves all the
+//! unit's sectors, the unit hands it to the next unit containing the aircraft, else to the
+//! station whose CTR, TMA or ATZ contains it (its Approach, else Tower, else another staffed position: "contact"), a
 //! station without controllers hears "change to" its published frequency, and with nobody
 //! next the flight is released ("frequency change approved"). A "contact" moves the flight
 //! once the pilot reads the frequency back on the unit's frequency, after
@@ -74,6 +76,10 @@ struct Pilot {
     /// Stations that handed the flight away to another owner: they do not register it
     /// again from telemetry (no ghost strip) until it comes back.
     handed_away: HashSet<usize>,
+    /// While a unit works the flight: the stations whose CTR, TMA or ATZ contained it at the
+    /// previous sample (`None` until the first sample after the unit took it, so a flight
+    /// taken inside an area is not handed straight back).
+    areas: Option<Vec<usize>>,
 }
 
 pub struct Network {
@@ -315,6 +321,11 @@ impl Network {
                     (items, unit.serves(from))
                 };
                 if serves {
+                    if owner != Some(target)
+                        && let Some(p) = self.pilots.lock().unwrap().get_mut(from)
+                    {
+                        p.areas = None;
+                    }
                     owners.insert(from.clone(), target);
                 } else {
                     owners.remove(from);
@@ -500,6 +511,7 @@ impl Network {
             if let Owner::Station(j) = to {
                 p.handed_away.remove(&j);
             }
+            p.areas = None;
             p.profile.as_ref().map(|p| p.aircraft_type.clone())
         };
         let Some(mut h) = handover else {
@@ -579,16 +591,35 @@ impl Network {
         s: &AircraftState,
     ) -> Vec<AtcOutput> {
         let cs = &s.callsign;
-        let event = self.units[k]
+        let (event, active) = {
+            let mut unit = self.units[k].lock().unwrap();
+            (unit.on_telemetry(cs, s.pos, s.alt_ft_msl), unit.active(cs))
+        };
+        let now: Vec<usize> = (0..self.stations.len())
+            .filter(|&i| self.in_terminal_area(i, s.pos, s.alt_ft_msl))
+            .collect();
+        let before = self
+            .pilots
             .lock()
             .unwrap()
-            .on_telemetry(cs, s.pos, s.alt_ft_msl);
-        if event != Some(EnrouteEvent::LeftSector) {
+            .entry(cs.clone())
+            .or_default()
+            .areas
+            .replace(now.clone());
+        let entered: Option<Vec<usize>> =
+            before.map(|b| now.iter().copied().filter(|i| !b.contains(i)).collect());
+        let to = if event == Some(EnrouteEvent::LeftSector) {
+            self.next_after(k, s.pos, s.alt_ft_msl)
+        } else if let Some(i) = entered
+            .filter(|_| active)
+            .and_then(|e| self.nearest(e.into_iter(), Some(s.pos)))
+        {
+            self.station_handoff(i)
+        } else {
             return Vec::new();
-        }
-        let to = self.next_after(k, s.pos, s.alt_ft_msl);
+        };
         let released = !matches!(to, HandOff::Contact { .. });
-        tracing::info!(callsign = %cs.0, unit = %self.unit_defs[k].callsign, next = ?to, "left sector");
+        tracing::info!(callsign = %cs.0, unit = %self.unit_defs[k].callsign, next = ?to, "leaving the unit");
         let (items, lang) = {
             let mut unit = self.units[k].lock().unwrap();
             (unit.hand_off(cs, to, s.t), unit.lang_of(cs))
@@ -615,9 +646,15 @@ impl Network {
             };
         }
         let inside = (0..self.stations.len()).filter(|&i| self.in_terminal_area(i, pos, alt_ft));
-        let Some(i) = self.nearest(inside, Some(pos)) else {
-            return HandOff::Release;
-        };
+        match self.nearest(inside, Some(pos)) {
+            Some(i) => self.station_handoff(i),
+            None => HandOff::Release,
+        }
+    }
+
+    /// A flight for station `i`: its Approach, else Tower, else another staffed position;
+    /// without controllers its published frequency, else a release.
+    fn station_handoff(&self, i: usize) -> HandOff {
         let positions = &self.stations[i].procs.positions;
         let of = |kind| positions.iter().find(|q| q.role == kind);
         let staffed = of(FreqKind::Approach)
@@ -643,11 +680,13 @@ impl Network {
         }
     }
 
-    /// `true` when a CTR or TMA of station `i` contains the aircraft.
+    /// `true` when a CTR, TMA or ATZ of station `i` contains the aircraft.
     fn in_terminal_area(&self, i: usize, pos: LatLon, alt_ft: f64) -> bool {
         self.stations[i].procs.airspaces.iter().any(|a| {
-            matches!(a.kind, AirspaceKind::Ctr | AirspaceKind::Tma)
-                && (f64::from(a.lower_ft)..=f64::from(a.upper_ft)).contains(&alt_ft)
+            matches!(
+                a.kind,
+                AirspaceKind::Ctr | AirspaceKind::Tma | AirspaceKind::Atz
+            ) && (f64::from(a.lower_ft)..=f64::from(a.upper_ft)).contains(&alt_ft)
                 && point_in_polygon([pos.lat, pos.lon], &a.polygon)
         })
     }
