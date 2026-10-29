@@ -184,8 +184,10 @@ pub struct Strip {
     pub lang: Lang,
     /// The flight plan, once a clearance was issued.
     pub plan: Option<FlightPlan>,
-    /// The adjacent unit (callsign) the flight was handed off to; empty: released with a
-    /// frequency change, no unit to contact.
+    /// The adjacent unit (callsign) the flight was handed off to. The empty string marks a
+    /// release without a unit (no ACC or FIS: "radar service terminated, frequency change
+    /// approved"): the flight has left this engine's service all the same, so every
+    /// "handed off" check applies, but there is no unit to call (no `handed_off_khz`).
     pub handed_off: Option<String>,
     /// Approach has identified the aircraft on radar.
     pub identified: bool,
@@ -227,6 +229,10 @@ pub struct Strip {
     /// first call is answered as a flight handed over.
     #[serde(default)]
     pub handed_in: bool,
+    /// The pilot has answered (read back or acknowledged) since its hand-off to an adjacent
+    /// unit, or called the unit.
+    #[serde(default)]
+    pub handoff_acked: bool,
     // Every field above that belongs to one flight is reset by `Strip::end_flight`.
 }
 
@@ -275,6 +281,7 @@ impl Strip {
             requested_runway: None,
             handed_off_khz: None,
             handed_in: false,
+            handoff_acked: false,
         }
     }
 
@@ -314,6 +321,7 @@ impl Strip {
         self.requested_runway = None;
         self.handed_off_khz = None;
         self.handed_in = false;
+        self.handoff_acked = false;
     }
 
     /// Records a clearance just issued and the readback it requires. A clearance

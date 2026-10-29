@@ -3539,6 +3539,15 @@ mod approach_departure {
         edit_procs: impl FnOnce(&mut Procedures),
         edit: impl FnOnce(&mut ProcedureSet),
     ) -> AtcEngine {
+        engine_full(Strictness::Standard, edit_procs, edit)
+    }
+
+    /// [`engine_with_procs`] judging readbacks with `strictness`.
+    pub(super) fn engine_full(
+        strictness: Strictness,
+        edit_procs: impl FnOnce(&mut Procedures),
+        edit: impl FnOnce(&mut ProcedureSet),
+    ) -> AtcEngine {
         let ap = resolve_airport(&root(), "ZZZZ")
             .unwrap()
             .parse("ZZZZ")
@@ -3591,7 +3600,7 @@ mod approach_departure {
         });
         let mut set = load_procedure_set(&root(), "ZZZZ").unwrap();
         edit(&mut set);
-        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(Strictness::Standard))
+        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(strictness))
             .with_procedure_set(set)
             .with_destinations(dests);
         e.register_pilot(PilotProfile {
@@ -6134,11 +6143,11 @@ mod handover {
     use atc_core::strip::FlightPlan;
     use atc_geo::{M_PER_NM, destination, distance_m};
     use atc_navdata::procedures::AdjacentKind;
-    use atc_phraseology::FlightRules;
+    use atc_phraseology::{ApproachKind, FlightRules};
 
     use super::approach_departure::{
         AIRBORNE, ALFAX, APP, CLIMB, FARLAND, Flight, TWR, ZZ002, contact_of, departed, engine,
-        engine_with_procs, never,
+        engine_full, engine_with_procs, never,
     };
     use super::*;
 
@@ -6218,7 +6227,11 @@ mod handover {
         let mut other = engine();
         other.import_flight(h.clone());
         let got = other.strip(&cs()).unwrap();
-        assert_eq!(got.plan, h.plan);
+        // The departure airport's SID, runway and direct do not travel with it.
+        let mut expected = h.plan.clone().unwrap();
+        (expected.sid, expected.dep_runway, expected.direct) = (None, None, None);
+        assert_eq!(got.plan.as_ref(), Some(&expected));
+        assert_eq!(got.owner, Role::Approach);
         assert_eq!(got.squawk, h.squawk);
         assert!(got.handed_in);
     }
@@ -6289,6 +6302,96 @@ mod handover {
     /// A flight handed in at 10000 ft, passing through to Farland, is identified and handed
     /// off to the area control unit at the TMA boundary; read back, the hand-off target is
     /// the unit's frequency.
+    /// A transit flight to Farland at 10000 ft handed in to `e`, identified, flown out to
+    /// the TMA boundary until Approach hands it to Zeta Radar: that transmission.
+    fn transit_to_the_boundary(e: &mut AtcEngine) -> AtcOutput {
+        e.import_flight(handover(ifr_plan("ZZZF", "Farland", 10000)));
+        let start = destination(HOME, 0.0, 30.0 * M_PER_NM);
+        let mut f = airborne(e, start, 10000.0, 0.0);
+        let out = say(
+            e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, flight level one zero zero",
+        );
+        assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+        let handed = |h: &[AtcOutput]| h.iter().any(|o| contact_of(o).is_some());
+        f.fly_to(e, FARLAND, (250.0, 0.0, 10000.0), &handed);
+        let contact = f.heard.iter().find(|o| contact_of(o).is_some()).unwrap();
+        assert_eq!(
+            contact_of(contact),
+            Some(("Zeta Radar".to_string(), 127660))
+        );
+        contact.clone()
+    }
+
+    /// Training strictness: the contact needs no readback, yet the flight is the old
+    /// engine's until the pilot answers it.
+    #[test]
+    fn handoff_target_waits_for_the_acknowledgement_without_readback() {
+        let mut e = engine_full(Strictness::Training, |_| {}, |_| {});
+        let contact = transit_to_the_boundary(&mut e);
+        assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+        assert_eq!(e.handoff_target(&cs()), None);
+        let rb = readback(&contact.message.items, CS_ABBR);
+        assert!(say(&mut e, APP, &rb).is_empty());
+        assert_eq!(e.handoff_target(&cs()), Some(127660));
+    }
+
+    /// First calls that would begin a new flight of an aircraft that went away ("inbound",
+    /// an approach request) keep a handed-in flight's plan.
+    #[test]
+    fn handed_in_inbound_call_keeps_the_plan() {
+        let mut e = engine();
+        e.import_flight(handover(ifr_plan("ZZZF", "Farland", 10000)));
+        airborne(
+            &mut e,
+            destination(HOME, 0.0, 30.0 * M_PER_NM),
+            10000.0,
+            0.0,
+        );
+        let out = say(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, flight level one zero zero, \
+             inbound",
+        );
+        assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.plan.as_ref().unwrap().destination, "ZZZF");
+        assert_eq!(s.plan.as_ref().unwrap().cleared_ft, 10000);
+    }
+
+    #[test]
+    fn handed_in_approach_request_is_identified_with_it() {
+        let mut e = engine();
+        e.import_flight(handover(ifr_plan("ZZZZ", "Zeta", 5000)));
+        let west = LatLon {
+            lat: 10.0,
+            lon: 9.8,
+        };
+        airborne(&mut e, west, 5000.0, 90.0);
+        let out = say(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet, request ILS \
+             approach",
+        );
+        let got = items(&out);
+        assert_eq!(got.first(), Some(&AtcItem::Identified), "{out:?}");
+        assert!(
+            got.contains(&AtcItem::ExpectApproach {
+                kind: ApproachKind::Ils,
+                runway: "27".into()
+            }),
+            "{got:?}"
+        );
+        let s = e.strip(&cs()).unwrap();
+        assert!(s.identified);
+        let plan = s.plan.as_ref().unwrap();
+        assert_eq!(plan.destination, "ZZZZ");
+        assert_eq!(plan.approach, Some((ApproachKind::Ils, "27".into())));
+    }
+
     #[test]
     fn handoff_target_after_readback() {
         let mut e = engine();

@@ -290,6 +290,7 @@ impl AtcEngine {
             });
             strip.handed_off = Some(unit.callsign);
             strip.handed_off_khz = Some(unit.khz);
+            strip.handoff_acked = false;
         }
         strip.expect_readback(&items, self.cfg.strictness);
         items

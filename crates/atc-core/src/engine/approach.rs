@@ -1009,7 +1009,9 @@ impl AtcEngine {
         }
         if let Some((unit, items)) = self.hand_off(&plan, s.pos) {
             let strip = &mut self.strips[i];
+            // An empty unit: released, no unit to contact (see `Strip::handed_off`).
             strip.handed_off = Some(unit);
+            strip.handoff_acked = false;
             strip.handed_off_khz = items.iter().find_map(|it| match it {
                 AtcItem::Contact { khz, .. } => Some(*khz),
                 _ => None,
@@ -1250,6 +1252,7 @@ impl AtcEngine {
                 return Vec::new();
             }
             strip.adjacent_identified = true;
+            strip.handoff_acked = true;
             // Calling the unit completes the hand-off, read back or not.
             if strip.pending_readback.is_some() {
                 strip.readback_complete();

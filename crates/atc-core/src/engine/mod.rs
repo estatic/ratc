@@ -299,9 +299,10 @@ impl AtcEngine {
     }
 
     /// Takes in a flight handed over by another station: registered afresh (replacing any
-    /// strip of the same callsign) with its plan, cleared level and transponder code, owned
-    /// by Approach (IFR) or Tower; its first call is answered as a flight handed over
-    /// ([`Strip::handed_in`]).
+    /// strip of the same callsign) with its plan (without the departure airport's SID,
+    /// runway and direct), cleared level and transponder code; its first call is answered as
+    /// a flight handed over ([`Strip::handed_in`]). The owner is set to Approach (IFR) or
+    /// Tower and moves to the position it first calls.
     pub fn import_flight(&mut self, h: FlightHandover) {
         self.remove_pilot(&h.callsign);
         self.register_pilot(PilotProfile {
@@ -311,8 +312,13 @@ impl AtcEngine {
         let i = self.strip_index(&h.callsign).expect("registered above");
         let strip = &mut self.strips[i];
         let mut plan = h.plan;
-        if let (Some(p), Some(ft)) = (plan.as_mut(), h.cleared_ft) {
-            p.cleared_ft = ft;
+        if let Some(p) = plan.as_mut() {
+            p.sid = None;
+            p.dep_runway = None;
+            p.direct = None;
+            if let Some(ft) = h.cleared_ft {
+                p.cleared_ft = ft;
+            }
         }
         let ifr = plan
             .as_ref()
@@ -323,15 +329,17 @@ impl AtcEngine {
         strip.handed_in = true;
     }
 
-    /// The frequency (kHz) of the adjacent unit flight `cs` was handed off to, once it has
-    /// read the hand-off back: the flight is to be taken by the station working that
-    /// frequency. `None` before, for handovers between this engine's own positions, for a
-    /// release without a unit, and once the flight was taken (exported).
+    /// The frequency (kHz) of the adjacent unit flight `cs` was handed off to, once the
+    /// pilot has answered the hand-off here (its next understood transmission: the readback
+    /// where one is required, else any acknowledgement) or called the unit: the flight is to
+    /// be taken by the station working that frequency. `None` before, for handovers between
+    /// this engine's own positions, for a release without a unit, and once the flight was
+    /// taken (exported).
     pub fn handoff_target(&self, cs: &Callsign) -> Option<u32> {
         let strip = self.strip(cs)?;
-        strip
-            .handed_off_khz
-            .filter(|_| strip.handed_off.is_some() && strip.pending_readback.is_none())
+        strip.handed_off_khz.filter(|_| {
+            strip.handed_off.is_some() && strip.handoff_acked && strip.pending_readback.is_none()
+        })
     }
 
     /// New weather: issues the first ATIS, or a new letter on a significant change.
@@ -522,6 +530,11 @@ impl AtcEngine {
         };
         if understood(&msg) {
             self.understood_in(i, heard_lang);
+            // The pilot has answered after its hand-off (read back, or acknowledged where no
+            // readback is required).
+            if self.strips[i].handed_off.is_some() {
+                self.strips[i].handoff_acked = true;
+            }
         }
         let text = text.as_str();
         if let Some(to) = self.called_elsewhere(role, &msg) {
@@ -656,7 +669,8 @@ impl AtcEngine {
     /// handed off.
     fn starts_new_flight(&self, i: usize, role: Role, msg: &PilotMessage) -> bool {
         let strip = &self.strips[i];
-        if !strip.phase.is_airborne() {
+        // A flight handed in from another station carries its plan into its first call.
+        if !strip.phase.is_airborne() || strip.handed_in {
             return false;
         }
         match (role, &msg.intent) {
