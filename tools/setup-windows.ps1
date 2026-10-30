@@ -15,7 +15,9 @@ function Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
 # progress there.) Codes in -Ok also count as success.
 function Native([string]$exe, [string[]]$argv, [int[]]$Ok = @(0)) {
     $ErrorActionPreference = 'Continue'
-    & $exe @argv 2>&1 | ForEach-Object { "$_" }
+    & $exe @argv 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
+    }
     if ($Ok -notcontains $LASTEXITCODE) { throw "$exe $($argv -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
@@ -57,6 +59,15 @@ foreach ($scope in 'Machine', 'User') {
 $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
     [Environment]::GetEnvironmentVariable('Path', 'User') + ";$env:USERPROFILE\.cargo\bin"
 
+# CMake comes with the Build Tools but is on PATH only in a Developer Prompt.
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $vs = & $vswhere -latest -products * -property installationPath
+    $cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+    if (-not (Test-Path (Join-Path $cmake 'cmake.exe'))) { throw "CMake not found under $vs" }
+    $env:Path += ";$cmake"
+}
+
 if (-not $env:VULKAN_SDK) {
     $sdk = Get-ChildItem 'C:\VulkanSDK' -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name | Select-Object -Last 1
@@ -77,6 +88,7 @@ Native rustc @('--version')
 Native cargo @('--version')
 Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
 Write-Host "LIBCLANG_PATH=$env:LIBCLANG_PATH"
+Native cmake @('--version')
 
 if ($NoBuild) { return }
 Step 'building (release)'
