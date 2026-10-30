@@ -410,8 +410,6 @@ pub(super) fn mentions_ifr(text: &str) -> bool {
     })
 }
 
-/// A name as the parser hears it after "direct": uppercase ASCII letters and digits only
-/// ("Bielsko-Biała" -> "BIELSKOBIALA"); also how a "direct" readback is compared.
 /// The destinations of an engine and what the parser needs to hear them: built once (the
 /// vocabulary of the world's airports is large) and cloned cheaply into each engine.
 #[derive(Clone, Debug)]
@@ -444,6 +442,8 @@ impl From<Vec<Destination>> for DestinationSet {
     }
 }
 
+/// A name as the parser hears it after "direct": uppercase ASCII letters and digits only
+/// ("Bielsko-Biała" -> "BIELSKOBIALA"); also how a "direct" readback is compared.
 pub(crate) fn direct_key(name: &str) -> String {
     ascii_fold(&name.to_lowercase())
         .chars()
