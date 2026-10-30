@@ -456,7 +456,8 @@ impl Network {
     /// [`Network::snapshots`] together with the [`NetworkState`], all taken under the one
     /// ownership lock, so that the files written from them agree with each other.
     pub fn persisted(&self) -> (Vec<(String, EngineSnapshot)>, NetworkState) {
-        let owners = self.owners.lock().unwrap();
+        let mut owners = self.owners.lock().unwrap();
+        self.prune_owners(&mut owners);
         let snapshots = self
             .stations
             .iter()
@@ -479,6 +480,32 @@ impl Network {
                 .collect(),
         };
         (snapshots, state)
+    }
+
+    /// Forgets the owners whose station has no strip for the flight or whose unit no longer
+    /// works it (a flight removed, a pilot gone): such an entry would only misroute a later
+    /// call and linger in the saved state.
+    fn prune_owners(&self, owners: &mut HashMap<Callsign, Owner>) {
+        owners.retain(|cs, o| match *o {
+            Owner::Station(i) => self.stations[i].engine.lock().unwrap().strip(cs).is_some(),
+            Owner::Unit(k) => self.units[k].lock().unwrap().serves(cs),
+        });
+    }
+
+    /// The client of `cs` disconnected: its owner entry goes when nobody holds the flight any
+    /// more (an engine still holding the strip keeps the flight, and its owner, for a rejoin).
+    pub fn client_left(&self, cs: &Callsign) {
+        let mut owners = self.owners.lock().unwrap();
+        let Some(o) = owners.get(cs).copied() else {
+            return;
+        };
+        let held = match o {
+            Owner::Station(i) => self.stations[i].engine.lock().unwrap().strip(cs).is_some(),
+            Owner::Unit(k) => self.units[k].lock().unwrap().serves(cs),
+        };
+        if !held {
+            owners.remove(cs);
+        }
     }
 
     fn owner_ref(&self, o: Owner) -> OwnerRef {

@@ -1246,6 +1246,37 @@ mod restart {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    /// An owner entry nobody holds any more is dropped at disconnect and at save time.
+    #[test]
+    fn owners_nobody_holds_are_dropped() {
+        let n = net();
+        let (one, c) = in_flight(&n);
+        // Disconnect while the station still has the strip: the owner stays for a rejoin.
+        n.client_left(&one);
+        assert_eq!(n.owner(&one), Some(Owner::Station(ZZZY)));
+        // Without a strip it goes.
+        n.stations()[ZZZY].engine.lock().unwrap().remove_pilot(&one);
+        n.client_left(&one);
+        assert_eq!(n.owner(&one), None);
+
+        // At save time: SPTST's station-side holder vanished (the unit still works it).
+        let two = join(&n, "SPTWO");
+        n.on_telemetry(sample(&two, 0.0, at(10.5), 0.0, 0.0, TESTVILLE_TWR));
+        n.on_transmission(
+            &two,
+            TESTVILLE_TWR,
+            "Testville Tower, SPTWO, request radio check",
+            Lang::En,
+            SimTime(1.0),
+        );
+        assert_eq!(n.owner(&two), Some(Owner::Station(ZZZY)));
+        n.stations()[ZZZY].engine.lock().unwrap().remove_pilot(&two);
+        let state = n.persisted().1;
+        assert!(!state.owners.contains_key(&two.0), "{state:?}");
+        assert!(state.owners.contains_key(&c.0));
+        assert_eq!(n.owner(&two), None);
+    }
+
     #[test]
     fn unchanged_state_is_not_rewritten() {
         let d = dir("same");

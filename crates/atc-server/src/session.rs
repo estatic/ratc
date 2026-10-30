@@ -309,6 +309,7 @@ impl Session {
         self.server.state.hub.lock().unwrap().leave(self.id);
         self.end_relay();
         self.server.remove_client(self.id);
+        self.server.state.network.client_left(&self.cs);
         let mut source = self.server.weather_source.lock().unwrap();
         if *source == Some(self.id) {
             *source = None;
