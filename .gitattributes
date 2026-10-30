@@ -1,0 +1,10 @@
+# LF everywhere, also in Windows checkouts: golden transcripts, fixtures and scripts are
+# compared or run byte for byte.
+* text=auto eol=lf
+*.png binary
+*.zip binary
+*.wav binary
+*.onnx binary
+# Kept byte for byte as downloaded / written (CRLF).
+*.dat -text
+docs/legacy/** -text

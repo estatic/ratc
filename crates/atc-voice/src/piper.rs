@@ -65,7 +65,7 @@ impl PiperTts {
                 Err(e @ VoiceError::ModelMissing(_)) if key.1 != "en" => {
                     tracing::warn!(
                         %e, voice = ?key.0, lang = %key.1,
-                        "voice missing (run tools/fetch-piper.sh); using the English one"
+                        "voice missing (run tools/fetch-piper.sh, or .ps1 on Windows); using the English one"
                     );
                     warned.insert(key);
                 }

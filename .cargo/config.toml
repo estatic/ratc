@@ -1,0 +1,4 @@
+# Windows: link the C runtime statically (also into whisper.cpp via cc/cmake), so the
+# executables run without the Visual C++ Redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

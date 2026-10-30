@@ -66,25 +66,38 @@ pub struct ServerConfig {
 }
 
 pub fn load_config(text: &str) -> Result<ServerConfig> {
-    let cfg: ServerConfig = toml::from_str(text).context("invalid server config")?;
+    let mut cfg: ServerConfig = toml::from_str(text).context("invalid server config")?;
     cfg.whisper.language_mode()?;
+    cfg.piper.bin = executable(&cfg.piper.bin, cfg!(windows));
     Ok(cfg)
+}
+
+/// A program path as configured: on Windows one without an extension means the `.exe`, so
+/// one config (`models/piper/piper/piper`) fits both systems.
+fn executable(path: &Path, windows: bool) -> PathBuf {
+    if windows && path.extension().is_none() {
+        path.with_extension("exe")
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// A script in tools/ as this system runs it: `.ps1` on Windows, `.sh` elsewhere.
+fn script(name: &str) -> String {
+    let ext = if cfg!(windows) { "ps1" } else { "sh" };
+    format!("tools/{name}.{ext}")
 }
 
 /// `Err` names every configured model file that does not exist, with the script that fetches
 /// it.
 pub fn check_models(cfg: &ServerConfig) -> Result<(), String> {
-    let wanted: [(&Path, &str, &str); 3] = [
-        (
-            &cfg.whisper.model,
-            "whisper model",
-            "tools/fetch-whisper.sh",
-        ),
-        (&cfg.piper.bin, "piper binary", "tools/fetch-piper.sh"),
+    let wanted: [(&Path, &str, String); 3] = [
+        (&cfg.whisper.model, "whisper model", script("fetch-whisper")),
+        (&cfg.piper.bin, "piper binary", script("fetch-piper")),
         (
             &cfg.piper.voices,
             "piper voices config",
-            "tools/fetch-piper.sh",
+            script("fetch-piper"),
         ),
     ];
     let missing: Vec<String> = wanted
@@ -118,7 +131,10 @@ mod tests {
             PathBuf::from("models/whisper/ggml-large-v3-turbo-q5_0.bin")
         );
         assert_eq!(c.whisper.language.as_deref(), Some("en"));
-        assert_eq!(c.piper.bin, PathBuf::from("models/piper/piper/piper"));
+        assert_eq!(
+            c.piper.bin,
+            executable(Path::new("models/piper/piper/piper"), cfg!(windows))
+        );
         assert_eq!(c.piper.voices, PathBuf::from("config/voices.toml"));
     }
 
@@ -164,14 +180,26 @@ mod tests {
     }
 
     #[test]
+    fn windows_program_without_extension_is_the_exe() {
+        let p = Path::new("models/piper/piper/piper");
+        assert_eq!(
+            executable(p, true),
+            PathBuf::from("models/piper/piper/piper.exe")
+        );
+        assert_eq!(executable(p, false), p);
+        let given = Path::new("C:/piper/piper.exe");
+        assert_eq!(executable(given, true), given);
+    }
+
+    #[test]
     fn missing_model_error_mentions_fetch_script() {
         let mut c = load_config(EXAMPLE).unwrap();
         c.whisper.model = "/nonexistent/whisper.bin".into();
         c.piper.bin = "/nonexistent/piper".into();
         c.piper.voices = "/nonexistent/voices.toml".into();
         let e = check_models(&c).unwrap_err();
-        assert!(e.contains("tools/fetch-whisper.sh"), "{e}");
-        assert!(e.contains("tools/fetch-piper.sh"), "{e}");
+        assert!(e.contains(&script("fetch-whisper")), "{e}");
+        assert!(e.contains(&script("fetch-piper")), "{e}");
         assert!(e.contains("/nonexistent/whisper.bin"), "{e}");
     }
 }
