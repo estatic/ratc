@@ -163,7 +163,7 @@ impl XPlaneState {
 
     /// `None` until wind, visibility, temperature, dew point and pressure have arrived.
     /// Clouds are best-effort: layers without data are skipped.
-    pub fn weather(&self, field_elev_ft: f64) -> Option<WeatherFrame> {
+    pub fn weather(&self) -> Option<WeatherFrame> {
         let g = |s| self.get(s);
         let clouds = [
             (Slot::CloudCov0, Slot::CloudBase0),
@@ -177,10 +177,9 @@ impl XPlaneState {
             if base_msl_m <= 0.0 {
                 return None;
             }
-            let agl = (base_msl_m * M_TO_FT - field_elev_ft).max(0.0);
             Some(CloudLayer {
                 cover: cover.to_string(),
-                base_ft_agl: agl.round() as u32,
+                base_ft_msl: (base_msl_m * M_TO_FT).round() as u32,
             })
         })
         .collect();
@@ -220,7 +219,6 @@ pub enum XpUpdate {
 pub struct XpConfig {
     /// X-Plane host and RREF port (default port 49000).
     pub xplane_addr: SocketAddr,
-    pub field_elev_ft: f64,
     /// Local address to receive replies on; X-Plane answers to the sender's port.
     pub local_bind: SocketAddr,
     /// Resend all subscriptions after this long without a packet (X-Plane restarted).
@@ -228,10 +226,9 @@ pub struct XpConfig {
 }
 
 impl XpConfig {
-    pub fn new(xplane_addr: SocketAddr, field_elev_ft: f64) -> Self {
+    pub fn new(xplane_addr: SocketAddr) -> Self {
         Self {
             xplane_addr,
-            field_elev_ft,
             local_bind: ([0, 0, 0, 0], 0).into(),
             silence_timeout: Duration::from_secs(5),
         }
@@ -325,7 +322,7 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
             return Ok(());
         }
         if last_weather.is_none_or(|t| t.elapsed() >= WEATHER_PERIOD)
-            && let Some(w) = state.weather(cfg.field_elev_ft)
+            && let Some(w) = state.weather()
         {
             last_weather = Some(Instant::now());
             if tx.send(XpUpdate::Weather(w)).await.is_err() {
@@ -404,9 +401,9 @@ mod tests {
         s.apply(&all[17..19]);
         let f = s.telemetry().unwrap();
         assert_eq!((f.utc_s, f.day_of_year), (Some(43_200.0), Some(200)));
-        assert!(s.weather(791.0).is_none());
+        assert!(s.weather().is_none());
         s.apply(&all[19..]);
-        let w = s.weather(791.0).unwrap();
+        let w = s.weather().unwrap();
         assert_eq!(
             (w.wind_dir_deg, w.wind_speed_kt, w.visibility_m),
             (270, 8, 9999)
@@ -415,7 +412,7 @@ mod tests {
             w.clouds,
             vec![CloudLayer {
                 cover: "sct".into(),
-                base_ft_agl: 2490
+                base_ft_msl: 3281
             }]
         );
     }
@@ -458,7 +455,7 @@ mod tests {
     fn qnh_from_inhg() {
         let mut s = XPlaneState::default();
         s.apply(&full_state());
-        assert_eq!(s.weather(0.0).unwrap().qnh_hpa, 1013);
+        assert_eq!(s.weather().unwrap().qnh_hpa, 1013);
     }
 
     #[test]
@@ -475,7 +472,7 @@ mod tests {
         let mut v = full_state();
         v[Slot::CloudBase0 as usize].1 = 0.0;
         s.apply(&v);
-        assert!(s.weather(0.0).unwrap().clouds.is_empty());
+        assert!(s.weather().unwrap().clouds.is_empty());
     }
 
     #[test]

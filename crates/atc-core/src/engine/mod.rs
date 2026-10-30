@@ -353,6 +353,10 @@ impl AtcEngine {
     }
 
     /// New weather: issues the first ATIS, or a new letter on a significant change.
+    pub fn field_elevation_ft(&self) -> i32 {
+        self.airport.elevation_ft
+    }
+
     pub fn on_weather(&mut self, w: Weather) {
         match &mut self.atis {
             Some(atis) => {

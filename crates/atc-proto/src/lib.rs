@@ -8,7 +8,7 @@
 //! newer messages (such as `FollowMe`) are ignored by older clients.
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 const MAGIC: &[u8; 4] = b"ATCA";
 const HEADER_LEN: usize = 12;
@@ -70,11 +70,21 @@ impl TelemetryFrame {
     }
 }
 
+/// Where the callsign comes from: the client's config, or the simulator's aircraft.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallsignSource {
+    Config,
+    Sim,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CloudLayer {
     /// "few" | "sct" | "bkn" | "ovc"
     pub cover: String,
-    pub base_ft_agl: u32,
+    /// Cloud base above mean sea level; the server converts it to height above each
+    /// station's field.
+    pub base_ft_msl: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +105,13 @@ pub enum ClientMsg {
         protocol: u16,
         callsign: String,
         aircraft_type: String,
+        callsign_source: CallsignSource,
+    },
+    /// The simulator's aircraft changed (or the pilot changed the identity) mid-session.
+    AircraftChanged {
+        callsign: String,
+        aircraft_type: String,
+        callsign_source: CallsignSource,
     },
     Telemetry(TelemetryFrame),
     Weather(WeatherFrame),
@@ -116,6 +133,15 @@ pub enum ServerMsg {
         session: String,
     },
     Rejected {
+        reason: String,
+    },
+    /// The identity the server settled on for this session.
+    Identified {
+        callsign: String,
+        aircraft_type: String,
+        callsign_source: CallsignSource,
+    },
+    AircraftChangeRefused {
         reason: String,
     },
     AtcText {
@@ -359,6 +385,12 @@ mod tests {
                 protocol: PROTOCOL_VERSION,
                 callsign: "N123AB".into(),
                 aircraft_type: "C172".into(),
+                callsign_source: CallsignSource::Config,
+            },
+            ClientMsg::AircraftChanged {
+                callsign: "SPABC".into(),
+                aircraft_type: "B738".into(),
+                callsign_source: CallsignSource::Sim,
             },
             ClientMsg::Telemetry(tel()),
             ClientMsg::Weather(WeatherFrame {
@@ -367,7 +399,7 @@ mod tests {
                 visibility_m: 9999,
                 clouds: vec![CloudLayer {
                     cover: "sct".into(),
-                    base_ft_agl: 3000,
+                    base_ft_msl: 3000,
                 }],
                 temp_c: 12,
                 dewpoint_c: -3,
@@ -475,14 +507,40 @@ mod tests {
     #[test]
     fn hello_json_shape() {
         let m = ClientMsg::Hello {
-            protocol: 1,
+            protocol: 2,
             callsign: "N1".into(),
             aircraft_type: "C172".into(),
+            callsign_source: CallsignSource::Config,
         };
         let v: serde_json::Value = serde_json::to_value(&m).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"type":"hello","protocol":1,"callsign":"N1","aircraft_type":"C172"})
+            serde_json::json!({"type":"hello","protocol":2,"callsign":"N1","aircraft_type":"C172","callsign_source":"config"})
+        );
+        let m = ClientMsg::AircraftChanged {
+            callsign: "SPABC".into(),
+            aircraft_type: "B738".into(),
+            callsign_source: CallsignSource::Config,
+        };
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({"type":"aircraft_changed","callsign":"SPABC","aircraft_type":"B738","callsign_source":"config"})
+        );
+        let m = ServerMsg::Identified {
+            callsign: "SPABC".into(),
+            aircraft_type: "B738".into(),
+            callsign_source: CallsignSource::Sim,
+        };
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({"type":"identified","callsign":"SPABC","aircraft_type":"B738","callsign_source":"sim"})
+        );
+        let m = ServerMsg::AircraftChangeRefused {
+            reason: "busy".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({"type":"aircraft_change_refused","reason":"busy"})
         );
         let v = serde_json::to_value(ClientMsg::PttEnd).unwrap();
         assert_eq!(v, serde_json::json!({"type":"ptt_end"}));

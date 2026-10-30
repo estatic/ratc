@@ -55,6 +55,7 @@ async fn hello_wrong_protocol_rejected() {
             protocol,
             callsign: callsign.into(),
             aircraft_type: "C172".into(),
+            callsign_source: atc_proto::CallsignSource::Config,
         })
         .await;
         assert!(
@@ -425,6 +426,7 @@ async fn callsign_variants_are_one_callsign() {
         protocol: atc_proto::PROTOCOL_VERSION,
         callsign: "spabc".into(),
         aircraft_type: "C172".into(),
+        callsign_source: atc_proto::CallsignSource::Config,
     })
     .await;
     assert!(matches!(

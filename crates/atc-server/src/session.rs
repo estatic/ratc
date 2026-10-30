@@ -100,6 +100,7 @@ async fn handshake(
             protocol,
             callsign,
             aircraft_type,
+            ..
         }) => {
             if protocol != PROTOCOL_VERSION {
                 return reject(
@@ -175,6 +176,9 @@ impl Session {
                 }
                 self.on_telemetry(f)
             }
+            ClientMsg::AircraftChanged { .. } => {
+                tracing::debug!(id = self.id, "aircraft change ignored for now")
+            }
             ClientMsg::Weather(w) => self.on_weather(w),
             ClientMsg::PttStart { freq_khz } => self.on_ptt_start(canonical(freq_khz)),
             ClientMsg::PttEnd => self.on_ptt_end(),
@@ -225,7 +229,7 @@ impl Session {
             }
             *source = Some(self.id);
         }
-        for khz in server.state.network.on_weather(convert::weather(&w)) {
+        for khz in server.state.network.on_weather(&w) {
             tokio::spawn(atis::send(server.clone(), khz, server.listeners(khz)));
         }
     }

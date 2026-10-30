@@ -172,11 +172,7 @@ async fn main() -> anyhow::Result<()> {
         })
     };
     let (inputs, inputs_rx) = mpsc::channel(1024);
-    let to_conn = spawn_links(
-        conn,
-        XpConfig::new(xplane, cfg.field_elev_ft),
-        inputs.clone(),
-    );
+    let to_conn = spawn_links(conn, XpConfig::new(xplane), inputs.clone());
 
     let recorder = match &args.record {
         Some(path) => {

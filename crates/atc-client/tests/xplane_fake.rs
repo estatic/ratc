@@ -35,7 +35,7 @@ fn value(name: &str) -> f32 {
 
 async fn setup() -> (UdpSocket, XpConfig) {
     let fake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let mut cfg = XpConfig::new(fake.local_addr().unwrap(), 791.0);
+    let mut cfg = XpConfig::new(fake.local_addr().unwrap());
     cfg.local_bind = "127.0.0.1:0".parse().unwrap();
     (fake, cfg)
 }
@@ -100,7 +100,7 @@ async fn survives_unreachable_xplane() {
     let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let addr = probe.local_addr().unwrap();
     drop(probe);
-    let mut cfg = XpConfig::new(addr, 791.0);
+    let mut cfg = XpConfig::new(addr);
     cfg.local_bind = "127.0.0.1:0".parse().unwrap();
     cfg.silence_timeout = Duration::from_millis(100);
     let (tx, mut rx) = mpsc::channel(16);

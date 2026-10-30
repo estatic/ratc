@@ -7,7 +7,10 @@
 
 use std::time::Duration;
 
-use atc_proto::{AudioFrame, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame, WeatherFrame};
+use atc_proto::{
+    AudioFrame, CallsignSource, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame,
+    WeatherFrame,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -180,6 +183,7 @@ async fn session(
         protocol: PROTOCOL_VERSION,
         callsign: cfg.callsign.clone(),
         aircraft_type: cfg.aircraft_type.clone(),
+        callsign_source: CallsignSource::Config,
     };
     if !send(&mut ws, Outgoing::Msg(hello)).await {
         return End::Lost;

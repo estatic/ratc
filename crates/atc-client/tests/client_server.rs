@@ -9,7 +9,7 @@ use std::time::Duration;
 use atc_client::app::{App, Input, spawn_links};
 use atc_client::connection::{Backoff, ConnConfig, Outgoing, ServerEvent, run_connection};
 use atc_client::{XpConfig, XpUpdate};
-use atc_proto::{ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame};
+use atc_proto::{CallsignSource, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame};
 use common::fake_xp::{T, answer, read_subscriptions};
 use common::server::{GROUND, TAXI_REQUEST, parked, start, start_on};
 use futures_util::{SinkExt, StreamExt};
@@ -114,6 +114,7 @@ async fn client_reconnects_with_backoff() {
         protocol: PROTOCOL_VERSION,
         callsign: "SP-ABC".into(),
         aircraft_type: "C172".into(),
+        callsign_source: CallsignSource::Config,
     };
     let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
     let capped = at[4].elapsed();
@@ -210,7 +211,7 @@ fn parked_value(name: &str) -> f32 {
 async fn text_mode_roundtrip() {
     let srv = start().await;
     let fake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let mut xp = XpConfig::new(fake.local_addr().unwrap(), 791.0);
+    let mut xp = XpConfig::new(fake.local_addr().unwrap());
     xp.local_bind = "127.0.0.1:0".parse().unwrap();
     let fake_xp = tokio::spawn(async move {
         let (client, names) = read_subscriptions(&fake).await;
@@ -269,7 +270,7 @@ async fn text_mode_roundtrip() {
 async fn xplane_reader_feeds_links() {
     // spawn_links forwards X-Plane updates as inputs even with no server around
     let fake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let mut xp = XpConfig::new(fake.local_addr().unwrap(), 791.0);
+    let mut xp = XpConfig::new(fake.local_addr().unwrap());
     xp.local_bind = "127.0.0.1:0".parse().unwrap();
     let (inputs, mut rx) = mpsc::channel(64);
     let _to_conn = spawn_links(

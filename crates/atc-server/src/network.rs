@@ -31,7 +31,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 
-use atc_core::atis::Weather;
 use atc_core::engine::{AtcEngine, AtcOutput, EngineSnapshot, LanguageMode, VehicleOrder};
 use atc_core::enroute::{EnrouteEvent, EnrouteUnit, HandOff, UnitFlightState, unit_covers};
 use atc_core::state::{AircraftState, SimTime};
@@ -41,6 +40,7 @@ use atc_navdata::enroute::EnrouteUnitDef;
 use atc_navdata::model::{Airport, FreqKind};
 use atc_navdata::procedures::AirspaceKind;
 use atc_phraseology::{AtcItem, AtcMessage, Callsign, Lang, render};
+use atc_proto::WeatherFrame;
 use serde::{Deserialize, Serialize};
 
 #[cfg(doc)]
@@ -48,6 +48,7 @@ use atc_core::handover::FlightHandover;
 #[cfg(doc)]
 use atc_navdata::procedures::Procedures;
 
+use crate::convert;
 use crate::stations::LoadedStation;
 
 const M_PER_NM: f64 = 1852.0;
@@ -393,9 +394,10 @@ impl Network {
         }
     }
 
-    /// New weather to every engine; returns the ATIS frequencies whose broadcast changed.
-    pub fn on_weather(&self, w: Weather) -> Vec<u32> {
-        *self.qnh.lock().unwrap() = Some(w.qnh_hpa);
+    /// New weather to every engine, with the cloud bases made relative to each station's own
+    /// field; returns the ATIS frequencies whose broadcast changed.
+    pub fn on_weather(&self, f: &WeatherFrame) -> Vec<u32> {
+        *self.qnh.lock().unwrap() = Some(f.qnh_hpa);
         let changed: Vec<usize> = self
             .stations
             .iter()
@@ -403,7 +405,8 @@ impl Network {
             .filter_map(|(i, s)| {
                 let mut engine = s.engine.lock().unwrap();
                 let before = engine.atis_broadcast().map(|a| a.0);
-                engine.on_weather(w.clone());
+                let w = convert::weather(f, engine.field_elevation_ft());
+                engine.on_weather(w);
                 (engine.atis_broadcast().map(|a| a.0) != before).then_some(i)
             })
             .collect();

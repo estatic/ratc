@@ -14,7 +14,8 @@ pub struct ClientConfig {
     pub aircraft_type: String,
     /// X-Plane host:port (RREF, normally port 49000).
     pub xplane: String,
-    /// Field elevation for cloud bases above ground in the weather report.
+    /// Unused since protocol 2 (cloud bases are sent above sea level); kept so old
+    /// config files still load.
     #[serde(default)]
     pub field_elev_ft: f64,
     /// host:port of the X-Plane overlay plugin; [`crate::overlay::DEFAULT_ADDR`] when absent.
