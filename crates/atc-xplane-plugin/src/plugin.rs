@@ -256,6 +256,8 @@ struct Car {
     driver: FollowMe,
     instance: InstanceRef,
     roof: InstanceRef,
+    /// X-Plane refused the roof instance: not asked again for this car (logged once).
+    roof_refused: bool,
 }
 
 /// An object: not looked up yet, loading, loaded, or missing (the car from the library,
@@ -530,6 +532,7 @@ impl Overlay {
                     driver,
                     instance: null_mut(),
                     roof: null_mut(),
+                    roof_refused: false,
                 });
                 self.load_object(aircraft);
                 self.load_roof();
@@ -615,9 +618,14 @@ impl Overlay {
             }
         }
         if car.roof.is_null()
+            && !car.roof_refused
             && let Object::Loaded(obj) = self.roof
         {
             car.roof = create_instance(obj, &ROOF_DATAREFS);
+            if car.roof.is_null() {
+                car.roof_refused = true;
+                log("follow-me roof instance refused: the car comes without its sign");
+            }
         }
         let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
         unsafe {
@@ -677,8 +685,13 @@ impl Overlay {
         if self.roof_datarefs.iter().any(|dr| dr.is_null()) {
             return log("follow-me roof datarefs not registered: the car comes without its sign");
         }
-        let Some(path) = roof_object_xplm_path() else {
-            return log("follow-me roof object not installed: the car comes without its sign");
+        let path = match roof_object_xplm_path() {
+            Ok(path) => path,
+            Err(why) => {
+                return log(&format!(
+                    "follow-me roof object not loaded ({why}): the car comes without its sign"
+                ));
+            }
         };
         self.roof = Object::Loading;
         unsafe { XPLMLoadObjectAsync(path.as_ptr().cast(), roof_loaded, null_mut()) };
@@ -755,8 +768,8 @@ extern "C" fn read_light_float(refcon: *mut c_void) -> c_float {
 
 /// The roof object's path for `XPLMLoadObjectAsync`, NUL-terminated: relative to the
 /// X-Plane folder (as XPLMLoadObject wants it), or absolute if the plugin lies elsewhere;
-/// `None` when the file is not there.
-fn roof_object_xplm_path() -> Option<Vec<u8>> {
+/// why not, when the file is not there or a path is not UTF-8.
+fn roof_object_xplm_path() -> Result<Vec<u8>, String> {
     let mut xpl = [0 as c_char; PATH_BUF];
     let mut root = [0 as c_char; PATH_BUF];
     unsafe {
@@ -770,21 +783,28 @@ fn roof_object_xplm_path() -> Option<Vec<u8>> {
         XPLMGetSystemPath(root.as_mut_ptr());
     }
     // SAFETY: XPLM wrote NUL-terminated strings into the zeroed buffers.
-    let xpl = unsafe { CStr::from_ptr(xpl.as_ptr()) }.to_str().ok()?;
-    let root = unsafe { CStr::from_ptr(root.as_ptr()) }.to_str().ok()?;
+    let xpl = unsafe { CStr::from_ptr(xpl.as_ptr()) };
+    let root = unsafe { CStr::from_ptr(root.as_ptr()) };
+    let not_utf8 =
+        |what: &str, p: &CStr| format!("{what} path is not UTF-8: {}", p.to_string_lossy());
+    let xpl = xpl.to_str().map_err(|_| not_utf8("plugin", xpl))?;
+    let root = root.to_str().map_err(|_| not_utf8("X-Plane", root))?;
     let path = roof_object_path(Path::new(xpl));
     if !path.is_file() {
-        log(&format!("{} is missing", path.display()));
-        return None;
+        return Err(format!("{} is missing", path.display()));
     }
     let relative = if root.is_empty() {
         &path
     } else {
         path.strip_prefix(root).unwrap_or(&path)
     };
-    let mut bytes = relative.to_str()?.as_bytes().to_vec();
+    let mut bytes = relative
+        .to_str()
+        .ok_or_else(|| format!("{} is not UTF-8", relative.display()))?
+        .as_bytes()
+        .to_vec();
     bytes.push(0);
-    Some(bytes)
+    Ok(bytes)
 }
 
 /// `XPLMLookupObjects` enumerator: keeps the first file path.

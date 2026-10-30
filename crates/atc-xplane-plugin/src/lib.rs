@@ -286,6 +286,29 @@ mod tests {
     fn roof_object_is_obj8_with_its_texture() {
         let obj = include_str!("../assets/follow_me_roof.obj");
         assert!(obj.starts_with("I\n800\nOBJ\n"), "not an OBJ8 header");
+        // X-Plane rejects a POINT_COUNTS that does not match the VT and IDX lines only at
+        // run time: `POINT_COUNTS vt lines lights indices`.
+        let counts: Vec<usize> = obj
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("POINT_COUNTS"))
+            .expect("POINT_COUNTS")
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        let starting = |p: &str| {
+            obj.lines()
+                .filter(|l| l.trim_start().starts_with(p))
+                .count()
+        };
+        let indices: usize = obj
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                l.strip_prefix("IDX10 ").or_else(|| l.strip_prefix("IDX "))
+            })
+            .map(|rest| rest.split_whitespace().count())
+            .sum();
+        assert_eq!(counts, [starting("VT "), 0, 0, indices], "POINT_COUNTS");
         assert!(
             obj.lines()
                 .any(|l| l.trim() == "TEXTURE follow_me_roof.png")
