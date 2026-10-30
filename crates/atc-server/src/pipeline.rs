@@ -34,6 +34,8 @@ pub(crate) enum Job {
         text: String,
         t: f64,
     },
+    /// The pilot switched aircraft: later jobs are the new callsign's.
+    Rename(String),
 }
 
 /// Processes a client's transmissions one after another, so the engine hears them (and the
@@ -41,12 +43,16 @@ pub(crate) enum Job {
 pub(crate) async fn worker(
     server: Arc<Server>,
     id: ClientId,
-    callsign: String,
+    mut callsign: String,
     mut jobs: mpsc::UnboundedReceiver<Job>,
 ) {
-    let cs = Callsign::new(&callsign);
+    let mut cs = Callsign::new(&callsign);
     while let Some(job) = jobs.recv().await {
         match job {
+            Job::Rename(new) => {
+                cs = Callsign::new(&new);
+                callsign = new;
+            }
             Job::Voice { freq_khz, pcm, t } => {
                 voice(&server, id, &callsign, freq_khz, pcm, t).await
             }

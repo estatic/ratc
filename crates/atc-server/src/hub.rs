@@ -55,6 +55,21 @@ impl Hub {
         Ok(())
     }
 
+    /// Gives the client another callsign; renaming to its own is fine. Unknown id: no-op.
+    pub fn rename(&mut self, id: ClientId, callsign: String) -> Result<(), HubError> {
+        if self
+            .clients
+            .iter()
+            .any(|(&other, c)| other != id && c.callsign == callsign)
+        {
+            return Err(HubError::DuplicateCallsign);
+        }
+        if let Some(c) = self.clients.get_mut(&id) {
+            c.callsign = callsign;
+        }
+        Ok(())
+    }
+
     /// Removes the client; releases its PTT lock if held. Unknown id: no-op.
     pub fn leave(&mut self, id: ClientId) -> Vec<HubEvent> {
         let Some(c) = self.clients.remove(&id) else {
@@ -197,6 +212,18 @@ mod tests {
         h.tune(1, &[118_000, 126_130]);
         assert_eq!(h.listeners(126_130), vec![1]);
         assert_eq!(h.listeners(118_000), vec![1]);
+    }
+
+    #[test]
+    fn rename_checks_other_clients_only() {
+        let mut h = hub();
+        h.join(7, "R1".into()).unwrap();
+        assert_eq!(h.rename(7, "R1".into()), Ok(()));
+        assert_eq!(h.rename(7, "R2".into()), Ok(()));
+        assert_eq!(h.callsign(7), Some("R2"));
+        h.join(8, "R3".into()).unwrap();
+        assert_eq!(h.rename(8, "R2".into()), Err(HubError::DuplicateCallsign));
+        assert_eq!(h.callsign(8), Some("R3"));
     }
 
     #[test]

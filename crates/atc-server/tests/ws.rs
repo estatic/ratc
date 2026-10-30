@@ -826,3 +826,157 @@ khz = 121700
     // Nobody works 121.500: the station nearest the aircraft speaks for it.
     assert!(prompts[3].contains(zeta) && !prompts[3].contains(testville));
 }
+
+fn changed(callsign: &str, aircraft_type: &str) -> ClientMsg {
+    ClientMsg::AircraftChanged {
+        callsign: callsign.into(),
+        aircraft_type: aircraft_type.into(),
+        callsign_source: atc_proto::CallsignSource::Sim,
+    }
+}
+
+fn has_strip(srv: &TestServer, callsign: &str) -> bool {
+    let cs = atc_phraseology::Callsign::new(callsign);
+    srv.state
+        .network
+        .stations()
+        .iter()
+        .any(|s| s.engine.lock().unwrap().strip(&cs).is_some())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn identified_follows_welcome() {
+    let srv = start(vec![], false).await;
+    let mut c = Client::connect(&srv.url).await;
+    c.send(ClientMsg::Hello {
+        protocol: atc_proto::PROTOCOL_VERSION,
+        callsign: " sp-abc ".into(),
+        aircraft_type: "C172".into(),
+        callsign_source: atc_proto::CallsignSource::Sim,
+    })
+    .await;
+    assert!(matches!(c.recv().await, In::Msg(ServerMsg::Welcome { .. })));
+    // The callsign as the hub stores it, the source as the client said.
+    assert_eq!(
+        c.recv().await,
+        In::Msg(ServerMsg::Identified {
+            callsign: "SPABC".into(),
+            aircraft_type: "C172".into(),
+            callsign_source: atc_proto::CallsignSource::Sim,
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aircraft_change_same_callsign_is_new_flight() {
+    let srv = start(vec![], false).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    c.recv_until(is_audio_end).await;
+    assert!(has_strip(&srv, "SP-ABC"));
+
+    c.send(changed("SP-ABC", "B738")).await;
+    assert_eq!(
+        c.recv().await,
+        In::Msg(ServerMsg::Identified {
+            callsign: "SPABC".into(),
+            aircraft_type: "B738".into(),
+            callsign_source: atc_proto::CallsignSource::Sim,
+        })
+    );
+    // The flight is gone from the engine; the clearance does not carry over.
+    assert!(!has_strip(&srv, "SP-ABC"));
+    let cs = atc_phraseology::Callsign::new("SP-ABC");
+    assert_eq!(srv.state.network.owner(&cs), None);
+    // Still the same client in the hub.
+    assert_eq!(srv.state.hub.lock().unwrap().callsign(1), Some("SPABC"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aircraft_change_new_callsign_renames() {
+    let srv = start(vec![], false).await;
+    let mut a = Client::hello(&srv.url, "SP-OLD").await;
+    a.send(changed("SP-NEW", "B738")).await;
+    assert!(matches!(
+        a.recv().await,
+        In::Msg(ServerMsg::Identified { callsign, .. }) if callsign == "SPNEW"
+    ));
+    // The old callsign is free; the new one is taken.
+    let _b = Client::hello(&srv.url, "SP-OLD").await;
+    let mut c = Client::connect(&srv.url).await;
+    c.send(ClientMsg::Hello {
+        protocol: atc_proto::PROTOCOL_VERSION,
+        callsign: "SP-NEW".into(),
+        aircraft_type: "C172".into(),
+        callsign_source: atc_proto::CallsignSource::Config,
+    })
+    .await;
+    assert!(matches!(
+        c.recv().await,
+        In::Msg(ServerMsg::Rejected { .. })
+    ));
+    // Transmissions now go out under the new callsign.
+    a.weather_and_parked(GROUND).await;
+    say(&mut a, GROUND, "Kraków Ground, SP-NEW, request taxi").await;
+    a.recv_until(is_audio_end).await;
+    assert!(has_strip(&srv, "SP-NEW"));
+    assert!(!has_strip(&srv, "SP-OLD"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aircraft_change_to_taken_callsign_is_refused() {
+    let srv = start(vec![], false).await;
+    let mut a = Client::hello(&srv.url, "SP-AAA").await;
+    let _b = Client::hello(&srv.url, "SP-BBB").await;
+    a.weather_and_parked(GROUND).await;
+    say(&mut a, GROUND, "Kraków Ground, SP-AAA, request taxi").await;
+    a.recv_until(is_audio_end).await;
+
+    a.send(changed("sp-bbb", "B738")).await;
+    let refused = a.recv().await;
+    assert!(
+        matches!(&refused, In::Msg(ServerMsg::AircraftChangeRefused { reason }) if reason.contains("SPBBB")),
+        "{refused:?}"
+    );
+    a.send(changed("  ", "B738")).await;
+    assert!(matches!(
+        a.recv().await,
+        In::Msg(ServerMsg::AircraftChangeRefused { .. })
+    ));
+    // A still flies under its old callsign, with its flight intact.
+    assert_eq!(srv.state.hub.lock().unwrap().callsign(1), Some("SPAAA"));
+    assert!(has_strip(&srv, "SP-AAA"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn weather_source_kept_after_change() {
+    let srv = start(vec![], false).await;
+    let mut a = Client::hello(&srv.url, "SP-AAA").await;
+    let mut b = Client::hello(&srv.url, "SP-BBB").await;
+    let letter = || {
+        let engine = srv.state.network.stations()[0].engine.lock().unwrap();
+        engine.atis_broadcast().map(|(l, _)| l)
+    };
+    let mut stormy = weather();
+    stormy.qnh_hpa = 990;
+    a.send(ClientMsg::Weather(weather())).await;
+    a.send(changed("SP-CCC", "B738")).await;
+    a.recv().await;
+    assert_eq!(letter(), Some('A'));
+
+    // B is no source: its report is ignored (its refused change orders it before the check).
+    b.send(ClientMsg::Weather(stormy.clone())).await;
+    b.send(changed("SP-CCC", "B738")).await;
+    assert!(matches!(
+        b.recv().await,
+        In::Msg(ServerMsg::AircraftChangeRefused { .. })
+    ));
+    assert_eq!(letter(), Some('A'));
+
+    // A, renamed, is still the source.
+    a.send(ClientMsg::Weather(stormy)).await;
+    a.send(changed("SP-DDD", "B738")).await;
+    a.recv().await;
+    assert_eq!(letter(), Some('B'));
+}

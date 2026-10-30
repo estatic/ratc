@@ -252,6 +252,10 @@ impl Client {
             In::Msg(ServerMsg::Welcome { protocol, .. }) => assert_eq!(protocol, PROTOCOL_VERSION),
             other => panic!("expected welcome, got {other:?}"),
         }
+        match c.recv().await {
+            In::Msg(ServerMsg::Identified { .. }) => {}
+            other => panic!("expected identified, got {other:?}"),
+        }
         c
     }
 
