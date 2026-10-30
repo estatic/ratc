@@ -516,8 +516,9 @@ impl Network {
     /// state nor the snapshots keep it. Registered again, even under the same callsign, it
     /// is a new flight.
     pub fn end_flight(&self, cs: &Callsign) {
-        // The owner entry goes first, so no call is routed to a half-removed flight.
-        self.owners.lock().unwrap().remove(cs);
+        // Held throughout, so no dispatch sees (or re-creates) a half-removed flight.
+        let mut owners = self.owners.lock().unwrap();
+        owners.remove(cs);
         for s in &self.stations {
             s.engine.lock().unwrap().remove_pilot(cs);
         }
