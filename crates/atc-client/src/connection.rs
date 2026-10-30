@@ -88,6 +88,8 @@ pub enum ServerEvent {
 struct Latest {
     weather: Option<WeatherFrame>,
     telemetry: Option<TelemetryFrame>,
+    /// What the server said about our identity; survives reconnects like the rest.
+    known: Known,
 }
 
 impl Latest {
@@ -144,6 +146,11 @@ pub async fn run_connection(
     loop {
         let Some(id) = wait_identity(&mut identity, &mut latest, &mut from_ui, &to_ui).await else {
             return Ok(());
+        };
+        // A refused identity must not be presented again: keep the accepted one.
+        let id = match (&latest.known.refused, &latest.known.accepted) {
+            (Some(r), Some(a)) if *r == id => a.clone(),
+            _ => id,
         };
         let attempt = tokio::time::timeout(
             CONNECT_TIMEOUT,
@@ -204,16 +211,30 @@ async fn send(ws: &mut Ws, out: Outgoing) -> bool {
     ws.send(msg).await.is_ok()
 }
 
-/// Tells the server about the current identity when it differs from `sent`.
+/// What the server has said about our identity, kept across reconnects.
+#[derive(Default)]
+struct Known {
+    /// The last identity the server accepted (`Identified`).
+    accepted: Option<Identity>,
+    /// An identity the server refused: not sent again, and not used for `Hello` while the
+    /// sim still reports it, so a reconnect keeps the old flight.
+    refused: Option<Identity>,
+    /// Identities sent (`Hello`, `AircraftChanged`) that the server has not answered yet.
+    pending: std::collections::VecDeque<Identity>,
+}
+
+/// Tells the server about the current identity when it differs from `sent` and was not
+/// refused.
 async fn announce(
     ws: &mut Ws,
     identity: &mut watch::Receiver<Option<Identity>>,
     sent: &mut Identity,
+    known: &mut Known,
 ) -> bool {
     let Some(now) = identity.borrow_and_update().clone() else {
         return true;
     };
-    if now == *sent {
+    if now == *sent || known.refused.as_ref() == Some(&now) {
         return true;
     }
     let msg = ClientMsg::AircraftChanged {
@@ -221,6 +242,7 @@ async fn announce(
         aircraft_type: now.aircraft_type.clone(),
         callsign_source: now.source,
     };
+    known.pending.push_back(now.clone());
     *sent = now;
     send(ws, Outgoing::Msg(msg)).await
 }
@@ -240,6 +262,8 @@ async fn session(
         aircraft_type: sent.aircraft_type.clone(),
         callsign_source: sent.source,
     };
+    latest.known.pending.clear();
+    latest.known.pending.push_back(sent.clone());
     if !send(&mut ws, Outgoing::Msg(hello)).await {
         return End::Lost;
     }
@@ -264,7 +288,7 @@ async fn session(
                 if c.is_err() {
                     break End::Exit;
                 }
-                if welcomed && !announce(&mut ws, identity, &mut sent).await {
+                if welcomed && !announce(&mut ws, identity, &mut sent, &mut latest.known).await {
                     break End::Lost;
                 }
             }
@@ -291,6 +315,30 @@ async fn session(
                     }
                     Some(Ok(_)) => continue,
                 };
+                match &event {
+                    ServerEvent::Msg(ServerMsg::Identified { callsign, aircraft_type, callsign_source }) => {
+                        let id = Identity {
+                            callsign: callsign.clone(),
+                            aircraft_type: aircraft_type.clone(),
+                            source: *callsign_source,
+                        };
+                        latest.known.pending.pop_front();
+                        if latest.known.pending.is_empty() {
+                            sent = id.clone();
+                        }
+                        latest.known.accepted = Some(id);
+                        latest.known.refused = None;
+                    }
+                    ServerEvent::Msg(ServerMsg::AircraftChangeRefused { .. }) => {
+                        latest.known.refused = latest.known.pending.pop_front();
+                        if latest.known.pending.is_empty()
+                            && let Some(a) = &latest.known.accepted
+                        {
+                            sent = a.clone();
+                        }
+                    }
+                    _ => {}
+                }
                 if let ServerEvent::Msg(ServerMsg::Welcome { .. }) = event {
                     welcomed = true;
                     cfg.backoff.reset();
@@ -300,7 +348,7 @@ async fn session(
                         }
                     }
                     // The identity may have changed while the server was still welcoming us.
-                    if !announce(&mut ws, identity, &mut sent).await {
+                    if !announce(&mut ws, identity, &mut sent, &mut latest.known).await {
                         return End::Lost;
                     }
                     if to_ui.send(ServerEvent::Connected).await.is_err() {

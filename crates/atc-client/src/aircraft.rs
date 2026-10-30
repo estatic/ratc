@@ -54,6 +54,11 @@ pub const UNKNOWN_TYPE: &str = "ZZZZ";
 pub const MISSING_CALLSIGN: &str =
     "X-Plane has no tail number for this aircraft; set callsign in config/client.toml";
 
+/// Appended to [`MISSING_CALLSIGN`] when a connection under another identity exists.
+pub fn still_flying(callsign: &str, aircraft_type: &str) -> String {
+    format!("{MISSING_CALLSIGN}; still flying as {callsign} ({aircraft_type})")
+}
+
 /// Who the client tells the server it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
@@ -90,7 +95,8 @@ pub struct IdentityTracker {
     /// The latest sim report, re-offered on every [`IdentityTracker::tick`].
     last: Option<SimAircraft>,
     tx: watch::Sender<Option<Identity>>,
-    missing_reported: bool,
+    /// The sim aircraft the missing-callsign line was last printed for.
+    missing_for: Option<SimAircraft>,
 }
 
 impl IdentityTracker {
@@ -100,7 +106,7 @@ impl IdentityTracker {
             filter: ChangeFilter::new(Duration::from_secs(2)),
             last: None,
             tx,
-            missing_reported: false,
+            missing_for: None,
         }
     }
 
@@ -111,7 +117,7 @@ impl IdentityTracker {
     }
 
     /// A new report from the sim. Returns a line to show, if any.
-    pub fn observe(&mut self, now: Instant, mut sim: SimAircraft) -> Option<&'static str> {
+    pub fn observe(&mut self, now: Instant, mut sim: SimAircraft) -> Option<String> {
         if self.config_callsign.is_some() {
             // Only the type matters; the tail number must not restart the debounce.
             sim.tail = None;
@@ -122,17 +128,20 @@ impl IdentityTracker {
 
     /// Re-offers the latest report so a value that has become stable is released although
     /// the sim sent nothing new (it updates at 1 Hz).
-    pub fn tick(&mut self, now: Instant) -> Option<&'static str> {
+    pub fn tick(&mut self, now: Instant) -> Option<String> {
         let sim = self.filter.offer(now, self.last.clone()?)?;
         match resolve(self.config_callsign.as_deref(), &sim) {
             Ok(id) => {
-                self.missing_reported = false;
+                self.missing_for = None;
                 self.tx.send_replace(Some(id));
                 None
             }
-            Err(MissingCallsign) if !self.missing_reported => {
-                self.missing_reported = true;
-                Some(MISSING_CALLSIGN)
+            Err(MissingCallsign) if self.missing_for.as_ref() != Some(&sim) => {
+                self.missing_for = Some(sim);
+                Some(match &*self.tx.borrow() {
+                    Some(id) => still_flying(&id.callsign, &id.aircraft_type),
+                    None => MISSING_CALLSIGN.to_string(),
+                })
             }
             Err(MissingCallsign) => None,
         }
@@ -204,9 +213,34 @@ mod tests {
         let mut t = IdentityTracker::new(None, tx);
         let t0 = Instant::now();
         t.observe(t0, sim(Some("C172"), None));
-        assert_eq!(t.tick(t0 + Duration::from_secs(2)), Some(MISSING_CALLSIGN));
+        assert_eq!(
+            t.tick(t0 + Duration::from_secs(2)),
+            Some(MISSING_CALLSIGN.to_string())
+        );
         assert_eq!(t.tick(t0 + Duration::from_secs(3)), None);
         assert_eq!(*rx.borrow(), None);
+    }
+
+    #[test]
+    fn missing_callsign_mid_session_says_still_flying() {
+        let (tx, rx) = watch::channel(None);
+        let mut t = IdentityTracker::new(None, tx);
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        t.observe(t0, sim(Some("C172"), Some("SP-ABC")));
+        t.tick(t0 + s(2));
+        assert!(rx.borrow().is_some());
+        t.observe(t0 + s(3), sim(Some("B738"), None));
+        assert_eq!(
+            t.tick(t0 + s(5)).as_deref(),
+            Some(
+                "X-Plane has no tail number for this aircraft; set callsign in config/client.toml; still flying as SP-ABC (C172)"
+            )
+        );
+        assert_eq!(t.tick(t0 + s(6)), None);
+        // Another aircraft without a tail number is reported again.
+        t.observe(t0 + s(7), sim(Some("A320"), None));
+        assert!(t.tick(t0 + s(9)).is_some());
     }
 
     fn ac(icao: &str) -> SimAircraft {

@@ -333,11 +333,12 @@ default `127.0.0.1:48010`), `input_device` / `output_device` (part of the device
 defaults without them), and optionally `callsign` (SP-ABC).
 
 The aircraft type always comes from X-Plane. The callsign is the one in `client.toml` when set;
-otherwise it is the tail number of the loaded aircraft, and the client waits for X-Plane to
-report it (`Waiting for X-Plane at <address> for the aircraft type…` every 10 s). If the aircraft
-has no tail number, the client says so and does not connect until you set `callsign`. In `--text`
-mode with a `callsign` the client connects without waiting, with type `ZZZZ` until X-Plane reports
-the real one.
+otherwise it is the tail number of the loaded aircraft. The client waits for X-Plane to report the
+aircraft (`Waiting for X-Plane at <address> for the aircraft type…` every 10 s) before it
+connects; only `--text` mode with a `callsign` connects without waiting, with type `ZZZZ` until
+X-Plane reports the real one. If the aircraft has no tail number (and no `callsign` is set), the
+client says so and does not connect; if that happens after you changed aircraft mid-session, it
+keeps flying as before and says so.
 
 After connecting, the client prints the identity the server settled on, e.g.
 `Aircraft: C172, callsign SP-ABC (X-Plane tail number)` (or `(from config)`). Changing the aircraft

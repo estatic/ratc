@@ -231,7 +231,7 @@ impl App {
         let line = tracker.tick(now);
         let waiting = tracker.waiting_for_sim();
         if let Some(l) = line {
-            self.say(l);
+            self.say(&l);
         }
         if waiting
             && self
@@ -276,7 +276,7 @@ impl App {
                 if let Some(tracker) = &mut self.identity
                     && let Some(l) = tracker.observe(std::time::Instant::now(), a)
                 {
-                    self.say(l);
+                    self.say(&l);
                 }
             }
         }
@@ -487,8 +487,8 @@ mod tests {
     }
 
     #[test]
-    fn refusal_printed_once_and_not_retried() {
-        let (mut app, printed, mut rx) = capture();
+    fn refusal_printed_once() {
+        let (mut app, printed, _rx) = capture();
         app.server_msg(&ServerMsg::Identified {
             callsign: "SP-ABC".into(),
             aircraft_type: "C172".into(),
@@ -506,8 +506,8 @@ mod tests {
                 "Aircraft change refused: callsign SP-XYZ is already in use; still flying as SP-ABC (C172)"
             ]
         );
-        // The client sends nothing in answer.
-        assert!(rx.try_recv().is_err());
+        // Not resending is the connection's job: see `refused_change_is_not_resent` in
+        // tests/client_server.rs.
     }
 
     #[test]

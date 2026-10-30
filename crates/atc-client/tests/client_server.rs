@@ -415,3 +415,67 @@ async fn reconnect_uses_latest_identity() {
     let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
     assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "B738"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refused_change_is_not_resent() {
+    let ms = Duration::from_millis;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let (_to_conn, from_ui) = mpsc::channel(16);
+    let (to_ui, _events) = mpsc::channel(64);
+    let (id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
+    tokio::spawn(run_connection(
+        conn_cfg(url, Backoff::new(ms(40), ms(80))),
+        id_rx,
+        from_ui,
+        to_ui,
+    ));
+    let identified = |c: &str, t: &str| {
+        Message::text(
+            serde_json::to_string(&ServerMsg::Identified {
+                callsign: c.into(),
+                aircraft_type: t.into(),
+                callsign_source: CallsignSource::Config,
+            })
+            .unwrap(),
+        )
+    };
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+    ws.send(identified("SP-ABC", "C172")).await.unwrap();
+
+    id_tx.send_replace(Some(ident("SP-XYZ", "B738")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { callsign, .. } if callsign == "SP-XYZ"
+    ));
+    let refusal = ServerMsg::AircraftChangeRefused {
+        reason: "callsign SP-XYZ is already in use".into(),
+    };
+    ws.send(Message::text(serde_json::to_string(&refusal).unwrap()))
+        .await
+        .unwrap();
+    // Give the client time to take the refusal in, then drop the link.
+    tokio::time::sleep(ms(100)).await;
+    drop(ws);
+
+    // The reconnect presents the accepted identity, and the refused one is not offered again.
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+    ws.send(identified("SP-ABC", "C172")).await.unwrap();
+    assert!(
+        timeout(ms(400), next_text(&mut ws)).await.is_err(),
+        "the refused change was sent again"
+    );
+
+    // A different sim identity is offered normally.
+    id_tx.send_replace(Some(ident("SP-QRS", "B738")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { callsign, .. } if callsign == "SP-QRS"
+    ));
+}
