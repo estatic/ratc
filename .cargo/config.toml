@@ -1,4 +1,12 @@
-# Windows: link the C runtime statically (also into whisper.cpp via cc/cmake), so the
-# executables run without the Visual C++ Redistributable.
+# Windows: link the C runtime statically, so the executables run without the Visual C++
+# Redistributable.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# whisper.cpp (built by whisper-rs-sys, which passes CMAKE_* variables to CMake) must use the
+# same static runtime in every profile: a debug build asks CMake for RelWithDebInfo flags but
+# builds the Release configuration, whose default is the DLL runtime (/MD). Only MSVC reads
+# these; elsewhere they change nothing.
+[env]
+CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
