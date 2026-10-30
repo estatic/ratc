@@ -291,9 +291,18 @@ fn follow_me_pl() {
         one(AtcItem::FollowMeOnTheWay),
         "samochód follow me jest w drodze"
     );
-    assert_eq!(
-        one(AtcItem::FollowTheFollowMe),
-        "kołuj za samochodem follow me"
+    let stand = AtcItem::FollowTheFollowMe {
+        to: TaxiTo::Stand { name: "17".into() },
+    };
+    assert!(one(stand).starts_with("kołuj za samochodem follow me do stanowiska "));
+    let hold = AtcItem::FollowTheFollowMe {
+        to: TaxiTo::HoldingPoint {
+            runway: "25".into(),
+        },
+    };
+    assert!(
+        one(hold)
+            .starts_with("kołuj za samochodem follow me do punktu oczekiwania drogi startowej ")
     );
 }
 

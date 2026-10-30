@@ -468,6 +468,26 @@ fn follow_me_requests() {
     }
 }
 
+#[test]
+fn on_the_way_readback_is_not_a_request() {
+    for t in [
+        "Hold position, follow-me car is on the way, Sierra Bravo Charlie",
+        "Roger, hold position, follow me car on the way, SBC",
+    ] {
+        assert_ne!(known(t).intent, PilotIntent::RequestFollowMe, "{t}");
+    }
+}
+
+#[test]
+fn request_follow_me_still_parsed() {
+    for t in [
+        "Sierra Bravo Charlie, request follow me car",
+        "Sierra Bravo Charlie, request taxi to stand with follow me car",
+    ] {
+        assert_eq!(known(t).intent, PilotIntent::RequestFollowMe, "{t}");
+    }
+}
+
 /// Whisper's "Dunn, wind" and "#1".
 #[test]
 fn misheard_downwind_and_number() {

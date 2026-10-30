@@ -9,7 +9,7 @@
 //! is the aircraft's until it parks or holds short (or a new taxi clearance cancels it).
 
 use atc_geo::{LatLon, bearing_deg, destination, distance_m};
-use atc_phraseology::{AtcItem, Callsign};
+use atc_phraseology::{AtcItem, Callsign, TaxiTo};
 
 use super::ground::unable;
 use super::{AtcEngine, AtcOutput, standby};
@@ -46,13 +46,27 @@ fn on_the_way() -> Vec<AtcItem> {
     vec![AtcItem::HoldPosition, AtcItem::FollowMeOnTheWay]
 }
 
+/// "Follow the follow-me car to <where the taxi target is>".
+fn follow_items(target: &TaxiTarget) -> Vec<AtcItem> {
+    let to = match target {
+        TaxiTarget::Stand { name } => TaxiTo::Stand { name: name.clone() },
+        TaxiTarget::HoldingPoint { runway } => TaxiTo::HoldingPoint {
+            runway: runway.clone(),
+        },
+    };
+    vec![AtcItem::FollowTheFollowMe { to }]
+}
+
 impl AtcEngine {
     /// Sends a follow-me car to aircraft `i` at sim time `t` (see the module docs). One
     /// already sent is not sent again: the call it is at is repeated.
     pub(super) fn follow_me(&mut self, i: usize, t: f64) -> Vec<AtcItem> {
         if let Some(fm) = &self.strips[i].follow_me {
             return if fm.leading {
-                vec![AtcItem::FollowTheFollowMe]
+                self.strips[i]
+                    .taxi_target
+                    .as_ref()
+                    .map_or_else(|| vec![AtcItem::SayIntentions], follow_items)
             } else {
                 on_the_way()
             };
@@ -127,7 +141,10 @@ impl AtcEngine {
             _ => return Vec::new(),
         }
         // Needs no readback; it replaces the open "hold position".
-        let items = vec![AtcItem::FollowTheFollowMe];
+        let Some(target) = &strip.taxi_target else {
+            return Vec::new();
+        };
+        let items = follow_items(target);
         strip.expect_readback(&items, self.cfg.strictness);
         self.transmit(i, Role::Ground, items)
     }

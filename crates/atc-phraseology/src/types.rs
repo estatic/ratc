@@ -415,7 +415,10 @@ pub enum AtcItem {
     /// The information needed for the reply (weather, position) is not known yet.
     Standby,
     FollowMeOnTheWay,
-    FollowTheFollowMe,
+    /// "Follow the follow-me car to stand 17": the car leads to `to`.
+    FollowTheFollowMe {
+        to: TaxiTo,
+    },
     /// Where the stand is from the aircraft, `metres` rounded to 10 m.
     StandPosition {
         stand: String,

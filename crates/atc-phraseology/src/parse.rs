@@ -1089,11 +1089,14 @@ impl<'a> Scan<'a> {
     }
 
     /// Asking for a follow-me car: "follow me" ("follow-me"), "marshaller". Not when read
-    /// back: "follow the follow-me (car)".
+    /// back: "follow the follow-me (car)", "follow-me car is on the way".
     fn follow_me(&self) -> bool {
         (0..self.toks.len()).any(|i| {
             matches!(self.w(i), Some("marshaller" | "marshaler" | "marshall"))
-                || (self.seq(i, &["follow", "me"]) && (i == 0 || self.w(i - 1) != Some("the")))
+                || (self.seq(i, &["follow", "me"])
+                    && (i == 0 || self.w(i - 1) != Some("the"))
+                    && !(i + 2..self.toks.len().min(i + 6))
+                        .any(|j| self.seq(j, &["on", "the", "way"])))
         })
     }
 

@@ -1830,10 +1830,16 @@ fn second_taxi_help_sends_the_follow_me_car() {
     // In front of the aircraft after a while: "follow the follow-me car".
     assert!(move_abc(&mut e, FOLLOW_ME_READY_S - 1.0, 300.0, 167.7).is_empty());
     let out = move_abc(&mut e, FOLLOW_ME_READY_S, 300.0, 167.7);
-    assert_eq!(items(&out), vec![AtcItem::FollowTheFollowMe]);
+    // `follow_me_phrase_names_the_stand`: the instruction says where the car leads.
+    assert_eq!(
+        items(&out),
+        vec![AtcItem::FollowTheFollowMe {
+            to: TaxiTo::Stand { name: "20".into() }
+        }]
+    );
     assert_eq!(
         out[0].text,
-        "Sierra Bravo Charlie, follow the follow-me car"
+        "Sierra Bravo Charlie, follow the follow-me car to stand two zero"
     );
     assert!(move_abc(&mut e, FOLLOW_ME_READY_S + 1.0, 290.0, 167.7).is_empty());
     for ack in [
@@ -1846,7 +1852,7 @@ fn second_taxi_help_sends_the_follow_me_car() {
     let out = say(&mut e, GROUND, &format!("{ABC}, request follow me"));
     assert_eq!(
         out[0].text,
-        "Sierra Bravo Charlie, follow the follow-me car"
+        "Sierra Bravo Charlie, follow the follow-me car to stand two zero"
     );
     assert!(e.take_vehicle_orders().is_empty());
     let strip = e.strip(&Callsign::new("SPABC")).unwrap();

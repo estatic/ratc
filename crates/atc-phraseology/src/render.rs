@@ -311,7 +311,9 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         AtcItem::PassYourMessage => out.push("pass your message".into()),
         AtcItem::Standby => out.push("standby".into()),
         AtcItem::FollowMeOnTheWay => out.push("follow-me car is on the way".into()),
-        AtcItem::FollowTheFollowMe => out.push("follow the follow-me car".into()),
+        AtcItem::FollowTheFollowMe { to } => {
+            out.push(format!("follow the follow-me car to {}", taxi_to_words(to)))
+        }
         AtcItem::StandPosition {
             stand,
             metres,

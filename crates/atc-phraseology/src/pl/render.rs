@@ -246,7 +246,16 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         AtcItem::PassYourMessage => out.push("nadawaj".into()),
         AtcItem::Standby => out.push("czekaj".into()),
         AtcItem::FollowMeOnTheWay => out.push("samochód follow me jest w drodze".into()),
-        AtcItem::FollowTheFollowMe => out.push("kołuj za samochodem follow me".into()),
+        AtcItem::FollowTheFollowMe { to } => out.push(match to {
+            TaxiTo::HoldingPoint { runway } => format!(
+                "kołuj za samochodem follow me do punktu oczekiwania drogi startowej {}",
+                runway_words(runway)
+            ),
+            TaxiTo::Stand { name } => format!(
+                "kołuj za samochodem follow me do stanowiska {}",
+                name_words(name)
+            ),
+        }),
         AtcItem::StandPosition {
             stand,
             metres,

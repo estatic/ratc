@@ -283,7 +283,20 @@ fn typed_items_render_as_before() {
         (AtcItem::PassYourMessage, "pass your message"),
         (AtcItem::Standby, "standby"),
         (AtcItem::FollowMeOnTheWay, "follow-me car is on the way"),
-        (AtcItem::FollowTheFollowMe, "follow the follow-me car"),
+        (
+            AtcItem::FollowTheFollowMe {
+                to: TaxiTo::Stand { name: "17".into() },
+            },
+            "follow the follow-me car to stand one seven",
+        ),
+        (
+            AtcItem::FollowTheFollowMe {
+                to: TaxiTo::HoldingPoint {
+                    runway: "25".into(),
+                },
+            },
+            "follow the follow-me car to holding point runway two five",
+        ),
         (
             AtcItem::StandPosition {
                 stand: "20".into(),
