@@ -341,7 +341,8 @@ client says so and does not connect; if that happens after you changed aircraft 
 keeps flying as before and says so.
 
 After connecting, the client prints the identity the server settled on, e.g.
-`Aircraft: C172, callsign SP-ABC (X-Plane tail number)` (or `(from config)`). Changing the aircraft
+`Aircraft: C172, callsign SPABC (X-Plane tail number)` (or `(from config)`; the server writes
+callsigns without hyphens). Changing the aircraft
 in X-Plane starts a new flight: the old strip, clearances and frequencies are dropped, even under
 the same callsign. If the new tail number is taken by another pilot the change is refused, the old
 flight continues and the client says `Aircraft change refused: …` once. Old `aircraft_type` and

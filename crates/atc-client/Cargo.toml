@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+atc-phraseology = { path = "../atc-phraseology" }
 atc-proto = { path = "../atc-proto" }
 atc-voice = { path = "../atc-voice" }
 cpal = { workspace = true }

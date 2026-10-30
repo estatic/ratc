@@ -159,7 +159,7 @@ On Windows: `copy config\server.example.toml config\server.toml` (and the same f
 | `[ptt] key` | keyboard push-to-talk, a **toggle**: press to start, press again to stop (a terminal cannot see key releases) |
 | `[ptt] joystick_button` | joystick hold-to-talk button (0 is the trigger); run the client with `RUST_LOG=debug` to see button numbers |
 
-On connecting, the client prints how the server identified you, e.g. `Aircraft: C172, callsign SP-ABC (X-Plane tail number)`. Changing the aircraft in X-Plane starts a new flight: the old strip, clearances and frequencies are dropped. Old `aircraft_type` and `field_elev_ft` lines are ignored with a warning; remove them.
+On connecting, the client prints how the server identified you, e.g. `Aircraft: C172, callsign SPABC (X-Plane tail number)` (the server writes callsigns without hyphens). Changing the aircraft in X-Plane starts a new flight: the old strip, clearances and frequencies are dropped. Old `aircraft_type` and `field_elev_ft` lines are ignored with a warning; remove them.
 
 **`config/voices.toml`** — which Piper voice speaks for which position, and the speech rate.
 

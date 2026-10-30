@@ -11,7 +11,7 @@ use atc_proto::{AudioFrame, CallsignSource, ClientMsg, ServerMsg, overlay_comman
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
-use crate::aircraft::{Identity, IdentityTracker};
+use crate::aircraft::{Identity, IdentityTracker, UNKNOWN_TYPE};
 use crate::capture::PILOT_RATE;
 use crate::connection::{ConnConfig, Outgoing, ServerEvent, run_connection};
 use crate::playback::{Playback, should_play};
@@ -411,8 +411,13 @@ impl App {
                     CallsignSource::Config => "from config",
                     CallsignSource::Sim => "X-Plane tail number",
                 };
+                let unknown = if aircraft_type == UNKNOWN_TYPE {
+                    " (type unknown)"
+                } else {
+                    ""
+                };
                 self.say(&format!(
-                    "Aircraft: {aircraft_type}, callsign {callsign} ({from})"
+                    "Aircraft: {aircraft_type}{unknown}, callsign {callsign} ({from})"
                 ));
                 self.identified = Some((callsign.clone(), aircraft_type.clone()));
                 self.last_refusal = None;
@@ -484,6 +489,21 @@ mod tests {
             let last = printed.lock().unwrap().last().cloned().unwrap();
             assert_eq!(last, format!("Aircraft: C172, callsign SP-ABC ({from})"));
         }
+    }
+
+    #[test]
+    fn unknown_type_is_said() {
+        let (mut app, printed, _rx) = capture();
+        app.server_msg(&ServerMsg::Identified {
+            callsign: "SPABC".into(),
+            aircraft_type: "ZZZZ".into(),
+            callsign_source: CallsignSource::Sim,
+        });
+        let last = printed.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            last,
+            "Aircraft: ZZZZ (type unknown), callsign SPABC (X-Plane tail number)"
+        );
     }
 
     #[test]

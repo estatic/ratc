@@ -479,3 +479,46 @@ async fn refused_change_is_not_resent() {
         ClientMsg::AircraftChanged { callsign, .. } if callsign == "SP-QRS"
     ));
 }
+
+/// The server answers with the callsign normalized (`SPABC`); the sim reporting the same
+/// aircraft again is no change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn normalized_identified_is_not_a_change() {
+    let ms = Duration::from_millis;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let (_to_conn, from_ui) = mpsc::channel(16);
+    let (to_ui, _events) = mpsc::channel(64);
+    let (id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
+    tokio::spawn(run_connection(
+        conn_cfg(url, Backoff::new(ms(40), ms(80))),
+        id_rx,
+        from_ui,
+        to_ui,
+    ));
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+    let identified = ServerMsg::Identified {
+        callsign: "SPABC".into(),
+        aircraft_type: "C172".into(),
+        callsign_source: CallsignSource::Config,
+    };
+    ws.send(Message::text(serde_json::to_string(&identified).unwrap()))
+        .await
+        .unwrap();
+    tokio::time::sleep(ms(100)).await;
+
+    id_tx.send_replace(Some(ident("SP-ABC", "C172")));
+    assert!(
+        timeout(ms(400), next_text(&mut ws)).await.is_err(),
+        "the same aircraft was announced as a change"
+    );
+    // A real change still goes out.
+    id_tx.send_replace(Some(ident("SP-ABC", "B738")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { aircraft_type, .. } if aircraft_type == "B738"
+    ));
+}

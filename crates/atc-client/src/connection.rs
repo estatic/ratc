@@ -234,7 +234,7 @@ async fn announce(
     let Some(now) = identity.borrow_and_update().clone() else {
         return true;
     };
-    if now == *sent || known.refused.as_ref() == Some(&now) {
+    if now.same_flight(sent) || known.refused.as_ref().is_some_and(|r| now.same_flight(r)) {
         return true;
     }
     let msg = ClientMsg::AircraftChanged {

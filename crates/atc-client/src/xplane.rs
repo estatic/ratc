@@ -173,6 +173,14 @@ impl XPlaneState {
         }
     }
 
+    /// X-Plane has answered for both string datarefs (their first byte, even a NUL), so
+    /// [`XPlaneState::aircraft`] is a reading, however empty, and not "nothing yet".
+    pub fn aircraft_received(&self) -> bool {
+        [AIRCRAFT_ICAO, AIRCRAFT_TAIL]
+            .iter()
+            .all(|d| self.bytes[d.first_index - SLOT_COUNT].is_some())
+    }
+
     /// `None` until every telemetry dataref but the transponder has been received.
     pub fn telemetry(&self) -> Option<TelemetryFrame> {
         let g = |s| self.get(s);
@@ -309,6 +317,20 @@ impl Drop for Unsubscribe {
 /// Pause after a socket error so a persistent failure does not spin.
 const ERROR_PAUSE: Duration = Duration::from_millis(200);
 
+/// The aircraft reading to forward: the first one once X-Plane has answered (empty or not),
+/// then every change.
+fn aircraft_update(state: &XPlaneState, last: &mut Option<SimAircraft>) -> Option<SimAircraft> {
+    if !state.aircraft_received() {
+        return None;
+    }
+    let aircraft = state.aircraft();
+    if last.as_ref() == Some(&aircraft) {
+        return None;
+    }
+    *last = Some(aircraft.clone());
+    Some(aircraft)
+}
+
 /// Subscribes (read-only) and forwards telemetry at the subscription rate and weather every
 /// 5 s until the receiver is dropped or the task is cancelled. Only binding the local socket
 /// is fatal: send/receive errors (X-Plane not running yet, ICMP port unreachable reported on
@@ -323,7 +345,7 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
     let mut state = XPlaneState::default();
     let mut buf = [0u8; 2048];
     let mut last_weather: Option<Instant> = None;
-    let mut last_aircraft = SimAircraft::default();
+    let mut last_aircraft: Option<SimAircraft> = None;
     loop {
         let recv = tokio::time::timeout(cfg.silence_timeout, sock.recv_from(&mut buf));
         let n = tokio::select! {
@@ -360,12 +382,10 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
         {
             return Ok(());
         }
-        let aircraft = state.aircraft();
-        if aircraft != last_aircraft {
-            last_aircraft = aircraft.clone();
-            if tx.send(XpUpdate::Aircraft(aircraft)).await.is_err() {
-                return Ok(());
-            }
+        if let Some(aircraft) = aircraft_update(&state, &mut last_aircraft)
+            && tx.send(XpUpdate::Aircraft(aircraft)).await.is_err()
+        {
+            return Ok(());
         }
         if last_weather.is_none_or(|t| t.elapsed() >= WEATHER_PERIOD)
             && let Some(w) = state.weather()
@@ -421,6 +441,30 @@ mod tests {
         s.apply(&str_bytes(AIRCRAFT_ICAO, ""));
         s.apply(&str_bytes(AIRCRAFT_TAIL, "  "));
         assert_eq!(s.aircraft(), SimAircraft::default());
+    }
+
+    #[test]
+    fn empty_aircraft_is_still_a_reading() {
+        let mut s = XPlaneState::default();
+        let mut last = None;
+        // Nothing received yet: nothing to forward.
+        assert_eq!(aircraft_update(&s, &mut last), None);
+        // X-Plane answered with all-NUL strings: the empty reading is forwarded once.
+        s.apply(&str_bytes(AIRCRAFT_ICAO, ""));
+        assert_eq!(
+            aircraft_update(&s, &mut last),
+            None,
+            "tail not received yet"
+        );
+        s.apply(&str_bytes(AIRCRAFT_TAIL, ""));
+        assert_eq!(aircraft_update(&s, &mut last), Some(SimAircraft::default()));
+        assert_eq!(aircraft_update(&s, &mut last), None);
+        // A later change is forwarded as before.
+        s.apply(&str_bytes(AIRCRAFT_ICAO, "C172"));
+        assert_eq!(
+            aircraft_update(&s, &mut last).and_then(|a| a.icao),
+            Some("C172".into())
+        );
     }
 
     fn full_state() -> Vec<(i32, f32)> {

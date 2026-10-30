@@ -52,6 +52,7 @@ dependencies = [
  "anyhow",
  "atc-core",
  "atc-navdata",
+ "atc-phraseology",
  "atc-proto",
  "atc-server",
  "atc-voice",

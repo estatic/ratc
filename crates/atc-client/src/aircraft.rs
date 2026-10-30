@@ -67,6 +67,18 @@ pub struct Identity {
     pub source: CallsignSource,
 }
 
+impl Identity {
+    /// The same flight: the callsigns agree after the server's normalization (`SP-ABC` and
+    /// `SPABC` are one), and so do the type and the source. The server answers `Identified`
+    /// with the normalized callsign, so a plain `==` would see a change where there is none.
+    pub fn same_flight(&self, other: &Identity) -> bool {
+        atc_phraseology::Callsign::new(&self.callsign)
+            == atc_phraseology::Callsign::new(&other.callsign)
+            && self.aircraft_type == other.aircraft_type
+            && self.source == other.source
+    }
+}
+
 /// No callsign in the config and no tail number from the sim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingCallsign;
