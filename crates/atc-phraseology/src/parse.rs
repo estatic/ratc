@@ -1089,7 +1089,7 @@ impl<'a> Scan<'a> {
     }
 
     /// Asking for a follow-me car: "follow me" ("follow-me"), "marshaller". Not when read
-    /// back: "follow the follow-me (car)", "follow-me car is on the way".
+    /// back: "follow the follow-me (car)", "follow-me (car) is on the way".
     fn follow_me(&self) -> bool {
         (0..self.toks.len()).any(|i| {
             matches!(self.w(i), Some("marshaller" | "marshaler" | "marshall"))
@@ -1099,14 +1099,20 @@ impl<'a> Scan<'a> {
         })
     }
 
-    /// "follow me car (is / will be) on the / its way" at `i`, with no request word before.
+    /// "follow me (car) (is / will be) on the / its way" at `i`, with no request word
+    /// before.
     fn on_the_way_readback(&self, i: usize) -> bool {
-        if self.w(i + 2) != Some("car") || (0..i).any(|k| self.w(k).is_some_and(is_request_word)) {
+        if (0..i).any(|k| self.w(k).is_some_and(is_request_word)) {
             return false;
         }
+        let after = if self.w(i + 2) == Some("car") {
+            i + 3
+        } else {
+            i + 2
+        };
         [&[][..], &["is"], &["will", "be"]].iter().any(|aux| {
-            let j = i + 3 + aux.len();
-            self.seq(i + 3, aux)
+            let j = after + aux.len();
+            self.seq(after, aux)
                 && (self.seq(j, &["on", "the", "way"]) || self.seq(j, &["on", "its", "way"]))
         })
     }

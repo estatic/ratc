@@ -4,8 +4,8 @@
 use super::numbers::{altitude_ft, cardinal, digit, digits, frequency, plural, qnh, squawk, wind};
 use crate::render::station_name;
 use crate::types::{
-    AtcItem, AtcMessage, Callsign, CircuitLeg, Courtesy, Lang, Level, ReadbackItem, Side, TaxiTo,
-    UnableReason, Wind,
+    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, Lang, Level, ReadbackItem,
+    Side, TaxiTo, UnableReason, Wind,
 };
 
 const ALPHABET: [&str; 26] = [
@@ -107,6 +107,7 @@ fn readback_label(item: &ReadbackItem) -> &'static str {
         ReadbackItem::Runway(_) => "pas",
         ReadbackItem::HoldShort(_) => "instrukcję oczekiwania przed pasem",
         ReadbackItem::Route(_) => "drogę kołowania",
+        ReadbackItem::Kind(ClearanceKind::HoldPosition) => "instrukcję stój",
         ReadbackItem::Kind(_) => "zezwolenie",
         ReadbackItem::Altitude(_) => "wysokość",
         ReadbackItem::Heading(_) => "kurs",

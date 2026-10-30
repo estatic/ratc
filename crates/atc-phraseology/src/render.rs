@@ -2,8 +2,8 @@
 //! (the output is fed to a TTS engine).
 
 use crate::types::{
-    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, Courtesy, Lang, Level, ReadbackItem,
-    Side, TaxiTo, Turn, UnableReason, Wind,
+    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, Lang, Level,
+    ReadbackItem, Side, TaxiTo, Turn, UnableReason, Wind,
 };
 
 const DIGITS: [&str; 10] = [
@@ -193,6 +193,7 @@ fn readback_label(item: &ReadbackItem) -> &'static str {
         ReadbackItem::Runway(_) => "runway",
         ReadbackItem::HoldShort(_) => "hold short instruction",
         ReadbackItem::Route(_) => "taxi route",
+        ReadbackItem::Kind(ClearanceKind::HoldPosition) => "hold position",
         ReadbackItem::Kind(_) => "clearance",
         ReadbackItem::Altitude(_) => "altitude",
         ReadbackItem::Heading(_) => "heading",

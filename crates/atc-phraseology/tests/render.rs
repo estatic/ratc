@@ -178,6 +178,25 @@ fn readback_requests() {
     );
 }
 
+/// M-5: an unread "hold position" is asked for by name, other kinds as "clearance".
+#[test]
+fn hold_position_readback_request() {
+    let m = ground(vec![AtcItem::ReadBack(vec![ReadbackItem::Kind(
+        ClearanceKind::HoldPosition,
+    )])]);
+    assert_eq!(
+        render(&m, false),
+        "Sierra Bravo Charlie, read back hold position"
+    );
+    let m = ground(vec![AtcItem::ReadBack(vec![ReadbackItem::Kind(
+        ClearanceKind::Takeoff,
+    )])]);
+    assert_eq!(
+        render(&m, false),
+        "Sierra Bravo Charlie, read back clearance"
+    );
+}
+
 #[test]
 fn misc_items() {
     let m = ground(vec![

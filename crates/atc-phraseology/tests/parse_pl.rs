@@ -195,6 +195,50 @@ fn polish_follow_me() {
     assert_eq!(m.intent, PilotIntent::RequestFollowMe);
 }
 
+/// I-2: the Polish readbacks of "hold position, follow-me car is on the way" and "follow
+/// the follow-me car to ..." ask for nothing (they read as their English twins).
+#[test]
+fn polish_follow_me_readbacks_are_not_requests() {
+    for (polish, english) in [
+        (
+            "czekam, samochód follow me jest w drodze, Sierra Bravo Charlie",
+            "holding position, follow me car is on the way, Sierra Bravo Charlie",
+        ),
+        (
+            "stoję, samochód follow me w drodze, Sierra Bravo Charlie",
+            "holding position, follow me car on the way, Sierra Bravo Charlie",
+        ),
+        (
+            "kołuj za samochodem follow me do stanowiska trzy pięć, Sierra Bravo Charlie",
+            "taxi follow the follow me car to stand three five, Sierra Bravo Charlie",
+        ),
+    ] {
+        let m = twin(polish, english);
+        assert_ne!(m.intent, PilotIntent::RequestFollowMe, "{polish}");
+    }
+    for text in [
+        // The holding-point form, as Ground says it, and with a hyphen.
+        "kołuję za samochodem follow-me do punktu oczekiwania drogi startowej dwa pięć, Sierra Bravo Charlie",
+        // Without diacritics, as Whisper sometimes writes it.
+        "czekam, samochod follow me jest w drodze, Sierra Bravo Charlie",
+    ] {
+        assert_ne!(pl(text).intent, PilotIntent::RequestFollowMe, "{text}");
+    }
+}
+
+/// Real requests still ask for the car.
+#[test]
+fn polish_follow_me_requests_still_parsed() {
+    for text in [
+        "Kraków Ground, Sierra Bravo Charlie, proszę o follow me",
+        "Kraków Ground, Sierra Bravo Charlie, proszę o samochód follow me",
+        "Sierra Bravo Charlie, prośba o follow me do stanowiska trzy pięć",
+        "Sierra Bravo Charlie, proszę o follow me, zgubiłem się",
+    ] {
+        assert_eq!(pl(text).intent, PilotIntent::RequestFollowMe, "{text}");
+    }
+}
+
 #[test]
 fn polish_hold_position() {
     let m = twin(

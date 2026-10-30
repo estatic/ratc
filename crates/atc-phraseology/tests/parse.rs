@@ -475,6 +475,9 @@ fn on_the_way_readback_is_not_a_request() {
         "Roger, hold position, follow me car on the way, SBC",
         "Hold position, follow me car will be on the way, Sierra Bravo Charlie",
         "Hold position, follow-me car on its way, Sierra Bravo Charlie",
+        // I-2: without "car".
+        "Holding position, follow me on the way, SBC",
+        "Hold position, follow-me is on the way, Sierra Bravo Charlie",
     ] {
         assert_ne!(known(t).intent, PilotIntent::RequestFollowMe, "{t}");
     }

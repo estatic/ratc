@@ -239,6 +239,16 @@ fn read_back_pl() {
 }
 
 #[test]
+fn read_back_hold_position_pl() {
+    assert_eq!(
+        one(AtcItem::ReadBack(vec![ReadbackItem::Kind(
+            ClearanceKind::HoldPosition
+        )])),
+        "powtórz instrukcję stój"
+    );
+}
+
+#[test]
 fn say_again_callsign_pl() {
     assert_eq!(
         one(AtcItem::SayAgainCallsign {
