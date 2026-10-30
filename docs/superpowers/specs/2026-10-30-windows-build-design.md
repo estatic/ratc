@@ -18,11 +18,14 @@ Release archives for Windows come from GitHub Actions like the Linux and macOS o
 ## Goals
 
 1. `cargo build --release` of `atc-server`, `atc-client` and `atc-xplane-plugin` works on
-   Windows 11 x86-64 with: Rust (MSVC toolchain), Visual Studio 2022 Build Tools (C++ workload,
-   includes CMake), Vulkan SDK. Nothing else (no libclang: whisper-rs uses its pre-generated
-   bindings via `WHISPER_DONT_GENERATE_BINDINGS`, set for Windows only — builder checks the
-   pre-generated bindings match the Vulkan build; if they don't, LLVM becomes a documented
-   prerequisite instead).
+   Windows 11 x86-64. `tools/setup-windows.ps1` (elevated) installs everything with winget
+   and builds: Git, Rust (rustup, MSVC toolchain), Visual Studio 2022 Build Tools (C++
+   workload; its CMake is put on PATH via vswhere), LLVM (libclang: whisper-rs-sys's
+   pre-generated bindings lack the Vulkan functions, so bindgen must run) and the Vulkan SDK.
+   It also enables `LongPathsEnabled`: whisper.cpp's Vulkan shader generator builds deep
+   under `target\` and MSBuild fails past 260 characters; the checkout should be short
+   (`C:\vatc`). Verified in a Windows 11 VM on 2026-10-30: all three build, both executables
+   start.
 2. `cargo test --workspace` passes on Windows.
 3. The plugin builds as a DLL installed as `Resources/plugins/atc-overlay/64/win.xpl`, linked
    to X-Plane's `XPLM_64.dll` without the X-Plane SDK (`#[link(name = "XPLM_64", kind =
