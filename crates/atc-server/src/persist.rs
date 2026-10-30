@@ -88,40 +88,50 @@ fn write_atomic(path: &Path, json: &str) -> std::io::Result<()> {
 }
 
 /// Saves `value` to `path` when it differs from `last` (the JSON last written, updated
-/// here). Errors are logged, not returned: a failed save must not stop the server.
-pub fn save<T: Serialize>(value: &T, path: &Path, last: &mut String) {
+/// here); `true` when the file was written. Errors are logged, not returned: a failed save
+/// must not stop the server.
+pub fn save<T: Serialize>(value: &T, path: &Path, last: &mut String) -> bool {
     let json = match serde_json::to_string(value) {
         Ok(j) => j,
         Err(e) => {
             tracing::error!("state {} not serialisable: {e}", path.display());
-            return;
+            return false;
         }
     };
     if json == *last {
-        return;
+        return false;
     }
     match write_atomic(path, &json) {
-        Ok(()) => *last = json,
-        Err(e) => tracing::error!("saving state to {}: {e}", path.display()),
+        Ok(()) => {
+            *last = json;
+            true
+        }
+        Err(e) => {
+            tracing::error!("saving state to {}: {e}", path.display());
+            false
+        }
     }
 }
 
 /// Saves every station's snapshot and the [`NetworkState`] under `dir`; `last` holds the
-/// JSON last written per file.
+/// JSON last written per file. The network file is rewritten whenever a snapshot was, even if
+/// unchanged: files age by modification time ([`MAX_AGE`]), and a stable owner map must not
+/// age out during a long session.
 pub fn save_all_in(dir: &Path, network: &Network, last: &mut HashMap<String, String>) {
     let (snapshots, state) = network.persisted();
+    let mut any = false;
     for (id, snapshot) in snapshots {
-        save(
+        any |= save(
             &snapshot,
             &dir.join(format!("state-{id}.json")),
             last.entry(id).or_default(),
         );
     }
-    save(
-        &state,
-        &network_path(dir),
-        last.entry("network.json".into()).or_default(),
-    );
+    let last_network = last.entry("network.json".into()).or_default();
+    if any {
+        last_network.clear();
+    }
+    save(&state, &network_path(dir), last_network);
 }
 
 /// [`save_all_in`] for [`STATE_DIR`].

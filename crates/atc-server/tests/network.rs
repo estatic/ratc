@@ -1221,6 +1221,31 @@ mod restart {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    /// A stable owner map must not age out while the snapshots keep changing.
+    #[test]
+    fn network_file_is_refreshed_with_the_snapshots() {
+        let d = dir("refresh");
+        let n = net();
+        let (_, c) = in_flight(&n);
+        let mut last = HashMap::new();
+        persist::save_all_in(&d, &n, &mut last);
+        let old = SystemTime::now() - persist::MAX_AGE - Duration::from_secs(3600);
+        let file = std::fs::File::options()
+            .write(true)
+            .open(d.join("network.json"))
+            .unwrap();
+        file.set_modified(old).unwrap();
+        drop(file);
+        // A new aircraft appears at Testville: its snapshot changes, the owners do not.
+        let extra = join(&n, "SPNEW");
+        n.on_telemetry(sample(&extra, 5.0, at(10.5), 0.0, 0.0, TESTVILLE_TWR));
+        persist::save_all_in(&d, &n, &mut last);
+        let after = net();
+        persist::restore_all_in(&d, &after, false, SystemTime::now());
+        assert_eq!(after.owner(&c), Some(Owner::Unit(0)));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn unchanged_state_is_not_rewritten() {
         let d = dir("same");

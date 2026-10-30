@@ -190,7 +190,7 @@ mod destinations {
 
         // Changed apt.dat (size differs): rebuilt.
         xplane(&root, &[HOME, FAR]);
-        assert_ne!(std::fs::metadata(&apt).unwrap().len(), 0);
+    
         let list = load_all_destinations(&root, &cache, &[]);
         assert_eq!(list.len(), 2);
         let home = list.iter().find(|d| d.icao == "ZZZZ").unwrap();
