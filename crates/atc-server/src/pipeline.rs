@@ -58,7 +58,7 @@ pub(crate) async fn worker(
                 // once another client has joined under the old one (that flight is theirs).
                 let taken = server.state.hub.lock().unwrap().client(&from.0).is_some();
                 if from.0 != to && !taken {
-                    server.state.network.end_flight(&from);
+                    server.end_flight(id, &from);
                 }
                 cs = Callsign::new(&to);
                 callsign = to;

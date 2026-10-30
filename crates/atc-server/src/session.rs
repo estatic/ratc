@@ -125,6 +125,16 @@ async fn handshake(
     if let Err(e) = server.state.hub.lock().unwrap().join(id, cs.0.clone()) {
         return reject(&tx, format!("{e}: {callsign}"));
     }
+    // A reconnect with another aircraft type (changed while offline) is a new flight; the
+    // same type continues the stored one.
+    if server
+        .state
+        .network
+        .pilot_type(&cs)
+        .is_some_and(|t| t != aircraft_type)
+    {
+        server.end_flight(id, &cs);
+    }
     server.state.network.register_pilot(PilotProfile {
         callsign: cs.clone(),
         aircraft_type: aircraft_type.clone(),
@@ -234,8 +244,8 @@ impl Session {
         // As on a disconnect, but the client stays: hub membership and weather role are kept.
         self.server.state.hub.lock().unwrap().ptt_end(self.id);
         self.end_relay();
+        self.server.end_flight(self.id, &self.cs);
         let network = &self.server.state.network;
-        network.end_flight(&self.cs);
         network.register_pilot(PilotProfile {
             callsign: cs.clone(),
             aircraft_type: aircraft_type.clone(),

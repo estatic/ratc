@@ -1027,3 +1027,83 @@ async fn queued_transmission_leaves_no_ghost_flight() {
     let saved = persisted_json(&srv);
     assert!(!saved.contains("SPOLD"), "{saved}");
 }
+
+/// The follow-me car of the old flight is cancelled at the client although the hub already
+/// lists it under the new callsign.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aircraft_change_cancels_follow_me() {
+    let srv = start(vec![], false).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    assert!(has_taxi(&c.recv_until(is_audio_end).await));
+    say(
+        &mut c,
+        GROUND,
+        "Sierra Papa Alpha Bravo Charlie, request follow-me",
+    )
+    .await;
+    let got = c.recv_until(is_audio_end).await;
+    assert!(matches!(
+        got.first(),
+        Some(In::Msg(ServerMsg::FollowMe { .. }))
+    ));
+    c.send(changed("SP-NEW", "B738")).await;
+    let got = c
+        .recv_until(|m| matches!(m, In::Msg(ServerMsg::Identified { .. })))
+        .await;
+    assert!(
+        got.iter()
+            .any(|m| matches!(m, In::Msg(ServerMsg::FollowMeCancel { .. }))),
+        "{got:?}"
+    );
+}
+
+/// Reconnecting after the aircraft changed offline starts a new flight; the same type
+/// continues the old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hello_with_another_type_is_new_flight() {
+    let srv = start(vec![], false).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    c.recv_until(is_audio_end).await;
+    assert!(has_strip(&srv, "SP-ABC"));
+    drop(c);
+    // Same type: the flight is still there after the rejoin.
+    let c = loop {
+        let mut c = Client::connect(&srv.url).await;
+        c.send(ClientMsg::Hello {
+            protocol: atc_proto::PROTOCOL_VERSION,
+            callsign: "SP-ABC".into(),
+            aircraft_type: "C172".into(),
+            callsign_source: atc_proto::CallsignSource::Config,
+        })
+        .await;
+        match c.recv().await {
+            In::Msg(ServerMsg::Welcome { .. }) => break c,
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    };
+    assert!(has_strip(&srv, "SP-ABC"));
+    drop(c);
+    let mut c = loop {
+        let mut c = Client::connect(&srv.url).await;
+        c.send(ClientMsg::Hello {
+            protocol: atc_proto::PROTOCOL_VERSION,
+            callsign: "SP-ABC".into(),
+            aircraft_type: "B738".into(),
+            callsign_source: atc_proto::CallsignSource::Config,
+        })
+        .await;
+        match c.recv().await {
+            In::Msg(ServerMsg::Welcome { .. }) => break c,
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    };
+    assert!(matches!(
+        c.recv().await,
+        In::Msg(ServerMsg::Identified { .. })
+    ));
+    assert!(!has_strip(&srv, "SP-ABC"));
+}

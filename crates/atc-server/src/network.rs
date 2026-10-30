@@ -244,6 +244,13 @@ impl Network {
         self.pilots.lock().unwrap().entry(cs).or_default().profile = Some(p);
     }
 
+    /// The aircraft type `cs` was registered with, if it has a profile.
+    pub fn pilot_type(&self, cs: &Callsign) -> Option<String> {
+        let pilots = self.pilots.lock().unwrap();
+        let profile = pilots.get(cs)?.profile.as_ref()?;
+        Some(profile.aircraft_type.clone())
+    }
+
     /// The engine language mode (the same for every station).
     pub fn language(&self) -> LanguageMode {
         self.language

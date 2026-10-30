@@ -357,6 +357,22 @@ impl Server {
         }
     }
 
+    /// Ends the flight `cs` of client `id` (see `Network::end_flight`). The cancel of its
+    /// follow-me car goes to `id` itself: the hub may already list the client under its new
+    /// callsign, so a lookup by `cs` would find nobody.
+    pub(crate) fn end_flight(&self, id: ClientId, cs: &atc_phraseology::Callsign) {
+        let network = &self.state.network;
+        network.end_flight(cs);
+        let (own, others): (Vec<_>, Vec<_>) = network
+            .take_vehicle_orders()
+            .into_iter()
+            .partition(|o| o.callsign == *cs);
+        for o in own {
+            self.send(&[id], Out::Msg(crate::convert::vehicle_msg(o.command)));
+        }
+        self.send_vehicle_orders(others);
+    }
+
     pub(crate) fn listeners(&self, freq_khz: u32) -> Vec<ClientId> {
         self.state.hub.lock().unwrap().listeners(freq_khz)
     }
