@@ -180,7 +180,10 @@ impl EnrouteUnit {
     }
 
     /// The flights the unit works (not those released), by callsign, for [`restore_flights`]
-    /// after a restart. A hand-off in progress is not kept: the unit hands the flight on again.
+    /// after a restart. A hand-off in progress is not kept: the flight comes back as worked normally, so a
+    /// sector-exit hand-off is issued again, but one for entering a CTR/TMA is not (the flight
+    /// stays with the unit until it leaves its sectors). A strip a station created for the
+    /// flight (traffic awareness) may reappear after a restart as ghost traffic.
     ///
     /// [`restore_flights`]: EnrouteUnit::restore_flights
     pub fn flight_states(&self) -> Vec<UnitFlightState> {
