@@ -1926,7 +1926,13 @@ fn no_follow_call_when_already_at_the_end() {
     else {
         panic!("{orders:?}")
     };
-    assert!(move_abc(&mut e, FOLLOW_ME_READY_S, 10.0, 167.7).is_empty());
+    // To a stand the pilot is released with the plain taxi instruction.
+    let out = move_abc(&mut e, FOLLOW_ME_READY_S, 10.0, 167.7);
+    assert!(
+        matches!(&items(&out)[..], [AtcItem::Taxi { .. }]),
+        "{out:?}"
+    );
+    assert!(!out[0].text.contains("follow"), "{out:?}");
     assert_eq!(
         e.take_vehicle_orders(),
         vec![VehicleOrder {
@@ -1941,6 +1947,75 @@ fn no_follow_call_when_already_at_the_end() {
             .is_none()
     );
     assert!(move_abc(&mut e, FOLLOW_ME_READY_S + 1.0, 8.0, 167.7).is_empty());
+}
+
+/// R1 at a holding point: the car goes away and Ground stays silent, with no reminder.
+#[test]
+fn no_follow_call_when_already_at_the_hold() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    assert!(say(&mut e, GROUND, &readback(&clearance, CS_ABBR)).is_empty());
+    say(&mut e, GROUND, &format!("{CS_ABBR}, request follow-me"));
+    let orders = e.take_vehicle_orders();
+    let [
+        VehicleOrder {
+            command: VehicleCommand::FollowMe { id, path, .. },
+            ..
+        },
+    ] = &orders[..]
+    else {
+        panic!("{orders:?}")
+    };
+    let end = *path.last().unwrap();
+    for (k, t) in [FOLLOW_ME_READY_S + 1.0, 60.0, 120.0]
+        .into_iter()
+        .enumerate()
+    {
+        let out = e.on_telemetry(ground_sample(t, end.lat, end.lon, 5.0));
+        assert!(out.is_empty(), "{k}: {out:?}");
+    }
+    assert_eq!(
+        e.take_vehicle_orders(),
+        vec![VehicleOrder {
+            callsign: Callsign::new("SPTST"),
+            command: VehicleCommand::FollowMeCancel { id: *id }
+        }]
+    );
+    assert!(
+        e.strip(&Callsign::new("SPTST"))
+            .unwrap()
+            .follow_me
+            .is_none()
+    );
+}
+
+/// R1: a short route to a holding point gets the plain taxi instruction too.
+#[test]
+fn no_car_for_a_short_route_to_the_hold() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    assert!(say(&mut e, GROUND, &readback(&clearance, CS_ABBR)).is_empty());
+    let (ap, _) = epkk();
+    let graph = atc_core::taxi::TaxiGraph::build(&ap.taxi);
+    let hold = graph
+        .holding_points(&ap, "25")
+        .into_iter()
+        .filter_map(|n| graph.node_pos(n))
+        .next()
+        .unwrap();
+    let pos = atc_geo::destination(hold, 0.0, 30.0);
+    assert!(
+        e.on_telemetry(ground_sample(5.0, pos.lat, pos.lon, 5.0))
+            .is_empty()
+    );
+    let out = items(&say(
+        &mut e,
+        GROUND,
+        &format!("{CS_ABBR}, request follow-me"),
+    ));
+    assert!(matches!(out[0], AtcItem::Taxi { .. }), "{out:?}");
+    assert!(!out.contains(&AtcItem::FollowMeOnTheWay), "{out:?}");
+    assert!(e.take_vehicle_orders().is_empty());
 }
 
 /// To the holding point the car stops short of it.

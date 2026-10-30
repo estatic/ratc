@@ -152,7 +152,9 @@ impl AtcEngine {
 
     /// "Follow the follow-me car" once the car has had [`READY_S`] to get in front.
     /// An aircraft already at the end of the car's path (it taxied there on its own while
-    /// the car was on the way) gets no call: the car goes away silently.
+    /// the car was on the way) gets no "follow" call and the car goes away. To a stand the
+    /// pilot is released with the plain taxi instruction; short of a holding point he
+    /// is already where he should be, so Ground stays silent.
     pub(super) fn follow_me_update(&mut self, i: usize, t: f64) -> Vec<AtcOutput> {
         let pos = self.last_pos(i);
         let Some(fm) = &self.strips[i].follow_me else {
@@ -163,7 +165,20 @@ impl AtcEngine {
         }
         if matches!((pos, fm.end), (Some(p), Some(e)) if distance_m(p, e) <= ALREADY_THERE_M) {
             self.cancel_follow_me(i);
-            return Vec::new();
+            let strip = &mut self.strips[i];
+            return match strip.taxi_target.clone() {
+                Some(target @ TaxiTarget::Stand { .. }) => {
+                    let items = self.taxi_instruction(i, target);
+                    self.transmit(i, Role::Ground, items)
+                }
+                _ => {
+                    // The "on the way" call needs no reminder for a car that is gone.
+                    if strip.pending_items.contains(&AtcItem::FollowMeOnTheWay) {
+                        strip.readback_complete();
+                    }
+                    Vec::new()
+                }
+            };
         }
         let strip = &mut self.strips[i];
         if let Some(fm) = &mut strip.follow_me {
@@ -253,6 +268,8 @@ fn smooth_corners(path: &[LatLon], radius_m: f64) -> Vec<LatLon> {
         }
     }
     out.push(path[path.len() - 1]);
+    // Two clamped corners side by side share their tangent point.
+    out.dedup_by(|b, a| distance_m(*a, *b) < 0.01);
     out
 }
 
@@ -381,6 +398,17 @@ mod tests {
         }
         let len: f64 = smooth.windows(2).map(|w| distance_m(w[0], w[1])).sum();
         assert!(len < 16.0 && len > 11.0, "{len}");
+    }
+
+    #[test]
+    fn adjacent_clamped_corners_share_one_point() {
+        let path = polyline(&[(90.0, 10.0), (0.0, 10.0), (90.0, 10.0)]);
+        let smooth = smooth_corners(&path, 25.0);
+        for w in smooth.windows(2) {
+            assert!(distance_m(w[0], w[1]) > 0.01, "{smooth:?}");
+        }
+        assert_eq!(smooth.first(), path.first());
+        assert_eq!(smooth.last(), path.last());
     }
 
     #[test]
