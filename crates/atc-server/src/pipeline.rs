@@ -54,8 +54,10 @@ pub(crate) async fn worker(
         match job {
             Job::Rename { from, to } => {
                 // Jobs queued before the change have run: drop what they re-created under
-                // the old callsign. Not for the same callsign: that is the new flight.
-                if from.0 != to {
+                // the old callsign. Not for the same callsign (that is the new flight), nor
+                // once another client has joined under the old one (that flight is theirs).
+                let taken = server.state.hub.lock().unwrap().client(&from.0).is_some();
+                if from.0 != to && !taken {
                     server.state.network.end_flight(&from);
                 }
                 cs = Callsign::new(&to);
