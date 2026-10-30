@@ -127,18 +127,15 @@ async fn handshake(
     }
     // A reconnect with another aircraft type (changed while offline) is a new flight; the
     // same type continues the stored one.
-    if server
+    let new_type = server
         .state
         .network
         .pilot_type(&cs)
-        .is_some_and(|t| t != aircraft_type)
-    {
-        server.end_flight(id, &cs);
-    }
-    server.state.network.register_pilot(PilotProfile {
+        .is_some_and(|t| t != aircraft_type);
+    let profile = PilotProfile {
         callsign: cs.clone(),
         aircraft_type: aircraft_type.clone(),
-    });
+    };
     server.weather_source.lock().unwrap().get_or_insert(id);
     let _ = tx.send(Out::Msg(ServerMsg::Welcome {
         protocol: PROTOCOL_VERSION,
@@ -150,6 +147,11 @@ async fn handshake(
         callsign_source,
     }));
     server.add_client(id, tx.clone());
+    // After add_client, so the old flight's follow-me cancel reaches this client.
+    if new_type {
+        server.end_flight(id, &cs);
+    }
+    server.state.network.register_pilot(profile);
     let (jobs, rx) = mpsc::unbounded_channel();
     tokio::spawn(pipeline::worker(server.clone(), id, callsign.clone(), rx));
     tracing::info!(id, %callsign, "client joined");
