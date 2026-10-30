@@ -6699,7 +6699,8 @@ fn moving_trigger_needs_a_standing_aircraft_after_the_clearance_is_spoken() {
 fn reminder_waits_for_the_clearance_to_be_spoken() {
     let (mut e, _, due) = abc_taxi_clearance_at(100.0);
     assert!(due > 100.0 + 1.0);
-    assert!(abc_at(&mut e, 110.0, 2.0).is_empty() || due <= 100.0);
+    // 10 s after the request, but not yet 10 s after the clearance was spoken.
+    assert!(abc_at(&mut e, 110.0, 2.0).is_empty());
     assert!(abc_at(&mut e, due + 9.9, 2.0).is_empty());
     assert!(is_reminder(&abc_at(&mut e, due + 10.0, 2.0)));
 }
