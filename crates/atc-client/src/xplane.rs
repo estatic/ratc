@@ -150,7 +150,7 @@ impl XPlaneState {
     }
 
     /// The aircraft type and tail number as the sim reports them. Each string runs to its
-    /// first NUL (or the first byte not received yet), keeps ASCII only and is trimmed;
+    /// first NUL (or the first byte not received yet), keeps printable ASCII only and is trimmed;
     /// empty means unknown.
     pub fn aircraft(&self) -> SimAircraft {
         let text = |d: StrDataref| {
@@ -158,7 +158,11 @@ impl XPlaneState {
             let s: String = self.bytes[start..start + d.len]
                 .iter()
                 .map_while(|b| b.map(|v| v.round() as i64).filter(|&v| v != 0))
-                .filter_map(|v| u8::try_from(v).ok().filter(u8::is_ascii))
+                .filter_map(|v| {
+                    u8::try_from(v)
+                        .ok()
+                        .filter(|b| b.is_ascii_graphic() || *b == b' ')
+                })
                 .map(char::from)
                 .collect();
             Some(s.trim().to_string()).filter(|s| !s.is_empty())
