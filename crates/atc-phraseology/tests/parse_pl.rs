@@ -1,4 +1,5 @@
 use atc_phraseology::*;
+use std::sync::Arc;
 
 fn pl(text: &str) -> PilotMessage {
     parse_pilot(text, Lang::Pl)
@@ -406,11 +407,10 @@ fn vocab() -> Vocabulary {
     Vocabulary {
         callsigns: vec![],
         points: s(&["ZULU", "KILO"]),
-        fixes: s(&["SUDOL"]),
-        places: vec![
-            ("katowice".into(), "EPKT".into()),
-            ("krakow".into(), "EPKK".into()),
-        ],
+        fixes: Arc::new(s(&["SUDOL"]).into_iter().collect()),
+        places: vec![Place::new("katowice", "EPKT"), Place::new("krakow", "EPKK")].into(),
+        place_fixes: Default::default(),
+        origin: None,
     }
 }
 

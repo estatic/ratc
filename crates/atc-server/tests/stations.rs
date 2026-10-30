@@ -189,8 +189,9 @@ mod destinations {
         assert_eq!(list[0].name, "Cached Name");
 
         // Changed apt.dat (size differs): rebuilt.
+        let size = std::fs::metadata(&apt).unwrap().len();
         xplane(&root, &[HOME, FAR]);
-    
+        assert_ne!(std::fs::metadata(&apt).unwrap().len(), size);
         let list = load_all_destinations(&root, &cache, &[]);
         assert_eq!(list.len(), 2);
         let home = list.iter().find(|d| d.icao == "ZZZZ").unwrap();

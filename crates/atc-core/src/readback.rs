@@ -539,8 +539,8 @@ mod tests {
     fn heard(text: &str) -> HeardItems {
         use atc_phraseology::{Lang, Vocabulary, parse_pilot_with};
         let vocab = Vocabulary {
-            fixes: s(&["SUDOL", "NUMBA"]),
-            places: vec![("katowice".into(), "EPKT".into())],
+            fixes: std::sync::Arc::new(s(&["SUDOL", "NUMBA"]).into_iter().collect()),
+            places: vec![atc_phraseology::Place::new("katowice", "EPKT")].into(),
             ..Vocabulary::default()
         };
         parse_pilot_with(text, Lang::En, &vocab).items

@@ -1,11 +1,11 @@
 //! Every station of `data_dir`: layout, positions, procedures and an engine each.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
-use atc_core::engine::{AtcEngine, EngineConfig};
-use atc_navdata::model::{Airport, Destination};
+use atc_core::engine::{AtcEngine, DestinationSet, EngineConfig};
+use atc_navdata::model::Airport;
 use atc_navdata::procedures::Procedures;
 
 use tracing::warn;
@@ -51,7 +51,7 @@ fn build(
     parts: Parts,
     xplane_root: Option<&Path>,
     cfg: &EngineConfig,
-    destinations: &Arc<[Destination]>,
+    destinations: &DestinationSet,
 ) -> LoadedStation {
     let Parts {
         id,
@@ -75,10 +75,10 @@ fn build(
 
 /// The destinations of every engine: all airports of the install, scanned once (cached in
 /// [`DESTINATIONS_CACHE`]), the adjacent towers of all stations by their spoken names.
-fn shared_destinations(xplane_root: Option<&Path>, parts: &[Parts]) -> Arc<[Destination]> {
+fn shared_destinations(xplane_root: Option<&Path>, parts: &[Parts]) -> DestinationSet {
     let Some(root) = xplane_root else {
         warn!("destinations: xplane_root not set; clearances cannot name a destination");
-        return Arc::from([]);
+        return DestinationSet::new(Vec::new());
     };
     let mut names = Vec::new();
     for p in parts {
@@ -88,7 +88,11 @@ fn shared_destinations(xplane_root: Option<&Path>, parts: &[Parts]) -> Arc<[Dest
             }
         }
     }
-    load_all_destinations(root, Path::new(DESTINATIONS_CACHE), &names).into()
+    DestinationSet::new(load_all_destinations(
+        root,
+        Path::new(DESTINATIONS_CACHE),
+        &names,
+    ))
 }
 
 /// Loads every station directory of `data_dir` (or just `only`), sorted by id. A directory that

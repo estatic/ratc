@@ -8,7 +8,9 @@ pub mod render;
 pub mod types;
 
 pub use normalize::{Token, normalize};
-pub use parse::{Vocabulary, parse_pilot, parse_pilot_known, parse_pilot_with};
+pub use parse::{
+    Place, Vocabulary, parse_pilot, parse_pilot_in, parse_pilot_known, parse_pilot_with,
+};
 pub use render::{
     altitude_words, digits_words, frequency_decimals, frequency_words, number_words, render,
     runway_words, spell_char, station_name,

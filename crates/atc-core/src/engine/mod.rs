@@ -49,6 +49,7 @@ mod stand;
 mod tower;
 mod vfr;
 
+pub use delivery::DestinationSet;
 pub(crate) use delivery::direct_key;
 pub use follow_me::{READY_S as FOLLOW_ME_READY_S, VehicleCommand, VehicleOrder};
 pub use snapshot::{EngineSnapshot, SNAPSHOT_VERSION, SnapshotMismatch};
@@ -62,8 +63,7 @@ use atc_navdata::model::{Airport, Destination};
 use atc_navdata::procedures::{PositionDef, Procedures};
 use atc_phraseology::{
     AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
-    PilotIntent, PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_with,
-    render,
+    PilotIntent, PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_in, render,
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
@@ -191,6 +191,15 @@ pub struct AtcEngine {
     clock: (Option<f64>, Option<u16>),
 }
 
+/// Midpoint of the first runway (latitude, longitude).
+fn runway_midpoint(ap: &Airport) -> Option<(f64, f64)> {
+    let [a, b] = &ap.runways.first()?.ends;
+    Some((
+        (a.threshold.lat + b.threshold.lat) / 2.0,
+        (a.threshold.lon + b.threshold.lon) / 2.0,
+    ))
+}
+
 impl AtcEngine {
     /// An engine without IFR data ([`AtcEngine::with_procedure_set`]) or destinations
     /// ([`AtcEngine::with_destinations`]).
@@ -201,6 +210,7 @@ impl AtcEngine {
                 .iter()
                 .map(|p| p.name.to_uppercase())
                 .collect(),
+            origin: runway_midpoint(&airport),
             ..Vocabulary::default()
         };
         AtcEngine {
@@ -803,11 +813,8 @@ impl AtcEngine {
     /// parsed callsign is no registered aircraft (another letter group taken for it, a letter
     /// lost), every letter group of the text is tried: as said, then with letters missing.
     fn heard(&self, text: &str, lang: Lang) -> (PilotMessage, Option<usize>) {
-        let vocab = Vocabulary {
-            callsigns: self.strips.iter().map(|s| s.callsign.clone()).collect(),
-            ..self.vocab.clone()
-        };
-        let msg = parse_pilot_with(text, lang, &vocab);
+        let callsigns: Vec<Callsign> = self.strips.iter().map(|s| s.callsign.clone()).collect();
+        let msg = parse_pilot_in(text, lang, &self.vocab, &callsigns);
         let i = msg
             .callsign
             .as_deref()
