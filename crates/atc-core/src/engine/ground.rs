@@ -267,6 +267,12 @@ impl AtcEngine {
         if strip.taxi_helps >= 2 || strip.follow_me.is_some() {
             return self.follow_me(i, t);
         }
+        self.taxi_instruction(i, target)
+    }
+
+    /// The taxi clearance's route again from where the aircraft is (see [`Self::taxi_help`]);
+    /// also the answer when a follow-me car is not worth sending.
+    pub(super) fn taxi_instruction(&mut self, i: usize, target: TaxiTarget) -> Vec<AtcItem> {
         let Some(pos) = self.last_pos(i) else {
             return standby();
         };

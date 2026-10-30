@@ -1877,6 +1877,72 @@ fn second_taxi_help_sends_the_follow_me_car() {
     );
 }
 
+/// R1: a car is not worth sending when the stand is close; the taxi route is repeated.
+#[test]
+fn no_car_for_a_short_route() {
+    let mut e = abc_near_stand_20(52.0, 18.0, 198.0, 5.0);
+    let clearance = items(&say(
+        &mut e,
+        GROUND,
+        &format!("Krakow Ground, {ABC}, request taxi to stand two zero"),
+    ));
+    assert!(
+        matches!(&clearance[..], [AtcItem::Taxi { .. }]),
+        "{clearance:?}"
+    );
+    let out = items(&say(&mut e, GROUND, &format!("{ABC}, request follow me")));
+    assert_eq!(out[0], clearance[0], "{out:?}");
+    assert!(!out.contains(&AtcItem::FollowMeOnTheWay), "{out:?}");
+    assert!(e.take_vehicle_orders().is_empty());
+    assert!(
+        e.strip(&Callsign::new("SPABC"))
+            .unwrap()
+            .follow_me
+            .is_none()
+    );
+}
+
+/// R1: the car is dropped silently when the aircraft got to the end of its path meanwhile.
+#[test]
+fn no_follow_call_when_already_at_the_end() {
+    let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 5.0);
+    say(
+        &mut e,
+        GROUND,
+        &format!("Krakow Ground, {ABC}, request taxi to stand two zero"),
+    );
+    let out = say(&mut e, GROUND, &format!("{ABC}, request follow me"));
+    assert_eq!(
+        items(&out),
+        [AtcItem::HoldPosition, AtcItem::FollowMeOnTheWay]
+    );
+    let orders = e.take_vehicle_orders();
+    let [
+        VehicleOrder {
+            command: VehicleCommand::FollowMe { id, .. },
+            ..
+        },
+    ] = &orders[..]
+    else {
+        panic!("{orders:?}")
+    };
+    assert!(move_abc(&mut e, FOLLOW_ME_READY_S, 10.0, 167.7).is_empty());
+    assert_eq!(
+        e.take_vehicle_orders(),
+        vec![VehicleOrder {
+            callsign: Callsign::new("SPABC"),
+            command: VehicleCommand::FollowMeCancel { id: *id }
+        }]
+    );
+    assert!(
+        e.strip(&Callsign::new("SPABC"))
+            .unwrap()
+            .follow_me
+            .is_none()
+    );
+    assert!(move_abc(&mut e, FOLLOW_ME_READY_S + 1.0, 8.0, 167.7).is_empty());
+}
+
 /// To the holding point the car stops short of it.
 #[test]
 fn follow_me_to_the_holding_point() {

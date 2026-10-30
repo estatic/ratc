@@ -137,6 +137,9 @@ pub struct FollowMe {
     pub sent_s: f64,
     /// "Follow the follow-me car" has been said.
     pub leading: bool,
+    /// Where the car's path ends.
+    #[serde(default)]
+    pub end: Option<LatLon>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
