@@ -212,6 +212,8 @@ impl App {
                 self.send(ClientMsg::Telemetry(f)).await;
             }
             XpUpdate::Weather(w) => self.send(ClientMsg::Weather(w)).await,
+            // Identifying the pilot from the sim aircraft is wired up separately.
+            XpUpdate::Aircraft(_) => {}
         }
     }
 

@@ -1,5 +1,9 @@
 //! Read-only X-Plane 11 reader over the UDP RREF protocol.
-use crate::datarefs::{ALL, SLOT_COUNT, Slot};
+use crate::aircraft::SimAircraft;
+use crate::datarefs::{
+    AIRCRAFT_ICAO, AIRCRAFT_TAIL, ALL, SLOT_COUNT, SUBSCRIPTION_COUNT, Slot, StrDataref,
+    subscriptions,
+};
 use atc_proto::{CloudLayer, TelemetryFrame, WeatherFrame};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -86,6 +90,8 @@ impl SimClock {
 #[derive(Debug, Clone)]
 pub struct XPlaneState {
     values: [Option<f32>; SLOT_COUNT],
+    /// The string dataref bytes, indexed by RREF index minus `SLOT_COUNT`.
+    bytes: [Option<f32>; SUBSCRIPTION_COUNT - SLOT_COUNT],
     clock: SimClock,
     t: f64,
 }
@@ -94,6 +100,7 @@ impl Default for XPlaneState {
     fn default() -> Self {
         Self {
             values: [None; SLOT_COUNT],
+            bytes: [None; SUBSCRIPTION_COUNT - SLOT_COUNT],
             clock: SimClock::default(),
             t: 0.0,
         }
@@ -103,8 +110,13 @@ impl Default for XPlaneState {
 impl XPlaneState {
     pub fn apply(&mut self, values: &[(i32, f32)]) {
         for &(idx, v) in values {
-            if let Some(slot) = usize::try_from(idx).ok().filter(|&i| i < SLOT_COUNT) {
-                self.values[slot] = Some(v);
+            let Ok(i) = usize::try_from(idx) else {
+                continue;
+            };
+            if i < SLOT_COUNT {
+                self.values[i] = Some(v);
+            } else if let Some(b) = self.bytes.get_mut(i - SLOT_COUNT) {
+                *b = Some(v);
             }
         }
         if let (Some(rt), Some(p)) = (self.get(Slot::RunningTime), self.get(Slot::Paused)) {
@@ -135,6 +147,26 @@ impl XPlaneState {
             }
         }
         Some((tx, listen))
+    }
+
+    /// The aircraft type and tail number as the sim reports them. Each string runs to its
+    /// first NUL (or the first byte not received yet), keeps ASCII only and is trimmed;
+    /// empty means unknown.
+    pub fn aircraft(&self) -> SimAircraft {
+        let text = |d: StrDataref| {
+            let start = d.first_index - SLOT_COUNT;
+            let s: String = self.bytes[start..start + d.len]
+                .iter()
+                .map_while(|b| b.map(|v| v.round() as i64).filter(|&v| v != 0))
+                .filter_map(|v| u8::try_from(v).ok().filter(u8::is_ascii))
+                .map(char::from)
+                .collect();
+            Some(s.trim().to_string()).filter(|s| !s.is_empty())
+        };
+        SimAircraft {
+            icao: text(AIRCRAFT_ICAO),
+            tail: text(AIRCRAFT_TAIL),
+        }
     }
 
     /// `None` until every telemetry dataref but the transponder has been received.
@@ -213,6 +245,8 @@ fn cloud_cover(coverage: f64) -> Option<&'static str> {
 pub enum XpUpdate {
     Telemetry(TelemetryFrame),
     Weather(WeatherFrame),
+    /// The aircraft type or tail number changed (also: first read). Not debounced.
+    Aircraft(SimAircraft),
 }
 
 #[derive(Debug, Clone)]
@@ -236,9 +270,9 @@ impl XpConfig {
 }
 
 async fn subscribe(sock: &UdpSocket, addr: SocketAddr, on: bool) -> std::io::Result<()> {
-    for (slot, name, hz) in ALL {
+    for (index, name, hz) in subscriptions() {
         let freq = if on { hz } else { 0 };
-        sock.send_to(&encode_rref_request(freq, slot as i32, name), addr)
+        sock.send_to(&encode_rref_request(freq, index, &name), addr)
             .await?;
     }
     Ok(())
@@ -260,10 +294,10 @@ struct Unsubscribe {
 
 impl Drop for Unsubscribe {
     fn drop(&mut self) {
-        for (slot, name, _) in ALL {
+        for (index, name, _) in subscriptions() {
             let _ = self
                 .sock
-                .try_send_to(&encode_rref_request(0, slot as i32, name), self.addr);
+                .try_send_to(&encode_rref_request(0, index, &name), self.addr);
         }
     }
 }
@@ -285,6 +319,7 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
     let mut state = XPlaneState::default();
     let mut buf = [0u8; 2048];
     let mut last_weather: Option<Instant> = None;
+    let mut last_aircraft = SimAircraft::default();
     loop {
         let recv = tokio::time::timeout(cfg.silence_timeout, sock.recv_from(&mut buf));
         let n = tokio::select! {
@@ -321,6 +356,13 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
         {
             return Ok(());
         }
+        let aircraft = state.aircraft();
+        if aircraft != last_aircraft {
+            last_aircraft = aircraft.clone();
+            if tx.send(XpUpdate::Aircraft(aircraft)).await.is_err() {
+                return Ok(());
+            }
+        }
         if last_weather.is_none_or(|t| t.elapsed() >= WEATHER_PERIOD)
             && let Some(w) = state.weather()
         {
@@ -343,6 +385,38 @@ mod tests {
             p.extend(v.to_le_bytes());
         }
         p
+    }
+
+    /// RREF values for a string dataref: one byte per slot, NUL-terminated.
+    fn str_bytes(d: StrDataref, text: &str) -> Vec<(i32, f32)> {
+        text.bytes()
+            .chain(std::iter::once(0))
+            .enumerate()
+            .map(|(i, b)| ((d.first_index + i) as i32, f32::from(b)))
+            .collect()
+    }
+
+    #[test]
+    fn decodes_type_and_tail() {
+        let mut s = XPlaneState::default();
+        s.apply(&str_bytes(AIRCRAFT_ICAO, "C172"));
+        s.apply(&str_bytes(AIRCRAFT_TAIL, "SP-ABC"));
+        let a = s.aircraft();
+        assert_eq!(a.icao.as_deref(), Some("C172"));
+        assert_eq!(a.tail.as_deref(), Some("SP-ABC"));
+        // Bytes after the NUL are ignored, and a shorter value replaces a longer one.
+        s.apply(&[(AIRCRAFT_ICAO.first_index as i32 + 5, f32::from(b'X'))]);
+        s.apply(&str_bytes(AIRCRAFT_ICAO, "B738"));
+        assert_eq!(s.aircraft().icao.as_deref(), Some("B738"));
+    }
+
+    #[test]
+    fn empty_strings_are_none() {
+        let mut s = XPlaneState::default();
+        assert_eq!(s.aircraft(), SimAircraft::default());
+        s.apply(&str_bytes(AIRCRAFT_ICAO, ""));
+        s.apply(&str_bytes(AIRCRAFT_TAIL, "  "));
+        assert_eq!(s.aircraft(), SimAircraft::default());
     }
 
     fn full_state() -> Vec<(i32, f32)> {

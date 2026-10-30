@@ -1,6 +1,7 @@
 //! Virtual ATC client: X-Plane 11 reader, server connection, push-to-talk, audio and the
 //! text mode.
 
+pub mod aircraft;
 pub mod app;
 pub mod audio;
 pub mod capture;

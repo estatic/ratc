@@ -53,6 +53,7 @@ async fn fake_xplane_end_to_end() {
         match timeout(T, rx.recv()).await.unwrap().unwrap() {
             XpUpdate::Telemetry(f) => got_t = Some(f),
             XpUpdate::Weather(w) => got_w = Some(w),
+            XpUpdate::Aircraft(_) => {}
         }
     }
     let f = got_t.unwrap();
@@ -70,7 +71,7 @@ async fn fake_xplane_end_to_end() {
     drop(rx);
     let mut buf = [0u8; 1024];
     let mut unsub = 0;
-    while unsub < atc_client::datarefs::SLOT_COUNT {
+    while unsub < atc_client::datarefs::SUBSCRIPTION_COUNT {
         let (n, _) = timeout(T, fake.recv_from(&mut buf)).await.unwrap().unwrap();
         if parse_request(&buf[..n]).0 == 0 {
             unsub += 1;
