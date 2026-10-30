@@ -241,10 +241,12 @@ impl Session {
             aircraft_type: aircraft_type.clone(),
         });
         tracing::info!(id = self.id, from = %self.callsign, to = %cs.0, %aircraft_type, "aircraft changed");
+        let from = std::mem::replace(&mut self.cs, cs.clone());
         self.callsign = cs.0.clone();
-        self.cs = cs.clone();
-        self.last_t = 0.0;
-        let _ = self.jobs.send(Job::Rename(cs.0.clone()));
+        let _ = self.jobs.send(Job::Rename {
+            from,
+            to: cs.0.clone(),
+        });
         let _ = self.tx.send(Out::Msg(ServerMsg::Identified {
             callsign: cs.0,
             aircraft_type,

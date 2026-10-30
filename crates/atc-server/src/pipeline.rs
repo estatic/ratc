@@ -35,7 +35,10 @@ pub(crate) enum Job {
         t: f64,
     },
     /// The pilot switched aircraft: later jobs are the new callsign's.
-    Rename(String),
+    Rename {
+        from: Callsign,
+        to: String,
+    },
 }
 
 /// Processes a client's transmissions one after another, so the engine hears them (and the
@@ -49,9 +52,14 @@ pub(crate) async fn worker(
     let mut cs = Callsign::new(&callsign);
     while let Some(job) = jobs.recv().await {
         match job {
-            Job::Rename(new) => {
-                cs = Callsign::new(&new);
-                callsign = new;
+            Job::Rename { from, to } => {
+                // Jobs queued before the change have run: drop what they re-created under
+                // the old callsign. Not for the same callsign: that is the new flight.
+                if from.0 != to {
+                    server.state.network.end_flight(&from);
+                }
+                cs = Callsign::new(&to);
+                callsign = to;
             }
             Job::Voice { freq_khz, pcm, t } => {
                 voice(&server, id, &callsign, freq_khz, pcm, t).await

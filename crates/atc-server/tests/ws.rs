@@ -844,6 +844,12 @@ fn has_strip(srv: &TestServer, callsign: &str) -> bool {
         .any(|s| s.engine.lock().unwrap().strip(&cs).is_some())
 }
 
+/// The saved engine snapshots and network state, as text.
+fn persisted_json(srv: &TestServer) -> String {
+    let (snapshots, state) = srv.state.network.persisted();
+    serde_json::to_string(&snapshots).unwrap() + &serde_json::to_string(&state).unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn identified_follows_welcome() {
     let srv = start(vec![], false).await;
@@ -891,6 +897,17 @@ async fn aircraft_change_same_callsign_is_new_flight() {
     assert_eq!(srv.state.network.owner(&cs), None);
     // Still the same client in the hub.
     assert_eq!(srv.state.hub.lock().unwrap().callsign(1), Some("SPABC"));
+    // Nothing of the old flight is saved.
+    let saved = persisted_json(&srv);
+    assert!(!saved.contains("SPABC"), "{saved}");
+
+    // The next request is a fresh first contact of a B738, answered as such.
+    c.send(ClientMsg::Telemetry(parked(GROUND))).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    let got = c.recv_until(is_audio_end).await;
+    assert!(has_taxi(&got), "{got:?}");
+    let saved = persisted_json(&srv);
+    assert!(saved.contains("B738") && !saved.contains("C172"), "{saved}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -979,4 +996,34 @@ async fn weather_source_kept_after_change() {
     a.send(changed("SP-DDD", "B738")).await;
     a.recv().await;
     assert_eq!(letter(), Some('B'));
+}
+
+/// A transmission still queued when the pilot switches aircraft must not leave a flight of
+/// the old callsign behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_transmission_leaves_no_ghost_flight() {
+    let srv = start(vec![], false).await;
+    let mut c = Client::hello(&srv.url, "SP-OLD").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, "Kraków Ground, SP-OLD, request taxi").await;
+    c.send(changed("SP-NEW", "B738")).await;
+    // The reply proves the old callsign's transmission has been processed.
+    let got = c.recv_until(is_audio_end).await;
+    assert!(
+        got.iter()
+            .any(|m| matches!(m, In::Msg(ServerMsg::Identified { .. }))),
+        "{got:?}"
+    );
+    // The worker sweeps right after, when it reaches the rename.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while has_strip(&srv, "SP-OLD") {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("ghost strip removed");
+    let old = atc_phraseology::Callsign::new("SP-OLD");
+    assert_eq!(srv.state.network.owner(&old), None);
+    let saved = persisted_json(&srv);
+    assert!(!saved.contains("SPOLD"), "{saved}");
 }
