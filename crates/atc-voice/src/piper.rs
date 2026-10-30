@@ -185,45 +185,31 @@ mod tests {
 
     #[test]
     fn relative_paths_are_absolutized() {
-        // Relative to the test's cwd (the crate dir): this source file and a fake model.
-        let dir = std::env::temp_dir().join(format!("atc-piper-rel-{}", std::process::id()));
+        // Everything under the test's cwd (the crate dir), so relative paths exist even when
+        // the target dir is on another drive (Windows CI: C:/t vs D:\a\...).
+        let name = format!("piper-rel-test-{}", std::process::id());
+        let dir = std::env::current_dir().unwrap().join(&name);
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("piper"), b"").unwrap();
         std::fs::write(dir.join("v.onnx"), b"").unwrap();
         std::fs::write(
             dir.join("v.onnx.json"),
             br#"{"audio":{"sample_rate":22050}}"#,
         )
         .unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        let rel = |p: &Path| pathdiff(p, &cwd);
         let mut voices = HashMap::new();
         let key = (VoiceId::Ground, "en".to_string());
         voices.insert(
             key.clone(),
             PiperVoice {
-                model: rel(&dir.join("v.onnx")),
+                model: Path::new(&name).join("v.onnx"),
                 length_scale: 1.0,
             },
         );
-        let exe = rel(&std::env::current_exe().unwrap());
-        assert!(exe.is_relative() && !voices[&key].model.is_absolute());
-        let tts = PiperTts::new(exe, voices).unwrap();
+        let tts = PiperTts::new(Path::new(&name).join("piper"), voices);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let tts = tts.unwrap();
         assert!(tts.bin.is_absolute());
         assert!(tts.voices[&key].0.model.is_absolute());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// Relative path from `base` to `p` (both absolute), via `..` components.
-    fn pathdiff(p: &Path, base: &Path) -> PathBuf {
-        let (p, base): (Vec<_>, Vec<_>) = (p.components().collect(), base.components().collect());
-        let common = p.iter().zip(&base).take_while(|(a, b)| a == b).count();
-        let mut out = PathBuf::new();
-        for _ in common..base.len() {
-            out.push("..");
-        }
-        for c in &p[common..] {
-            out.push(c);
-        }
-        out
     }
 }

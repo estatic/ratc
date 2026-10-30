@@ -76,4 +76,4 @@ jobs:
         run: cargo build --workspace --all-targets
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
