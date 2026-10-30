@@ -153,6 +153,22 @@ pub struct Pose {
     pub beacon_on: bool,
 }
 
+/// The beacon flashes at this rate...
+const BEACON_HZ: f64 = 1.0;
+/// ...and the turn signal blinks at this one, Hz; each is on for the first half of its period.
+const SIGNAL_HZ: f64 = 1.5;
+
+/// The roof object's lights at `t` seconds (any running clock): `[beacon, left, right]`,
+/// each 0 (dark) or 1 (lit), the values of its instance datarefs.
+pub fn lights(pose: &Pose, t: f64) -> [f32; 3] {
+    let lit = |on: bool, hz: f64| f32::from(u8::from(on && (t * hz).rem_euclid(1.0) < 0.5));
+    [
+        lit(pose.beacon_on, BEACON_HZ),
+        lit(pose.turn_signal == Signal::Left, SIGNAL_HZ),
+        lit(pose.turn_signal == Signal::Right, SIGNAL_HZ),
+    ]
+}
+
 /// A path corner: the signal is on for arc lengths `on..off`.
 #[derive(Clone, Copy, Debug)]
 struct Corner {
@@ -986,5 +1002,34 @@ mod tests {
             lat: f64::NAN,
             lon: f64::NAN,
         }
+    }
+
+    fn pose_with(turn_signal: Signal, beacon_on: bool) -> Pose {
+        Pose {
+            pos: at(0.0, 0.0),
+            heading_deg: 0.0,
+            steer_deg: 0.0,
+            turn_signal,
+            beacon_on,
+        }
+    }
+
+    #[test]
+    fn blink_phases() {
+        // Beacon at 1 Hz: on for the first half of each second.
+        let p = pose_with(Signal::Off, true);
+        assert_eq!(lights(&p, 0.1), [1.0, 0.0, 0.0]);
+        assert_eq!(lights(&p, 0.6), [0.0, 0.0, 0.0]);
+        assert_eq!(lights(&p, 1.1), [1.0, 0.0, 0.0]);
+        assert_eq!(lights(&pose_with(Signal::Off, false), 0.1), [0.0; 3]);
+        // Signals at 1.5 Hz: a period of 2/3 s, on for the first 1/3 s.
+        let left = pose_with(Signal::Left, false);
+        assert_eq!(lights(&left, 0.1), [0.0, 1.0, 0.0]);
+        assert_eq!(lights(&left, 0.5), [0.0, 0.0, 0.0]);
+        assert_eq!(lights(&left, 0.7), [0.0, 1.0, 0.0]);
+        assert_eq!(lights(&left, 1.2), [0.0, 0.0, 0.0]);
+        let right = pose_with(Signal::Right, false);
+        assert_eq!(lights(&right, 0.1), [0.0, 0.0, 1.0]);
+        assert_eq!(lights(&right, 0.5), [0.0, 0.0, 0.0]);
     }
 }
