@@ -10,6 +10,15 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
 
+# Runs a native program; only its exit code decides success. (Windows PowerShell turns a
+# program's stderr lines into errors when output is redirected, and rustup/cargo write their
+# progress there.) Codes in -Ok also count as success.
+function Native([string]$exe, [string[]]$argv, [int[]]$Ok = @(0)) {
+    $ErrorActionPreference = 'Continue'
+    & $exe @argv 2>&1 | ForEach-Object { "$_" }
+    if ($Ok -notcontains $LASTEXITCODE) { throw "$exe $($argv -join ' ') failed with exit code $LASTEXITCODE" }
+}
+
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw 'winget not found: install "App Installer" from the Microsoft Store, then run again'
 }
@@ -25,7 +34,8 @@ $packages = @(
 )
 foreach ($p in $packages) {
     $id = $p[0]
-    $listed = winget list --id $id -e --accept-source-agreements 2>$null | Out-String
+    $listed = & { $ErrorActionPreference = 'Continue'
+        winget list --id $id -e --accept-source-agreements 2>$null | Out-String }
     if ($listed -match [regex]::Escape($id)) {
         Step "$id is installed"
         continue
@@ -33,11 +43,8 @@ foreach ($p in $packages) {
     Step "installing $id"
     $wargs = @('install', '--id', $id, '-e', '--silent', '--accept-package-agreements',
         '--accept-source-agreements') + $p[1]
-    & winget @wargs
-    # 0: installed; -1978335189 (0x8A15002B): no applicable upgrade / already there.
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) {
-        throw "winget install $id failed with exit code $LASTEXITCODE"
-    }
+    # -1978335189 (0x8A15002B): no applicable upgrade, i.e. already there.
+    Native winget $wargs -Ok 0, -1978335189
 }
 
 # This session does not see the PATH and variables the installers just set.
@@ -65,15 +72,14 @@ if (-not $env:LIBCLANG_PATH) {
 }
 
 Step 'Rust toolchain'
-rustup default stable-x86_64-pc-windows-msvc
-if ($LASTEXITCODE -ne 0) { throw 'rustup failed' }
-rustc --version
-cargo --version
+Native rustup @('default', 'stable-x86_64-pc-windows-msvc')
+Native rustc @('--version')
+Native cargo @('--version')
 Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
 Write-Host "LIBCLANG_PATH=$env:LIBCLANG_PATH"
 
 if ($NoBuild) { return }
 Step 'building (release)'
-cargo build --release --locked -p atc-server -p atc-client -p atc-xplane-plugin
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+Native cargo @('build', '--release', '--locked', '-p', 'atc-server', '-p', 'atc-client',
+    '-p', 'atc-xplane-plugin')
 Step 'done: target\release\atc-server.exe, atc-client.exe, atc_overlay.dll'
