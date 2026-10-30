@@ -1095,8 +1095,19 @@ impl<'a> Scan<'a> {
             matches!(self.w(i), Some("marshaller" | "marshaler" | "marshall"))
                 || (self.seq(i, &["follow", "me"])
                     && (i == 0 || self.w(i - 1) != Some("the"))
-                    && !(i + 2..self.toks.len().min(i + 6))
-                        .any(|j| self.seq(j, &["on", "the", "way"])))
+                    && !self.on_the_way_readback(i))
+        })
+    }
+
+    /// "follow me car (is / will be) on the / its way" at `i`, with no request word before.
+    fn on_the_way_readback(&self, i: usize) -> bool {
+        if self.w(i + 2) != Some("car") || (0..i).any(|k| self.w(k).is_some_and(is_request_word)) {
+            return false;
+        }
+        [&[][..], &["is"], &["will", "be"]].iter().any(|aux| {
+            let j = i + 3 + aux.len();
+            self.seq(i + 3, aux)
+                && (self.seq(j, &["on", "the", "way"]) || self.seq(j, &["on", "its", "way"]))
         })
     }
 

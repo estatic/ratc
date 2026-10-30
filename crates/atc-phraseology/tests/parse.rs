@@ -473,6 +473,8 @@ fn on_the_way_readback_is_not_a_request() {
     for t in [
         "Hold position, follow-me car is on the way, Sierra Bravo Charlie",
         "Roger, hold position, follow me car on the way, SBC",
+        "Hold position, follow me car will be on the way, Sierra Bravo Charlie",
+        "Hold position, follow-me car on its way, Sierra Bravo Charlie",
     ] {
         assert_ne!(known(t).intent, PilotIntent::RequestFollowMe, "{t}");
     }
@@ -483,6 +485,7 @@ fn request_follow_me_still_parsed() {
     for t in [
         "Sierra Bravo Charlie, request follow me car",
         "Sierra Bravo Charlie, request taxi to stand with follow me car",
+        "Sierra Bravo Charlie, request follow me on the way to stand five",
     ] {
         assert_eq!(known(t).intent, PilotIntent::RequestFollowMe, "{t}");
     }
