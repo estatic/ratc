@@ -14,10 +14,12 @@ pub(crate) fn vehicle_msg(c: VehicleCommand) -> ServerMsg {
             id,
             path,
             end_heading_deg,
+            aside_left,
         } => ServerMsg::FollowMe {
             id,
             path: path.iter().map(|p| [p.lat, p.lon]).collect(),
             end_heading_deg,
+            aside_left,
         },
         VehicleCommand::FollowMeCancel { id } => ServerMsg::FollowMeCancel { id },
     }

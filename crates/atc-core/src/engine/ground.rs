@@ -108,7 +108,7 @@ impl AtcEngine {
         };
         let items = vec![approved, AtcItem::Qnh(qnh)];
         self.strips[i].qnh_with_start_up = Some(qnh);
-        self.strips[i].expect_readback(&items, self.cfg.strictness);
+        self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -182,7 +182,7 @@ impl AtcEngine {
         if !code_given && let Some(code) = self.squawk(i) {
             items.push(AtcItem::Squawk(code));
         }
-        self.strips[i].expect_readback(&items, self.cfg.strictness);
+        self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -240,7 +240,7 @@ impl AtcEngine {
         };
         self.new_taxi_clearance(i, target);
         let items = vec![self.taxi_item(i, TaxiTo::Stand { name: name.clone() }, &route)];
-        self.strips[i].expect_readback(&items, self.cfg.strictness);
+        self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -267,6 +267,12 @@ impl AtcEngine {
         if strip.taxi_helps >= 2 || strip.follow_me.is_some() {
             return self.follow_me(i, t);
         }
+        self.taxi_instruction(i, target)
+    }
+
+    /// The taxi clearance's route again from where the aircraft is (see [`Self::taxi_help`]);
+    /// also the answer when a follow-me car is not worth sending.
+    pub(super) fn taxi_instruction(&mut self, i: usize, target: TaxiTarget) -> Vec<AtcItem> {
         let Some(pos) = self.last_pos(i) else {
             return standby();
         };
@@ -296,7 +302,7 @@ impl AtcEngine {
                 items
             }
         };
-        self.strips[i].expect_readback(&items, self.cfg.strictness);
+        self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -377,7 +383,7 @@ impl AtcEngine {
         c.cleared = true;
         let items = vec![AtcItem::CrossRunway(c.runway.clone())];
         strip.permissions.may_enter_runway = true;
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         self.transmit(i, Role::Ground, items)
     }
 }

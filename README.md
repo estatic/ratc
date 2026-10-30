@@ -124,6 +124,12 @@ X-Plane afterwards. The window can be moved and resized; bind the command
 `atc/overlay/toggle` to a key or button to show or hide it. Reinstall the plugin after
 updating the project.
 
+The plugin also draws the follow-me car: X-Plane's crew car with a FOLLOW ME sign on the roof,
+a flashing amber beacon, and turn signals that blink before corners. The sign, beacon and
+signals are an object the installer puts in `Resources/plugins/atc-overlay/objects/`; if you
+installed the plugin before they existed, reinstall it to get them (without them the car comes
+without its sign).
+
 ## Configuration
 
 Run everything **from the repository root**: paths in `config/*.toml` are relative to it.

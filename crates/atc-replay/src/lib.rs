@@ -747,17 +747,19 @@ impl Transcript {
                     id,
                     path,
                     end_heading_deg,
+                    aside_left,
                 } => {
                     let end = path
                         .last()
                         .copied()
                         .unwrap_or(LatLon { lat: 0.0, lon: 0.0 });
                     format!(
-                        "follow-me {id} for {}, {} points to {:.5} {:.5} heading {end_heading_deg:.0}",
+                        "follow-me {id} for {}, {} points to {:.5} {:.5} heading {end_heading_deg:.0}, aside {}",
                         o.callsign.0,
                         path.len(),
                         end.lat,
-                        end.lon
+                        end.lon,
+                        if aside_left { "left" } else { "right" }
                     )
                 }
                 VehicleCommand::FollowMeCancel { id } => format!("follow-me {id} cancelled"),

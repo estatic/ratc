@@ -13,6 +13,7 @@ pub mod follow_me;
 mod plugin;
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 
 /// UDP port the overlay listens on (localhost only). Not 49010: X-Plane binds that for
 /// RakNet after plugins load and refuses to network if it is taken.
@@ -151,6 +152,17 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// The follow-me car's roof object (sign, beacon, turn signals) for the plugin binary at
+/// `plugin_xpl` (`…/atc-overlay/64/lin.xpl`): `…/atc-overlay/objects/follow_me_roof.obj`,
+/// where tools/install-xplane-plugin.sh puts it.
+pub fn roof_object_path(plugin_xpl: &Path) -> PathBuf {
+    let plugin_dir = plugin_xpl
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new(""));
+    plugin_dir.join("objects").join("follow_me_roof.obj")
+}
+
 /// ASCII for the X-Plane font: Polish letters lose their diacritics, other non-ASCII
 /// characters become `?`.
 pub fn ascii_fold(s: &str) -> String {
@@ -182,6 +194,7 @@ pub fn ascii_fold(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn texts(rows: &[Row]) -> Vec<&str> {
         rows.iter().map(|r| r.text.as_str()).collect()
@@ -258,5 +271,52 @@ mod tests {
         );
         assert_eq!(ascii_fold("Ä€"), "??");
         assert_eq!(ascii_fold("a\0b"), "a?b");
+    }
+
+    #[test]
+    fn roof_object_path_is_next_to_the_plugin() {
+        let xpl = Path::new("/xp/Resources/plugins/atc-overlay/64/lin.xpl");
+        assert_eq!(
+            roof_object_path(xpl),
+            Path::new("/xp/Resources/plugins/atc-overlay/objects/follow_me_roof.obj")
+        );
+    }
+
+    #[test]
+    fn roof_object_is_obj8_with_its_texture() {
+        let obj = include_str!("../assets/follow_me_roof.obj");
+        assert!(obj.starts_with("I\n800\nOBJ\n"), "not an OBJ8 header");
+        // X-Plane rejects a POINT_COUNTS that does not match the VT and IDX lines only at
+        // run time: `POINT_COUNTS vt lines lights indices`.
+        let counts: Vec<usize> = obj
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("POINT_COUNTS"))
+            .expect("POINT_COUNTS")
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        let starting = |p: &str| {
+            obj.lines()
+                .filter(|l| l.trim_start().starts_with(p))
+                .count()
+        };
+        let indices: usize = obj
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                l.strip_prefix("IDX10 ").or_else(|| l.strip_prefix("IDX "))
+            })
+            .map(|rest| rest.split_whitespace().count())
+            .sum();
+        assert_eq!(counts, [starting("VT "), 0, 0, indices], "POINT_COUNTS");
+        assert!(
+            obj.lines()
+                .any(|l| l.trim() == "TEXTURE follow_me_roof.png")
+        );
+        assert!(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/follow_me_roof.png")
+                .is_file()
+        );
     }
 }

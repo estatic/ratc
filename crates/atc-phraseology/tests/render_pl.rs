@@ -239,6 +239,16 @@ fn read_back_pl() {
 }
 
 #[test]
+fn read_back_hold_position_pl() {
+    assert_eq!(
+        one(AtcItem::ReadBack(vec![ReadbackItem::Kind(
+            ClearanceKind::HoldPosition
+        )])),
+        "powtórz instrukcję stój"
+    );
+}
+
+#[test]
 fn say_again_callsign_pl() {
     assert_eq!(
         one(AtcItem::SayAgainCallsign {
@@ -291,9 +301,21 @@ fn follow_me_pl() {
         one(AtcItem::FollowMeOnTheWay),
         "samochód follow me jest w drodze"
     );
+    let stand = AtcItem::FollowTheFollowMe {
+        to: TaxiTo::Stand { name: "17".into() },
+    };
     assert_eq!(
-        one(AtcItem::FollowTheFollowMe),
-        "kołuj za samochodem follow me"
+        one(stand),
+        "kołuj za samochodem follow me do stanowiska jeden siedem"
+    );
+    let hold = AtcItem::FollowTheFollowMe {
+        to: TaxiTo::HoldingPoint {
+            runway: "25".into(),
+        },
+    };
+    assert_eq!(
+        one(hold),
+        "kołuj za samochodem follow me do punktu oczekiwania drogi startowej dwa pięć"
     );
 }
 

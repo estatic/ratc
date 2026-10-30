@@ -1089,11 +1089,40 @@ impl<'a> Scan<'a> {
     }
 
     /// Asking for a follow-me car: "follow me" ("follow-me"), "marshaller". Not when read
-    /// back: "follow the follow-me (car)".
+    /// back: "follow the follow-me (car)", "follow-me (car) is on the way".
     fn follow_me(&self) -> bool {
         (0..self.toks.len()).any(|i| {
             matches!(self.w(i), Some("marshaller" | "marshaler" | "marshall"))
-                || (self.seq(i, &["follow", "me"]) && (i == 0 || self.w(i - 1) != Some("the")))
+                || (self.seq(i, &["follow", "me"])
+                    && (i == 0 || self.w(i - 1) != Some("the") || self.asks_before(i))
+                    && !self.on_the_way_readback(i))
+        })
+    }
+
+    /// A request ("request", "need", "can I get"…) before token `i`: "follow me" after it
+    /// asks for the car even as "taxi with the follow me" (the Polish normaliser's form).
+    fn asks_before(&self, i: usize) -> bool {
+        (0..i).any(|k| {
+            self.w(k)
+                .is_some_and(|w| is_request_word(w) || matches!(w, "need" | "get" | "want"))
+        })
+    }
+
+    /// "follow me (car) (is / will be) on the / its way" at `i`, with no request word
+    /// before.
+    fn on_the_way_readback(&self, i: usize) -> bool {
+        if self.asks_before(i) {
+            return false;
+        }
+        let after = if self.w(i + 2) == Some("car") {
+            i + 3
+        } else {
+            i + 2
+        };
+        [&[][..], &["is"], &["will", "be"]].iter().any(|aux| {
+            let j = after + aux.len();
+            self.seq(after, aux)
+                && (self.seq(j, &["on", "the", "way"]) || self.seq(j, &["on", "its", "way"]))
         })
     }
 

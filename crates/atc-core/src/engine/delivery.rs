@@ -178,7 +178,7 @@ impl AtcEngine {
         let strip = &mut self.strips[i];
         strip.vfr_exit = exit;
         strip.plan = Some(plan);
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 

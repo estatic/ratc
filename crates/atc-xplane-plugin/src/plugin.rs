@@ -5,18 +5,29 @@
 //!
 //! The car is [`CAR_OBJECT`] from the X-Plane 11 library, drawn with the instancing API
 //! (X-Plane 11.10+), placed on the ground with a terrain probe; [`crate::follow_me`] drives it.
+//! The plugin steers its front wheels through the instance datarefs ([`CAR_DATAREFS`]), and
+//! draws our own roof object (`objects/follow_me_roof.obj`: FOLLOW ME sign, beacon, turn
+//! signals) as a second instance at the same pose; without that file the car comes alone.
+//!
+//! Custom instance datarefs: the XPLMInstance docs say "If you use any custom datarefs in
+//! your object, they must be registered before the object is loaded. This is true even if
+//! their data will be provided via the instance dataref list." So [`ROOF_DATAREFS`] are
+//! registered with `XPLMRegisterDataAccessor` (read-only int/float, reading the last values
+//! set) in `XPluginStart`, long before the roof object loads; the per-instance values come
+//! from `XPLMInstanceSetPosition`.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_float, c_int, c_void};
 use std::io::ErrorKind;
 use std::net::UdpSocket;
+use std::path::Path;
 use std::ptr::null_mut;
 use std::time::Instant;
 
 use atc_proto::{ServerMsg, parse_overlay_command};
 
-use crate::follow_me::{FollowMe, LatLon};
-use crate::{Board, Kind, PORT};
+use crate::follow_me::{FollowMe, LatLon, lights};
+use crate::{Board, Kind, PORT, roof_object_path};
 
 type WindowId = *mut c_void;
 type CommandRef = *mut c_void;
@@ -27,6 +38,23 @@ type DataRef = *mut c_void;
 
 /// The follow-me car: X-Plane 11's crew car (`airport scenery/library.txt`).
 const CAR_OBJECT: &CStr = c"lib/airport/vehicles/servicing/crew_car.obj";
+/// The car's instance datarefs, set every frame to `[steer_deg, 0, 0]`: with them the
+/// plugin, not X-Plane's ground traffic, turns the wheels, and the doors stay shut.
+const CAR_DATAREFS: [&CStr; 3] = [
+    c"sim/graphics/animation/ground_traffic/tire_steer_deg[0]",
+    c"sim/graphics/animation/ground_traffic/door_open[0]",
+    c"sim/graphics/animation/ground_traffic/door_open[1]",
+];
+/// The roof object's instance datarefs, 0 or 1 ([`lights`]); registered by the plugin.
+const ROOF_DATAREFS: [&CStr; 3] = [
+    c"atc/follow_me/beacon",
+    c"atc/follow_me/left",
+    c"atc/follow_me/right",
+];
+/// `xplmType_Int | xplmType_Float`.
+const TYPE_INT_FLOAT: c_int = 1 | 2;
+/// Path buffers handed to XPLM (its minimum is 256 or 512 bytes).
+const PATH_BUF: usize = 1024;
 const PROBE_Y: c_int = 0;
 const PROBE_HIT_TERRAIN: c_int = 0;
 /// Flight loop interval without a car (seconds); with one it runs every frame.
@@ -61,6 +89,8 @@ struct ProbeInfo {
 
 type LibraryEnumerator = extern "C" fn(*const c_char, *mut c_void);
 type ObjectLoaded = extern "C" fn(ObjectRef, *mut c_void);
+type GetInt = extern "C" fn(*mut c_void) -> c_int;
+type GetFloat = extern "C" fn(*mut c_void) -> c_float;
 
 /// `xplmFont_Basic`: fixed width, so wrapping by character count fits.
 const FONT_BASIC: c_int = 0;
@@ -157,6 +187,36 @@ unsafe extern "C" {
     fn XPLMWorldToLocal(lat: f64, lon: f64, alt: f64, x: *mut f64, y: *mut f64, z: *mut f64);
     fn XPLMFindDataRef(name: *const c_char) -> DataRef;
     fn XPLMGetDatad(dr: DataRef) -> f64;
+    fn XPLMRegisterDataAccessor(
+        name: *const c_char,
+        data_type: c_int,
+        writable: c_int,
+        read_int: Option<GetInt>,
+        write_int: *mut c_void,
+        read_float: Option<GetFloat>,
+        write_float: *mut c_void,
+        read_double: *mut c_void,
+        write_double: *mut c_void,
+        read_int_array: *mut c_void,
+        write_int_array: *mut c_void,
+        read_float_array: *mut c_void,
+        write_float_array: *mut c_void,
+        read_data: *mut c_void,
+        write_data: *mut c_void,
+        read_refcon: *mut c_void,
+        write_refcon: *mut c_void,
+    ) -> DataRef;
+    fn XPLMUnregisterDataAccessor(dr: DataRef);
+    fn XPLMGetMyID() -> c_int;
+    fn XPLMGetPluginInfo(
+        id: c_int,
+        name: *mut c_char,
+        path: *mut c_char,
+        sig: *mut c_char,
+        desc: *mut c_char,
+    );
+    fn XPLMGetSystemPath(path: *mut c_char);
+    fn XPLMEnableFeature(feature: *const c_char, enable: c_int);
 }
 
 /// The aircraft position datarefs.
@@ -190,13 +250,18 @@ impl Own {
     }
 }
 
-/// The follow-me car on screen: its driver and its instance (null until the object loaded).
+/// The follow-me car on screen: its driver and its instances, the car and its roof object
+/// (each null until its object loaded; the roof stays null without its object).
 struct Car {
     driver: FollowMe,
     instance: InstanceRef,
+    roof: InstanceRef,
+    /// X-Plane refused the roof instance: not asked again for this car (logged once).
+    roof_refused: bool,
 }
 
-/// The car object: not looked up yet, loading, loaded, or missing from the library.
+/// An object: not looked up yet, loading, loaded, or missing (the car from the library,
+/// the roof object from the plugin's folder).
 #[derive(Clone, Copy, PartialEq)]
 enum Object {
     None,
@@ -214,6 +279,9 @@ struct Overlay {
     own: Option<Own>,
     probe: ProbeRef,
     object: Object,
+    roof: Object,
+    /// [`ROOF_DATAREFS`] as registered (null: refused).
+    roof_datarefs: [DataRef; 3],
     car: Option<Car>,
 }
 
@@ -227,6 +295,10 @@ thread_local! {
     static OVERLAY: RefCell<Option<Overlay>> = const { RefCell::new(None) };
     /// The car object once loaded (null: loading failed), until [`Overlay::drive`] takes it.
     static LOADED: Cell<Option<ObjectRef>> = const { Cell::new(None) };
+    /// The same for the roof object.
+    static LOADED_ROOF: Cell<Option<ObjectRef>> = const { Cell::new(None) };
+    /// The roof lights last set: what reading [`ROOF_DATAREFS`] gives.
+    static LIGHTS: Cell<[f32; 3]> = const { Cell::new([0.0; 3]) };
 }
 
 /// Runs `f`; a panic is logged and gives `fallback` instead of unwinding into X-Plane
@@ -303,6 +375,9 @@ pub unsafe extern "C" fn XPluginStart(
             )
         };
         unsafe { XPLMRegisterCommandHandler(command, toggle, 1, null_mut()) };
+        // Unix-style paths on every OS (macOS would give colon paths otherwise).
+        unsafe { XPLMEnableFeature(c"XPLM_USE_NATIVE_PATHS".as_ptr(), 1) };
+        let roof_datarefs = register_roof_datarefs();
         OVERLAY.with_borrow_mut(|o| {
             *o = Some(Overlay {
                 window,
@@ -313,6 +388,8 @@ pub unsafe extern "C" fn XPluginStart(
                 own: Own::find(),
                 probe: unsafe { XPLMCreateProbe(PROBE_Y) },
                 object: Object::None,
+                roof: Object::None,
+                roof_datarefs,
                 car: None,
             })
         });
@@ -325,15 +402,22 @@ pub extern "C" fn XPluginStop() {
     guard("XPluginStop", (), || {
         if let Some(mut o) = OVERLAY.with_borrow_mut(Option::take) {
             o.remove_car();
-            let loaded = match (o.object, LOADED.take()) {
-                (Object::Loaded(obj), _) => obj,
-                (_, Some(obj)) => obj,
-                _ => null_mut(),
-            };
-            unsafe {
-                if !loaded.is_null() {
-                    XPLMUnloadObject(loaded);
+            for (object, loaded) in [(o.object, LOADED.take()), (o.roof, LOADED_ROOF.take())] {
+                let obj = match (object, loaded) {
+                    (Object::Loaded(obj), _) => obj,
+                    (_, Some(obj)) => obj,
+                    _ => null_mut(),
+                };
+                if !obj.is_null() {
+                    unsafe { XPLMUnloadObject(obj) };
                 }
+            }
+            for dr in o.roof_datarefs {
+                if !dr.is_null() {
+                    unsafe { XPLMUnregisterDataAccessor(dr) };
+                }
+            }
+            unsafe {
                 if !o.probe.is_null() {
                     XPLMDestroyProbe(o.probe);
                 }
@@ -431,6 +515,7 @@ impl Overlay {
                 id,
                 path,
                 end_heading_deg,
+                aside_left,
             } => {
                 let Some(own) = &self.own else {
                     return log("no aircraft position datarefs: no follow-me car");
@@ -438,7 +523,7 @@ impl Overlay {
                 let path: Vec<LatLon> =
                     path.iter().map(|&[lat, lon]| LatLon { lat, lon }).collect();
                 let (aircraft, _) = own.pos();
-                let driver = match FollowMe::new(id, &path, end_heading_deg, aircraft) {
+                let driver = match FollowMe::new(id, &path, end_heading_deg, aside_left, aircraft) {
                     Ok(d) => d,
                     Err(e) => return log(&format!("follow-me {id} ignored: {e}")),
                 };
@@ -446,8 +531,11 @@ impl Overlay {
                 self.car = Some(Car {
                     driver,
                     instance: null_mut(),
+                    roof: null_mut(),
+                    roof_refused: false,
                 });
                 self.load_object(aircraft);
+                self.load_roof();
             }
             ServerMsg::FollowMeCancel { id }
                 if self.car.as_ref().is_some_and(|c| c.driver.id() == id) =>
@@ -504,6 +592,15 @@ impl Overlay {
             Some(obj) => self.object = Object::Loaded(obj),
             None => {}
         }
+        match LOADED_ROOF.take() {
+            Some(obj) if obj.is_null() => {
+                self.roof = Object::Missing;
+                log("follow-me roof object failed to load: the car comes without its sign");
+            }
+            Some(obj) => self.roof = Object::Loaded(obj),
+            None => {}
+        }
+        let now = self.now();
         let (Some(car), Some(own)) = (self.car.as_mut(), self.own.as_ref()) else {
             return;
         };
@@ -515,11 +612,19 @@ impl Overlay {
             let Object::Loaded(obj) = self.object else {
                 return;
             };
-            // SAFETY: an empty, NULL-terminated dataref list that outlives the call.
-            let no_datarefs: [*const c_char; 1] = [std::ptr::null()];
-            car.instance = unsafe { XPLMCreateInstance(obj, no_datarefs.as_ptr()) };
+            car.instance = create_instance(obj, &CAR_DATAREFS);
             if car.instance.is_null() {
                 return;
+            }
+        }
+        if car.roof.is_null()
+            && !car.roof_refused
+            && let Object::Loaded(obj) = self.roof
+        {
+            car.roof = create_instance(obj, &ROOF_DATAREFS);
+            if car.roof.is_null() {
+                car.roof_refused = true;
+                log("follow-me roof instance refused: the car comes without its sign");
             }
         }
         let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
@@ -559,16 +664,147 @@ impl Overlay {
             heading: pose.heading_deg as c_float,
             roll: 0.0,
         };
-        unsafe { XPLMInstanceSetPosition(car.instance, &at, std::ptr::null()) };
+        // One float per instance dataref, always a valid pointer (before X-Plane 11.50 a
+        // null one crashed even without datarefs).
+        let wheels = [pose.steer_deg as c_float, 0.0, 0.0];
+        unsafe { XPLMInstanceSetPosition(car.instance, &at, wheels.as_ptr()) };
+        let roof = lights(&pose, now);
+        LIGHTS.set(roof);
+        if !car.roof.is_null() {
+            unsafe { XPLMInstanceSetPosition(car.roof, &at, roof.as_ptr()) };
+        }
+    }
+
+    /// Starts loading the roof object from the plugin's folder, once; without the file the
+    /// car is drawn alone (logged once).
+    fn load_roof(&mut self) {
+        if self.roof != Object::None {
+            return;
+        }
+        self.roof = Object::Missing;
+        if self.roof_datarefs.iter().any(|dr| dr.is_null()) {
+            return log("follow-me roof datarefs not registered: the car comes without its sign");
+        }
+        let path = match roof_object_xplm_path() {
+            Ok(path) => path,
+            Err(why) => {
+                return log(&format!(
+                    "follow-me roof object not loaded ({why}): the car comes without its sign"
+                ));
+            }
+        };
+        self.roof = Object::Loading;
+        unsafe { XPLMLoadObjectAsync(path.as_ptr().cast(), roof_loaded, null_mut()) };
     }
 
     fn remove_car(&mut self) {
-        if let Some(car) = self.car.take()
-            && !car.instance.is_null()
-        {
-            unsafe { XPLMDestroyInstance(car.instance) };
+        if let Some(car) = self.car.take() {
+            for instance in [car.instance, car.roof] {
+                if !instance.is_null() {
+                    unsafe { XPLMDestroyInstance(instance) };
+                }
+            }
         }
+        LIGHTS.set([0.0; 3]);
     }
+}
+
+/// An instance of `obj` with `datarefs` (null if X-Plane refuses it).
+fn create_instance(obj: ObjectRef, datarefs: &[&CStr]) -> InstanceRef {
+    let mut list: Vec<*const c_char> = datarefs.iter().map(|d| d.as_ptr()).collect();
+    list.push(std::ptr::null());
+    // SAFETY: a NULL-terminated list of NUL-terminated names, alive during the call.
+    unsafe { XPLMCreateInstance(obj, list.as_ptr()) }
+}
+
+/// Registers [`ROOF_DATAREFS`] (read-only; index `i` passed as the refcon); a refused one
+/// stays null.
+fn register_roof_datarefs() -> [DataRef; 3] {
+    let none = null_mut();
+    std::array::from_fn(|i| {
+        let dr = unsafe {
+            XPLMRegisterDataAccessor(
+                ROOF_DATAREFS[i].as_ptr(),
+                TYPE_INT_FLOAT,
+                0,
+                Some(read_light_int),
+                none,
+                Some(read_light_float),
+                none,
+                none,
+                none,
+                none,
+                none,
+                none,
+                none,
+                none,
+                none,
+                std::ptr::without_provenance_mut(i),
+                none,
+            )
+        };
+        if dr.is_null() {
+            log(&format!(
+                "cannot register {}",
+                ROOF_DATAREFS[i].to_string_lossy()
+            ));
+        }
+        dr
+    })
+}
+
+/// The value of roof dataref number `refcon` (an index, not a pointer).
+fn light(refcon: *mut c_void) -> f32 {
+    LIGHTS.get().get(refcon.addr()).copied().unwrap_or(0.0)
+}
+
+extern "C" fn read_light_int(refcon: *mut c_void) -> c_int {
+    guard("read_light_int", 0, || light(refcon) as c_int)
+}
+
+extern "C" fn read_light_float(refcon: *mut c_void) -> c_float {
+    guard("read_light_float", 0.0, || light(refcon))
+}
+
+/// The roof object's path for `XPLMLoadObjectAsync`, NUL-terminated: relative to the
+/// X-Plane folder (as XPLMLoadObject wants it), or absolute if the plugin lies elsewhere;
+/// why not, when the file is not there or a path is not UTF-8.
+fn roof_object_xplm_path() -> Result<Vec<u8>, String> {
+    let mut xpl = [0 as c_char; PATH_BUF];
+    let mut root = [0 as c_char; PATH_BUF];
+    unsafe {
+        XPLMGetPluginInfo(
+            XPLMGetMyID(),
+            null_mut(),
+            xpl.as_mut_ptr(),
+            null_mut(),
+            null_mut(),
+        );
+        XPLMGetSystemPath(root.as_mut_ptr());
+    }
+    // SAFETY: XPLM wrote NUL-terminated strings into the zeroed buffers.
+    let xpl = unsafe { CStr::from_ptr(xpl.as_ptr()) };
+    let root = unsafe { CStr::from_ptr(root.as_ptr()) };
+    let not_utf8 =
+        |what: &str, p: &CStr| format!("{what} path is not UTF-8: {}", p.to_string_lossy());
+    let xpl = xpl.to_str().map_err(|_| not_utf8("plugin", xpl))?;
+    let root = root.to_str().map_err(|_| not_utf8("X-Plane", root))?;
+    let path = roof_object_path(Path::new(xpl));
+    if !path.is_file() {
+        return Err(format!("{} is missing", path.display()));
+    }
+    let relative = if root.is_empty() {
+        &path
+    } else {
+        path.strip_prefix(root).unwrap_or(&path)
+    };
+    let mut bytes = relative
+        .to_str()
+        .ok_or_else(|| format!("{} is not UTF-8", relative.display()))?
+        .as_bytes()
+        .to_vec();
+    bytes.push(0);
+    Ok(bytes)
 }
 
 /// `XPLMLookupObjects` enumerator: keeps the first file path.
@@ -591,6 +827,13 @@ extern "C" fn first_object(path: *const c_char, refcon: *mut c_void) {
 extern "C" fn object_loaded(obj: ObjectRef, _: *mut c_void) {
     guard("object_loaded", (), || {
         LOADED.set(Some(obj));
+    })
+}
+
+/// The same for the roof object, through [`LOADED_ROOF`].
+extern "C" fn roof_loaded(obj: ObjectRef, _: *mut c_void) {
+    guard("roof_loaded", (), || {
+        LOADED_ROOF.set(Some(obj));
     })
 }
 

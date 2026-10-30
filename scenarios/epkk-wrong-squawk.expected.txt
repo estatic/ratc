@@ -16,3 +16,4 @@
 [  528.0] Kraków Tower: Sierra Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared to land
 [  528.0] PILOT: Runway two five, cleared to land, Sierra Bravo Charlie
 [  580.0] Kraków Tower: Sierra Bravo Charlie, vacate, contact Kraków Ground one one eight decimal one zero five, good day
+[  597.0] Kraków Tower: Sierra Bravo Charlie, read back frequency

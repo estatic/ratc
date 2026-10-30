@@ -2,8 +2,8 @@
 //! (the output is fed to a TTS engine).
 
 use crate::types::{
-    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, Courtesy, Lang, Level, ReadbackItem,
-    Side, TaxiTo, Turn, UnableReason, Wind,
+    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, Lang, Level,
+    ReadbackItem, Side, TaxiTo, Turn, UnableReason, Wind,
 };
 
 const DIGITS: [&str; 10] = [
@@ -193,6 +193,7 @@ fn readback_label(item: &ReadbackItem) -> &'static str {
         ReadbackItem::Runway(_) => "runway",
         ReadbackItem::HoldShort(_) => "hold short instruction",
         ReadbackItem::Route(_) => "taxi route",
+        ReadbackItem::Kind(ClearanceKind::HoldPosition) => "hold position",
         ReadbackItem::Kind(_) => "clearance",
         ReadbackItem::Altitude(_) => "altitude",
         ReadbackItem::Heading(_) => "heading",
@@ -311,7 +312,9 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         AtcItem::PassYourMessage => out.push("pass your message".into()),
         AtcItem::Standby => out.push("standby".into()),
         AtcItem::FollowMeOnTheWay => out.push("follow-me car is on the way".into()),
-        AtcItem::FollowTheFollowMe => out.push("follow the follow-me car".into()),
+        AtcItem::FollowTheFollowMe { to } => {
+            out.push(format!("follow the follow-me car to {}", taxi_to_words(to)))
+        }
         AtcItem::StandPosition {
             stand,
             metres,

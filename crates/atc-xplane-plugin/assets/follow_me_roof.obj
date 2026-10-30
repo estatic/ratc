@@ -1,0 +1,93 @@
+I
+800
+OBJ
+
+# Virtual ATC follow-me roof object, drawn by the atc-overlay plugin as a second instance at
+# the pose of lib/airport/vehicles/servicing/crew_car.obj. OBJ8, metres: +x right (east),
+# +y up, +z back (south); the car's front points to -z (heading 0 = north).
+# - A FOLLOW ME sign box 1.2 x 0.35 x 0.3 m on the roof (y 1.45), its text on the front
+#   and back faces, with a small amber beacon housing on top.
+# - An amber beacon light, shown while atc/follow_me/beacon is 1.
+# - Amber turn lights at the car's corners, shown while atc/follow_me/left or
+#   atc/follow_me/right is 1.
+# The atc/follow_me/* datarefs are registered by the plugin and fed per instance.
+# Texture: tools/make-follow-me-texture.py.
+
+TEXTURE follow_me_roof.png
+POINT_COUNTS 40 0 0 60
+
+# Sign: front (-z), back (+z), east end, west end, top.
+VT 0.6 1.45 -0.15 0 0 -1 0 0.5
+VT 0.6 1.8 -0.15 0 0 -1 0 1
+VT -0.6 1.8 -0.15 0 0 -1 1 1
+VT -0.6 1.45 -0.15 0 0 -1 1 0.5
+VT -0.6 1.45 0.15 0 0 1 0 0.5
+VT -0.6 1.8 0.15 0 0 1 0 1
+VT 0.6 1.8 0.15 0 0 1 1 1
+VT 0.6 1.45 0.15 0 0 1 1 0.5
+VT 0.6 1.45 0.15 1 0 0 0.375 0.25
+VT 0.6 1.8 0.15 1 0 0 0.375 0.25
+VT 0.6 1.8 -0.15 1 0 0 0.375 0.25
+VT 0.6 1.45 -0.15 1 0 0 0.375 0.25
+VT -0.6 1.45 -0.15 -1 0 0 0.375 0.25
+VT -0.6 1.8 -0.15 -1 0 0 0.375 0.25
+VT -0.6 1.8 0.15 -1 0 0 0.375 0.25
+VT -0.6 1.45 0.15 -1 0 0 0.375 0.25
+VT -0.6 1.8 0.15 0 1 0 0.375 0.25
+VT -0.6 1.8 -0.15 0 1 0 0.375 0.25
+VT 0.6 1.8 -0.15 0 1 0 0.375 0.25
+VT 0.6 1.8 0.15 0 1 0 0.375 0.25
+
+# Beacon housing: front, back, east, west, top.
+VT 0.06 1.8 -0.06 0 0 -1 0.875 0.25
+VT 0.06 1.92 -0.06 0 0 -1 0.875 0.25
+VT -0.06 1.92 -0.06 0 0 -1 0.875 0.25
+VT -0.06 1.8 -0.06 0 0 -1 0.875 0.25
+VT -0.06 1.8 0.06 0 0 1 0.875 0.25
+VT -0.06 1.92 0.06 0 0 1 0.875 0.25
+VT 0.06 1.92 0.06 0 0 1 0.875 0.25
+VT 0.06 1.8 0.06 0 0 1 0.875 0.25
+VT 0.06 1.8 0.06 1 0 0 0.875 0.25
+VT 0.06 1.92 0.06 1 0 0 0.875 0.25
+VT 0.06 1.92 -0.06 1 0 0 0.875 0.25
+VT 0.06 1.8 -0.06 1 0 0 0.875 0.25
+VT -0.06 1.8 -0.06 -1 0 0 0.875 0.25
+VT -0.06 1.92 -0.06 -1 0 0 0.875 0.25
+VT -0.06 1.92 0.06 -1 0 0 0.875 0.25
+VT -0.06 1.8 0.06 -1 0 0 0.875 0.25
+VT -0.06 1.92 0.06 0 1 0 0.875 0.25
+VT -0.06 1.92 -0.06 0 1 0 0.875 0.25
+VT 0.06 1.92 -0.06 0 1 0 0.875 0.25
+VT 0.06 1.92 0.06 0 1 0 0.875 0.25
+
+IDX10 0 1 2 0 2 3 4 5 6 4
+IDX10 6 7 8 9 10 8 10 11 12 13
+IDX10 14 12 14 15 16 17 18 16 18 19
+IDX10 20 21 22 20 22 23 24 25 26 24
+IDX10 26 27 28 29 30 28 30 31 32 33
+IDX10 34 32 34 35 36 37 38 36 38 39
+
+TRIS 0 60
+
+# Beacon: amber, 1 Hz (the plugin switches the dataref).
+ANIM_begin
+ANIM_hide 0 0.5 atc/follow_me/beacon
+ANIM_show 0.5 1 atc/follow_me/beacon
+LIGHT_CUSTOM 0 1.98 0 1 0.55 0 1 0.9 0 0 0.25 0.5 NULL
+ANIM_end
+
+# Left turn lights (-x): front, rear.
+ANIM_begin
+ANIM_hide 0 0.5 atc/follow_me/left
+ANIM_show 0.5 1 atc/follow_me/left
+LIGHT_CUSTOM -0.76 0.9 -2.34 1 0.55 0 1 0.45 0 0 0.25 0.5 NULL
+LIGHT_CUSTOM -0.69 0.9 2.28 1 0.55 0 1 0.45 0 0 0.25 0.5 NULL
+ANIM_end
+
+# Right turn lights (+x): front, rear.
+ANIM_begin
+ANIM_hide 0 0.5 atc/follow_me/right
+ANIM_show 0.5 1 atc/follow_me/right
+LIGHT_CUSTOM 0.76 0.9 -2.34 1 0.55 0 1 0.45 0 0 0.25 0.5 NULL
+LIGHT_CUSTOM 0.69 0.9 2.28 1 0.55 0 1 0.45 0 0 0.25 0.5 NULL
+ANIM_end

@@ -178,6 +178,25 @@ fn readback_requests() {
     );
 }
 
+/// M-5: an unread "hold position" is asked for by name, other kinds as "clearance".
+#[test]
+fn hold_position_readback_request() {
+    let m = ground(vec![AtcItem::ReadBack(vec![ReadbackItem::Kind(
+        ClearanceKind::HoldPosition,
+    )])]);
+    assert_eq!(
+        render(&m, false),
+        "Sierra Bravo Charlie, read back hold position"
+    );
+    let m = ground(vec![AtcItem::ReadBack(vec![ReadbackItem::Kind(
+        ClearanceKind::Takeoff,
+    )])]);
+    assert_eq!(
+        render(&m, false),
+        "Sierra Bravo Charlie, read back clearance"
+    );
+}
+
 #[test]
 fn misc_items() {
     let m = ground(vec![
@@ -283,7 +302,20 @@ fn typed_items_render_as_before() {
         (AtcItem::PassYourMessage, "pass your message"),
         (AtcItem::Standby, "standby"),
         (AtcItem::FollowMeOnTheWay, "follow-me car is on the way"),
-        (AtcItem::FollowTheFollowMe, "follow the follow-me car"),
+        (
+            AtcItem::FollowTheFollowMe {
+                to: TaxiTo::Stand { name: "17".into() },
+            },
+            "follow the follow-me car to stand one seven",
+        ),
+        (
+            AtcItem::FollowTheFollowMe {
+                to: TaxiTo::HoldingPoint {
+                    runway: "25".into(),
+                },
+            },
+            "follow the follow-me car to holding point runway two five",
+        ),
         (
             AtcItem::StandPosition {
                 stand: "20".into(),

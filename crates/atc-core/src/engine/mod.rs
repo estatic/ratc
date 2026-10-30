@@ -189,6 +189,42 @@ pub struct AtcEngine {
     /// Sim UTC time of day (s) and day of year of the latest telemetry sample that had a
     /// time; `(None, None)` before any.
     clock: (Option<f64>, Option<u16>),
+    /// Sim time (s) of the latest telemetry sample or pilot transmission.
+    now: f64,
+}
+
+/// Words a controller speaks per second, to estimate how long a clearance takes to say.
+const WORDS_PER_S: f64 = 2.5;
+
+/// A reminder to read back, once per clearance: 10 s of sim time after it was spoken, or at
+/// once when the aircraft, standing when the clearance was issued, moves (over 3 kt) with a
+/// taxi readback pending. Spoken by the position that gave the clearance; `None` when no
+/// readback is pending. A sim clock that went back re-arms the wait.
+fn readback_reminder(strip: &mut Strip, t: f64, gs_kt: f64) -> Option<(Role, Vec<AtcItem>)> {
+    const REMIND_AFTER_S: f64 = 10.0;
+    const MOVING_KT: f64 = 3.0;
+    let role = strip.readback_role?;
+    let mut due = strip.readback_due_s?;
+    if t < strip.readback_issued_s {
+        due += t - strip.readback_issued_s;
+        strip.readback_issued_s = t;
+        strip.readback_due_s = Some(due);
+    }
+    let pending = strip
+        .pending_readback
+        .as_ref()
+        .filter(|_| !strip.reminded)?;
+    let taxiing = strip
+        .pending_items
+        .iter()
+        .any(|item| matches!(item, AtcItem::Taxi { .. }));
+    let moving = taxiing && !strip.readback_moving && gs_kt > MOVING_KT && t >= due;
+    if t - due < REMIND_AFTER_S && !moving {
+        return None;
+    }
+    let items = vec![AtcItem::ReadBack(pending.clone())];
+    strip.reminded = true;
+    Some((role, items))
 }
 
 /// Midpoint of the first runway (latitude, longitude).
@@ -236,6 +272,7 @@ impl AtcEngine {
             destinations: std::sync::Arc::from([]),
             vocab,
             clock: (None, None),
+            now: 0.0,
         }
     }
 
@@ -425,6 +462,7 @@ impl AtcEngine {
     }
 
     pub fn on_telemetry(&mut self, s: AircraftState) -> Vec<AtcOutput> {
+        self.now = s.t.0;
         // A sample without time (old client, replay) keeps the last known time.
         if s.utc_s.is_some() {
             self.clock = (s.utc_s, s.day_of_year);
@@ -480,6 +518,7 @@ impl AtcEngine {
         if strip.pending_readback.is_some() && strip.pending_expired() {
             strip.readback_complete();
         }
+        let reminder = readback_reminder(strip, s.t.0, s.gs_kt);
         strip.radio_failure = s.xpdr_code == Some(approach::RADIO_FAILURE_SQUAWK);
         let deviations = sv.monitor.update(&s, phase, &strip.permissions);
         let (pos, gs_kt, t, vs_fpm) = (s.pos, s.gs_kt, s.t.0, s.vs_fpm);
@@ -487,6 +526,9 @@ impl AtcEngine {
         self.note_missed_approach(i, prev, phase, pos, vs_fpm);
 
         let mut out = self.deviation_replies(i, deviations);
+        if let Some((role, items)) = reminder {
+            out.extend(self.transmit(i, role, items));
+        }
         out.extend(self.crossing_update(i, pos));
         out.extend(self.follow_me_update(i, t));
         out.extend(self.handover(i, gs_kt));
@@ -508,6 +550,7 @@ impl AtcEngine {
         lang: Lang,
         t: SimTime,
     ) -> Vec<AtcOutput> {
+        self.now = t.0;
         let Some(role) = self.role_at(freq_khz) else {
             return self.adjacent_call(freq_khz, text, lang);
         };
@@ -618,6 +661,8 @@ impl AtcEngine {
                 }
             } else {
                 strip.readback_requests += 1;
+                // The correction is the prompt; no reminder follows it.
+                strip.reminded = true;
                 let items = if request {
                     vec![AtcItem::ReadBack(pending)]
                 } else {
@@ -1041,7 +1086,7 @@ impl AtcEngine {
                 items.extend(change);
                 let strip = &mut self.strips[i];
                 strip.plan = Some(plan);
-                strip.expect_readback(&items, self.cfg.strictness);
+                strip.expect_readback(&items, self.cfg.strictness, self.now);
             }
             RunwayChange::NoSid { cleared } => {
                 tracing::info!(
@@ -1173,6 +1218,19 @@ impl AtcEngine {
             lang,
         };
         let text = render(&message, first_contact);
+        // The first transmission after a clearance that needs a readback is the clearance:
+        // the readback is due once it has been spoken.
+        if strip.pending_readback.is_some() && strip.readback_role.is_none() {
+            let words = text.split_whitespace().count() as f64;
+            strip.readback_role = Some(role);
+            strip.readback_due_s = strip
+                .readback_due_s
+                .map(|d| d + (words / WORDS_PER_S).ceil());
+            strip.readback_moving = self
+                .tracks
+                .get(&strip.callsign)
+                .is_some_and(|sv| sv.last.gs_kt > 3.0);
+        }
         let cs = strip.callsign.clone();
         self.last_told.insert(cs.clone(), text.clone());
         let out = AtcOutput {
@@ -1277,7 +1335,7 @@ impl AtcEngine {
         }
         if items.contains(&AtcItem::HoldPosition) {
             strip.handoff_to = None;
-            strip.expect_readback(&items, self.cfg.strictness);
+            strip.expect_readback(&items, self.cfg.strictness, self.now);
         }
         let owner = strip.owner;
         // Spec, "Язык": urgent instructions are always English.
@@ -1331,7 +1389,7 @@ impl AtcEngine {
         }
         let strip = &mut self.strips[i];
         strip.handoff_to = Some(to);
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         self.transmit(i, from, items)
     }
 
@@ -1398,7 +1456,7 @@ impl AtcEngine {
         }];
         let strip = &mut self.strips[i];
         strip.handoff_to = Some(to);
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 

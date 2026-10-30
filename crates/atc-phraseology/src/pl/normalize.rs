@@ -60,6 +60,17 @@ const RULES: &[(&str, &str, Next)] = &[
     ("informacja", "information", Next::Any),
     ("informację", "information", Next::Any),
     ("informacji", "information", Next::Any),
+    // The follow-me car, as read back: "samochód follow me jest w drodze", "kołuj za
+    // samochodem follow me".
+    ("samochód follow me", "follow me car", Next::Any),
+    (
+        "za samochodem follow me",
+        "follow the follow me car",
+        Next::Any,
+    ),
+    ("samochodem follow me", "the follow me car", Next::Any),
+    ("jest w drodze", "is on the way", Next::Any),
+    ("w drodze", "on the way", Next::Any),
     ("do stanowiska", "to stand", Next::Any),
     ("na stanowisko", "to stand", Next::Any),
     ("na stanowisku", "on stand", Next::Any),
