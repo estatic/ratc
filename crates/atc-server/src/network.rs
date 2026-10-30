@@ -511,6 +511,22 @@ impl Network {
         }
     }
 
+    /// Flight `cs` is over (the pilot changed aircraft): every station engine and en-route
+    /// unit forgets it, as do the owners and the pilot records, so that neither the saved
+    /// state nor the snapshots keep it. Registered again, even under the same callsign, it
+    /// is a new flight.
+    pub fn end_flight(&self, cs: &Callsign) {
+        // The owner entry goes first, so no call is routed to a half-removed flight.
+        self.owners.lock().unwrap().remove(cs);
+        for s in &self.stations {
+            s.engine.lock().unwrap().remove_pilot(cs);
+        }
+        for u in &self.units {
+            u.lock().unwrap().remove(cs);
+        }
+        self.pilots.lock().unwrap().remove(cs);
+    }
+
     fn owner_ref(&self, o: Owner) -> OwnerRef {
         match o {
             Owner::Station(i) => OwnerRef::Station(self.stations[i].id.clone()),

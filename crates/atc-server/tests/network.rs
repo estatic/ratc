@@ -1204,6 +1204,47 @@ mod restart {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    /// A flight ended by the network is gone from stations, units, owners and the saved
+    /// state; the same callsign registered again is a fresh flight.
+    #[test]
+    fn end_flight_forgets_everywhere() {
+        let n = net();
+        // SPONE is a station's flight, SPTST a unit's.
+        let (one, c) = in_flight(&n);
+        assert_eq!(n.owner(&c), Some(Owner::Unit(0)));
+        assert!(registered(&n, ZZZY, &one));
+        n.end_flight(&c);
+        assert_eq!(n.owner(&c), None);
+        let (_, state) = n.persisted();
+        assert!(
+            state.units.iter().all(|u| u.flights.is_empty()),
+            "{state:?}"
+        );
+        assert!(!state.owners.contains_key(&c.0), "{state:?}");
+        // The other flight is untouched.
+        assert_eq!(n.owner(&one), Some(Owner::Station(ZZZY)));
+        assert!(registered(&n, ZZZY, &one));
+
+        n.end_flight(&one);
+        assert_eq!(n.owner(&one), None);
+        assert!(!registered(&n, ZZZY, &one) && !registered(&n, ZZZZ, &one));
+        let (snaps, state) = n.persisted();
+        assert!(state.owners.is_empty(), "{state:?}");
+        for (_, s) in &snaps {
+            assert!(!serde_json::to_string(s).unwrap().contains("SPONE"));
+        }
+        // The same callsign again, another aircraft: a fresh strip.
+        n.register_pilot(PilotProfile {
+            callsign: one.clone(),
+            aircraft_type: "B738".into(),
+        });
+        n.on_telemetry(sample(&one, 10.0, at(10.5), 0.0, 0.0, TESTVILLE_TWR));
+        let mut eng = n.stations()[ZZZY].engine.lock().unwrap();
+        let s = eng.strip(&one).expect("fresh strip");
+        assert!(s.plan.is_none());
+        assert_eq!(eng.export_flight(&one).unwrap().aircraft_type, "B738");
+    }
+
     /// An owner entry nobody holds any more is dropped at disconnect and at save time.
     #[test]
     fn owners_nobody_holds_are_dropped() {
