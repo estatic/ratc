@@ -1,4 +1,4 @@
-# Release builds for Linux and macOS: on a version tag (published as a GitHub release) or by hand
+# Release builds for Linux, macOS and Windows: on a version tag (published as a GitHub release) or by hand
 # (artifacts only). Each archive holds the binaries plus the config, data and scripts they run
 # with; speech models are fetched by the user (tools/).
 name: Build
@@ -27,8 +27,11 @@ jobs:
             plugin: true
           - name: macos-aarch64
             os: macos-14
-            # The overlay plugin is built and installed for Linux only (lin.xpl).
+            # The overlay plugin is built for Linux (lin.xpl) and Windows (win.xpl).
             plugin: false
+          - name: windows-x86_64
+            os: windows-2022
+            plugin: true
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +45,21 @@ jobs:
       - name: System libraries (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake
+
+      # LLVM (libclang) and CMake come with the runner image. whisper.cpp's Vulkan shader
+      # generator builds deep under the target dir: long paths on, and a short target dir.
+      - name: Vulkan SDK, long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled 1
+          $v = '1.4.363.0'
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe" -OutFile vulkansdk.exe
+          Start-Process -Wait -FilePath .\vulkansdk.exe -ArgumentList '--root', "C:\VulkanSDK\$v", '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          "VULKAN_SDK=C:\VulkanSDK\$v" >> $env:GITHUB_ENV
+          "C:\VulkanSDK\$v\Bin" >> $env:GITHUB_PATH
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          "CARGO_TARGET_DIR=C:/t" >> $env:GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -61,19 +79,33 @@ jobs:
         run: |
           NAME="virtual-atc-${GITHUB_REF_NAME//\//-}-${{ matrix.name }}"
           DIR="dist/$NAME"
+          OUT="${CARGO_TARGET_DIR:-target}/release"
+          EXE=""
+          [ "$RUNNER_OS" = "Windows" ] && EXE=".exe"
           mkdir -p "$DIR/bin"
-          cp target/release/atc-server target/release/atc-client "$DIR/bin/"
+          cp "$OUT/atc-server$EXE" "$OUT/atc-client$EXE" "$DIR/bin/"
           if [ "${{ matrix.plugin }}" = "true" ]; then
-            mkdir -p "$DIR/plugin/atc-overlay/64"
-            cp target/release/libatc_overlay.so "$DIR/plugin/atc-overlay/64/lin.xpl"
+            mkdir -p "$DIR/plugin/atc-overlay/64" "$DIR/plugin/atc-overlay/objects"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              cp "$OUT/atc_overlay.dll" "$DIR/plugin/atc-overlay/64/win.xpl"
+            else
+              cp "$OUT/libatc_overlay.so" "$DIR/plugin/atc-overlay/64/lin.xpl"
+            fi
+            cp crates/atc-xplane-plugin/assets/follow_me_roof.obj \
+              crates/atc-xplane-plugin/assets/follow_me_roof.png "$DIR/plugin/atc-overlay/objects/"
           fi
           cp -R config data scenarios tools docs "$DIR/"
           # Ready-to-edit personal configs from the examples (git-ignored in the repo).
           cp config/server.example.toml "$DIR/config/server.toml"
           cp config/client.example.toml "$DIR/config/client.toml"
           cp README.md LICENSE.md NOTICE.md CONTRIBUTING.md "$DIR/"
-          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
-          echo "ARCHIVE=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            (cd dist && 7z a -tzip "$NAME.zip" "$NAME" >/dev/null)
+            echo "ARCHIVE=dist/$NAME.zip" >> "$GITHUB_ENV"
+          else
+            tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+            echo "ARCHIVE=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
