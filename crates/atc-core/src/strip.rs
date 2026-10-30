@@ -167,9 +167,21 @@ pub struct Strip {
     pub uncleared_landing: bool,
     /// Times the pending readback has been asked for again.
     pub readback_requests: u8,
-    /// Sim time (s) the pending readback became due: when its clearance was issued.
+    /// Sim time (s) the pending readback became due: when its clearance was issued plus the
+    /// time to speak it.
     #[serde(default)]
     pub readback_due_s: Option<f64>,
+    /// Sim time (s) the pending clearance was issued (to follow a reset of the sim clock).
+    #[serde(default)]
+    pub readback_issued_s: f64,
+    /// The position that issued the pending clearance; it also does the reminding. `None`
+    /// until the clearance is transmitted.
+    #[serde(default)]
+    pub readback_role: Option<Role>,
+    /// The aircraft was already moving (over 3 kt) when the clearance was issued: only the
+    /// timed reminder applies.
+    #[serde(default)]
+    pub readback_moving: bool,
     /// The missing readback has been reminded of (once per clearance).
     #[serde(default)]
     pub reminded: bool,
@@ -267,6 +279,9 @@ impl Strip {
             uncleared_landing: false,
             readback_requests: 0,
             readback_due_s: None,
+            readback_issued_s: 0.0,
+            readback_role: None,
+            readback_moving: false,
             reminded: false,
             squawk: None,
             transponder_check: false,
@@ -303,6 +318,7 @@ impl Strip {
         self.pending_items.clear();
         self.readback_requests = 0;
         self.readback_due_s = None;
+        self.readback_role = None;
         self.reminded = false;
         self.handoff_to = None;
         self.permissions.may_enter_runway = false;
@@ -342,6 +358,9 @@ impl Strip {
         self.pending_items = items.to_vec();
         self.readback_requests = 0;
         self.readback_due_s = Some(t);
+        self.readback_issued_s = t;
+        self.readback_role = None;
+        self.readback_moving = false;
         self.reminded = false;
         if required.is_empty() {
             self.readback_complete();
@@ -356,6 +375,7 @@ impl Strip {
         self.pending_items.clear();
         self.readback_requests = 0;
         self.readback_due_s = None;
+        self.readback_role = None;
         self.reminded = false;
         if let Some(role) = self.handoff_to.take() {
             self.owner = role;

@@ -90,6 +90,10 @@ impl AtcEngine {
         self.runway = s.runway;
         self.pilots = s.pilots;
         self.strips = s.strips;
+        // Clearances from before the restart are not reminded.
+        for strip in &mut self.strips {
+            strip.readback_due_s = None;
+        }
         self.tracks = s.tracks.into_iter().collect();
         self.fragment = s.fragment;
         self.last_told = s.last_told.into_iter().collect();

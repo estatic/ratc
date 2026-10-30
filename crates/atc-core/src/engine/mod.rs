@@ -193,13 +193,23 @@ pub struct AtcEngine {
     now: f64,
 }
 
-/// A reminder to read back, once per clearance: 10 s of sim time after it was issued, or at
-/// once when the aircraft moves (over 3 kt) with a taxi readback pending. Spoken by the
-/// position that gave the clearance; `None` when no readback is pending.
+/// Words a controller speaks per second, to estimate how long a clearance takes to say.
+const WORDS_PER_S: f64 = 2.5;
+
+/// A reminder to read back, once per clearance: 10 s of sim time after it was spoken, or at
+/// once when the aircraft, standing when the clearance was issued, moves (over 3 kt) with a
+/// taxi readback pending. Spoken by the position that gave the clearance; `None` when no
+/// readback is pending. A sim clock that went back re-arms the wait.
 fn readback_reminder(strip: &mut Strip, t: f64, gs_kt: f64) -> Option<(Role, Vec<AtcItem>)> {
     const REMIND_AFTER_S: f64 = 10.0;
     const MOVING_KT: f64 = 3.0;
-    let due = strip.readback_due_s?;
+    let role = strip.readback_role?;
+    let mut due = strip.readback_due_s?;
+    if t < strip.readback_issued_s {
+        due += t - strip.readback_issued_s;
+        strip.readback_issued_s = t;
+        strip.readback_due_s = Some(due);
+    }
     let pending = strip
         .pending_readback
         .as_ref()
@@ -208,12 +218,13 @@ fn readback_reminder(strip: &mut Strip, t: f64, gs_kt: f64) -> Option<(Role, Vec
         .pending_items
         .iter()
         .any(|item| matches!(item, AtcItem::Taxi { .. }));
-    if t - due < REMIND_AFTER_S && !(taxiing && gs_kt > MOVING_KT) {
+    let moving = taxiing && !strip.readback_moving && gs_kt > MOVING_KT && t >= due;
+    if t - due < REMIND_AFTER_S && !moving {
         return None;
     }
     let items = vec![AtcItem::ReadBack(pending.clone())];
     strip.reminded = true;
-    Some((strip.owner, items))
+    Some((role, items))
 }
 
 /// Midpoint of the first runway (latitude, longitude).
@@ -650,6 +661,8 @@ impl AtcEngine {
                 }
             } else {
                 strip.readback_requests += 1;
+                // The correction is the prompt; no reminder follows it.
+                strip.reminded = true;
                 let items = if request {
                     vec![AtcItem::ReadBack(pending)]
                 } else {
@@ -1205,6 +1218,19 @@ impl AtcEngine {
             lang,
         };
         let text = render(&message, first_contact);
+        // The first transmission after a clearance that needs a readback is the clearance:
+        // the readback is due once it has been spoken.
+        if strip.pending_readback.is_some() && strip.readback_role.is_none() {
+            let words = text.split_whitespace().count() as f64;
+            strip.readback_role = Some(role);
+            strip.readback_due_s = strip
+                .readback_due_s
+                .map(|d| d + (words / WORDS_PER_S).ceil());
+            strip.readback_moving = self
+                .tracks
+                .get(&strip.callsign)
+                .is_some_and(|sv| sv.last.gs_kt > 3.0);
+        }
         let cs = strip.callsign.clone();
         self.last_told.insert(cs.clone(), text.clone());
         let out = AtcOutput {

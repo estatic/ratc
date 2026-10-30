@@ -143,6 +143,29 @@ fn transmission_routed_by_frequency() {
     assert!(other.strip(&c).unwrap().issued.is_empty());
 }
 
+/// Only the station that gave the clearance reminds of the missing readback; the other
+/// engine that merely sees the aircraft holds nothing pending and stays silent.
+#[test]
+fn missing_readback_is_reminded_by_the_issuing_station_only() {
+    let net = network("", ZZZZ_EXTRA);
+    let c = join(&net, "SPTST");
+    net.on_telemetry(sample(&c, 0.0, at(10.0012), 100.0, 0.0, ZETA_GROUND));
+    let out = net.on_transmission(
+        &c,
+        ZETA_GROUND,
+        "Zeta Ground, SPTST, request taxi",
+        Lang::En,
+        SimTime(1.0),
+    );
+    assert!(!out.is_empty());
+    let out = net.on_telemetry(sample(&c, 60.0, at(10.0012), 100.0, 0.0, ZETA_GROUND));
+    assert_eq!(stations(&out), ["Zeta Ground"], "{out:?}");
+    assert!(matches!(&items_of(&out)[..], [AtcItem::ReadBack(_)]));
+    let other = net.stations()[ZZZY].engine.lock().unwrap();
+    let strip = other.strip(&c).unwrap();
+    assert!(strip.pending_readback.is_none() && strip.readback_due_s.is_none());
+}
+
 #[test]
 fn unowned_frequency_is_silent() {
     let net = network("", ZZZZ_EXTRA);
