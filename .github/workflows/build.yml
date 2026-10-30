@@ -26,7 +26,7 @@ jobs:
             os: ubuntu-24.04
             plugin: true
           - name: macos-aarch64
-            os: macos-14
+            os: macos-15
             # The overlay plugin is built for Linux (lin.xpl) and Windows (win.xpl).
             plugin: false
           - name: windows-x86_64
