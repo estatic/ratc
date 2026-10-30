@@ -153,8 +153,8 @@ impl AtcEngine {
     /// "Follow the follow-me car" once the car has had [`READY_S`] to get in front.
     /// An aircraft already at the end of the car's path (it taxied there on its own while
     /// the car was on the way) gets no "follow" call and the car goes away. To a stand the
-    /// pilot is released with the plain taxi instruction; short of a holding point he
-    /// is already where he should be, so Ground stays silent.
+    /// pilot is released with the plain taxi instruction; short of a holding point the
+    /// aircraft is already where it should be, so Ground stays silent.
     pub(super) fn follow_me_update(&mut self, i: usize, t: f64) -> Vec<AtcOutput> {
         let pos = self.last_pos(i);
         let Some(fm) = &self.strips[i].follow_me else {
