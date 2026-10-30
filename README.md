@@ -193,6 +193,26 @@ git-ignored, only the shipped EPKK is tracked):
 
 To fly there, set `airport = "<ID>"` in `config/server.toml` and restart the server.
 
+### Several stations
+
+Leave `airport` out of `config/server.toml` and the server runs every station in
+`data/airports` at once, each with its own controllers on its own frequencies. A flight is
+handed from one station to the next when a controller tells you to contact it ("contact Katowice
+Tower" and the frequency); the flight plan and squawk go with you, and the next station
+knows you. Stations that share a frequency (two airports with the same Approach) work as one
+unit: you stay with it. With `airport = "<ID>"` only that station runs, as before.
+
+The wizard also writes `data/airports/enroute.toml`: the FIS and ACC sectors around your
+stations. They answer on their own frequencies ("identified, QNH ..."), pass you on when you
+leave their sector or enter an airport's control zone, and where nothing follows you hear
+"frequency change approved" and the radio stays silent until you call a station again.
+
+Any airfield in the apt.dat files X-Plane loads can be the destination of a flight plan, not
+only the ones within reach of a station; the list is scanned once and kept in
+`data/cache/destinations.json`. The flights in progress, who controls each of them and the
+en-route units' flights are saved in `data/cache/` and restored at the next start (see
+[docs/RUNNING.md](docs/RUNNING.md#several-stations)).
+
 OpenAIP data (licence CC BY-NC 4.0, non-commercial use) is downloaded to your own machine,
 into the per-user data directory, and is never part of this repository. The API key is stored
 in the per-user config directory. Without a key, EPKK still works: the repository carries its

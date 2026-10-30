@@ -184,7 +184,10 @@ pub struct Strip {
     pub lang: Lang,
     /// The flight plan, once a clearance was issued.
     pub plan: Option<FlightPlan>,
-    /// The adjacent unit (callsign) the flight was handed off to.
+    /// The adjacent unit (callsign) the flight was handed off to. The empty string marks a
+    /// release without a unit (no ACC or FIS: "radar service terminated, frequency change
+    /// approved"): the flight has left this engine's service all the same, so every
+    /// "handed off" check applies, but there is no unit to call (no `handed_off_khz`).
     pub handed_off: Option<String>,
     /// Approach has identified the aircraft on radar.
     pub identified: bool,
@@ -218,6 +221,18 @@ pub struct Strip {
     /// `None`: the runway in use. Cleared when the flight ends.
     #[serde(default)]
     pub requested_runway: Option<String>,
+    /// The frequency (kHz) of the adjacent unit the flight was told to contact with its
+    /// hand-off (`handed_off`); `None` without one (also a release without a unit).
+    #[serde(default)]
+    pub handed_off_khz: Option<u32>,
+    /// The flight was handed in from another station's engine and has not called yet: its
+    /// first call is answered as a flight handed over.
+    #[serde(default)]
+    pub handed_in: bool,
+    /// The pilot has answered (read back or acknowledged) since its hand-off to an adjacent
+    /// unit, or called the unit.
+    #[serde(default)]
+    pub handoff_acked: bool,
     // Every field above that belongs to one flight is reset by `Strip::end_flight`.
 }
 
@@ -264,6 +279,9 @@ impl Strip {
             qnh_with_start_up: None,
             code_with_clearance: false,
             requested_runway: None,
+            handed_off_khz: None,
+            handed_in: false,
+            handoff_acked: false,
         }
     }
 
@@ -301,6 +319,9 @@ impl Strip {
         self.qnh_with_start_up = None;
         self.code_with_clearance = false;
         self.requested_runway = None;
+        self.handed_off_khz = None;
+        self.handed_in = false;
+        self.handoff_acked = false;
     }
 
     /// Records a clearance just issued and the readback it requires. A clearance

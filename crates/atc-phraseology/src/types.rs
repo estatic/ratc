@@ -525,6 +525,12 @@ pub enum AtcItem {
     },
     /// "Frequency change approved" (a VFR flight leaving for the next unit).
     FrequencyChangeApproved,
+    /// "Change to <station> <frequency>": the flight leaves for a station that does not
+    /// answer (no controller there), so no contact is expected.
+    ChangeTo {
+        station: String,
+        khz: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

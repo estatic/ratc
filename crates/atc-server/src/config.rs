@@ -51,7 +51,9 @@ pub struct PiperConfig {
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub listen: String,
-    pub airport: String,
+    /// The one station to run; omitted = every station directory of `data_dir`.
+    #[serde(default)]
+    pub airport: Option<String>,
     pub data_dir: PathBuf,
     /// X-Plane install whose scenery supplies the airport layout (apt.dat); `None` = the repo
     /// copy in `data_dir`.
@@ -107,7 +109,7 @@ mod tests {
     fn config_parses_example() {
         let c = load_config(EXAMPLE).unwrap();
         assert_eq!(c.listen, "127.0.0.1:8740");
-        assert_eq!(c.airport, "EPKK");
+        assert_eq!(c.airport.as_deref(), Some("EPKK"));
         assert_eq!(c.data_dir, PathBuf::from("data/airports"));
         assert_eq!(c.xplane_root, None);
         assert_eq!(c.strictness, StrictnessSetting::Standard);

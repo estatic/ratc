@@ -496,7 +496,7 @@ async fn stale_atis_synthesis_is_dropped() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     {
-        let mut engine = srv.state.engine.lock().unwrap();
+        let mut engine = srv.state.network.stations()[0].engine.lock().unwrap();
         engine.on_weather(Weather {
             wind: Wind {
                 dir_deg: 100,
@@ -622,8 +622,7 @@ async fn third_language_is_transcribed_again() {
     let texts = atc_texts(&got);
     assert_eq!(texts.len(), 1, "{texts:?}");
     assert!(texts[0].1.contains("powtórz"), "{texts:?}");
-    let strip_lang = srv
-        .state
+    let strip_lang = srv.state.network.stations()[0]
         .engine
         .lock()
         .unwrap()
@@ -720,4 +719,108 @@ async fn ifr_request_without_cifp_is_unable_and_vfr_still_works() {
             .any(|(st, t)| st == "Kraków Delivery" && t.contains("cleared to Katowice")),
         "{texts:?}"
     );
+}
+
+/// Two pilots at two airports: each is answered by its own station on its own frequency and
+/// hears nothing of the other's exchange.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_clients_two_stations() {
+    let zeta = r#"
+[[positions]]
+role = "Ground"
+callsign = "Zeta Ground"
+khz = 121700
+"#;
+    let srv = start_network(
+        vec![fixture_station("ZZZY", ""), fixture_station("ZZZZ", zeta)],
+        vec![],
+        Arc::new(FakeTts::default()),
+    )
+    .await;
+    let mut a = Client::hello(&srv.url, "SP-AAA").await;
+    let mut b = Client::hello(&srv.url, "SP-BBB").await;
+    a.send(ClientMsg::Weather(weather())).await;
+    a.send(ClientMsg::Telemetry(parked_at(121_700, 10.0012, 10.0)))
+        .await;
+    b.send(ClientMsg::Telemetry(parked_at(118_500, 10.5, 10.0)))
+        .await;
+    srv.wait_listeners(121_700, 1).await;
+    srv.wait_listeners(118_500, 1).await;
+    say(&mut a, 121_700, "Zeta Ground, SP-AAA, request taxi").await;
+    let got = atc_texts(&a.recv_until(is_audio_end).await);
+    assert!(
+        !got.is_empty() && got.iter().all(|(st, _)| st == "Zeta Ground"),
+        "{got:?}"
+    );
+    say(
+        &mut b,
+        118_500,
+        "Testville Tower, SP-BBB, request radio check",
+    )
+    .await;
+    let got = b.recv_until(is_audio_end).await;
+    let texts = atc_texts(&got);
+    assert!(
+        !texts.is_empty() && texts.iter().all(|(st, _)| st == "Testville Tower"),
+        "{got:?}"
+    );
+    use atc_server::network::Owner;
+    let net = &srv.state.network;
+    assert_eq!(
+        net.owner(&atc_phraseology::Callsign::new("SP-AAA")),
+        Some(Owner::Station(1))
+    );
+    assert_eq!(
+        net.owner(&atc_phraseology::Callsign::new("SP-BBB")),
+        Some(Owner::Station(0))
+    );
+}
+
+/// The speech-to-text prompt is the one of whoever works the frequency: a station's names, a
+/// unit's callsign; an unworked frequency gets the nearest station's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stt_prompt_follows_frequency_owner() {
+    use atc_navdata::enroute::{EnrouteKind, EnrouteUnitDef, SectorDef};
+    use atc_server::network::Network;
+
+    let zeta = r#"
+[[positions]]
+role = "Ground"
+callsign = "Zeta Ground"
+khz = 121700
+"#;
+    let alpha = EnrouteUnitDef {
+        callsign: "Alpha Information".into(),
+        khz: 120_500,
+        kind: EnrouteKind::Fis,
+        sectors: vec![SectorDef {
+            name: "FIS ALPHA".into(),
+            lower_ft: 0,
+            upper_ft: 9500,
+            polygon: vec![[9.0, 9.0], [9.0, 11.0], [9.4, 11.0], [9.4, 9.0]],
+        }],
+    };
+    let network = Network::new(vec![
+        fixture_station("ZZZY", ""),
+        fixture_station("ZZZZ", zeta),
+    ])
+    .with_units(vec![alpha]);
+    let noise = (0..4).map(|_| transcript("uh", 0.1)).collect();
+    let srv = start_network_with(network, noise, Arc::new(FakeTts::default()), true).await;
+    let mut c = Client::hello(&srv.url, "SP-AAA").await;
+    c.send(ClientMsg::Weather(weather())).await;
+    c.send(ClientMsg::Telemetry(parked_at(121_700, 10.0012, 10.0)))
+        .await;
+    for freq in [121_700, 118_500, 120_500, 121_500] {
+        ptt(&mut c, freq).await;
+        c.recv_until(is_transcript).await;
+    }
+    let prompts = srv.stt.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 4, "{prompts:?}");
+    let (zeta, testville) = ("Zeta Ground", "Testville Tower");
+    assert!(prompts[0].contains(zeta) && !prompts[0].contains(testville));
+    assert!(prompts[1].contains(testville) && !prompts[1].contains(zeta));
+    assert!(prompts[2].contains("Alpha Information"), "{prompts:?}");
+    // Nobody works 121.500: the station nearest the aircraft speaks for it.
+    assert!(prompts[3].contains(zeta) && !prompts[3].contains(testville));
 }

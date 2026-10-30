@@ -1,4 +1,5 @@
 use atc_phraseology::*;
+use std::sync::Arc;
 
 fn en(text: &str) -> PilotMessage {
     parse_pilot(text, Lang::En)
@@ -507,11 +508,14 @@ fn vocab() -> Vocabulary {
     Vocabulary {
         callsigns: vec![],
         points: s(&["ZULU", "KILO"]),
-        fixes: s(&["SUDOL", "NUMBA", "MAPIK"]),
+        fixes: Arc::new(s(&["SUDOL", "NUMBA", "MAPIK"]).into_iter().collect()),
         places: vec![
-            ("katowice".into(), "EPKT".into()),
-            ("warszawa".into(), "EPWA".into()),
-        ],
+            Place::new("katowice", "EPKT"),
+            Place::new("warszawa", "EPWA"),
+        ]
+        .into(),
+        place_fixes: Default::default(),
+        origin: None,
     }
 }
 
@@ -851,4 +855,46 @@ fn request_departure_runway() {
         en("Sierra Papa Alpha Bravo Charlie, request takeoff runway two seven").intent,
         PilotIntent::ReadyForDeparture { .. }
     ));
+}
+
+fn world() -> Vocabulary {
+    Vocabulary {
+        places: vec![
+            Place {
+                pos: Some((51.0, 20.0)),
+                ..Place::new("springfield", "ZZFAR")
+            },
+            Place {
+                pos: Some((50.1, 19.9)),
+                ..Place::new("springfield", "ZZNEAR")
+            },
+            Place::new("land", "ZZLA"),
+            Place::new("final", "ZZFI"),
+        ]
+        .into(),
+        origin: Some((50.0, 20.0)),
+        ..Vocabulary::default()
+    }
+}
+
+#[test]
+fn equal_destination_names_resolve_to_the_nearer_airport() {
+    let m = parse_pilot_with(
+        "Delivery, Sierra Bravo Charlie, IFR to Springfield, request clearance",
+        Lang::En,
+        &world(),
+    );
+    assert_eq!(m.items.destination.as_deref(), Some("ZZNEAR"));
+}
+
+#[test]
+fn landing_words_are_never_destinations() {
+    for said in [
+        "Tower, Sierra Bravo Charlie, request to land",
+        "Tower, Sierra Bravo Charlie, cleared to land, runway two five",
+        "Tower, Sierra Bravo Charlie, to final",
+    ] {
+        let m = parse_pilot_with(said, Lang::En, &world());
+        assert_eq!(m.items.destination, None, "{said}");
+    }
 }

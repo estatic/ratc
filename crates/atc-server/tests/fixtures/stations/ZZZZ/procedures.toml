@@ -1,0 +1,16 @@
+# Synthetic test station, not real data.
+icao = "ZZZZ"
+source = "synthetic test fixture"
+airac = "none"
+transition_altitude_ft = 5000
+preferred_runway = "09"
+
+[[circuits]]
+runway = "09"
+side = "Left"
+altitude_ft_msl = 1500
+
+[[positions]]
+role = "Tower"
+callsign = "Zeta Tower"
+khz = 118300

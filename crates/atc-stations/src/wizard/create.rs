@@ -10,7 +10,7 @@ use atc_navdata::xplane::{ResolvedAirport, load_destinations, resolve_airport};
 use super::values::value_screen;
 use super::{
     APT_DAT, Meta, OVERRIDES, PROCEDURES, Prompt, STATION, WizardEnv, combined, download_country,
-    fetched_on, lat_lon, mhz, write_meta,
+    fetched_on, lat_lon, mhz, write_enroute, write_meta,
 };
 use crate::generate::{
     Choice, StationDoc, generate, offered_positions, write_atomic, write_station,
@@ -278,7 +278,10 @@ fn create_one<R: BufRead, W: Write>(
         .ok()
         .and_then(|t| toml::from_str(&t).ok());
     match write_new_station(&dir, &id, &doc, save_ov, &resolved, &meta) {
-        Ok(()) => p.say(format!("Created {id} in {}.", dir.display())),
+        Ok(()) => {
+            p.say(format!("Created {id} in {}.", dir.display()));
+            write_enroute(env, all, p);
+        }
         Err(e) => {
             p.say(format!("{id}: could not write the station: {e}"));
             return;

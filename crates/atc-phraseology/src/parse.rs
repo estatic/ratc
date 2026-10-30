@@ -1,6 +1,9 @@
 //! Token scanner: extracts addressee, callsign, intent and clearance items
 //! from a normalized pilot transmission.
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use crate::normalize::{Token, normalize};
 use crate::pl;
 use crate::pl::normalize::fold;
@@ -20,12 +23,50 @@ pub struct Vocabulary {
     pub points: Vec<String>,
     /// Fix names of the procedures, uppercase ("SUDOL"). A fix followed by a number and a
     /// letter is a procedure designator.
-    pub fixes: Vec<String>,
+    /// Shared between the engines of a server (the world's destinations are many).
+    pub fixes: Arc<HashSet<String>>,
+    /// Names of destinations said after "direct" (uppercase letters and digits only), like
+    /// `fixes` but shared by all engines.
+    pub place_fixes: Arc<HashSet<String>>,
     /// Place names for destinations: (spoken name, lowercase ASCII; ICAO code). A word
     /// matches the last word of the name when it is the name or begins with its stem (the name
     /// without trailing vowels, at least four letters), so the Polish inflections "Katowic",
-    /// "Katowicach" and "Krakowa" are found for "katowice" and "krakow".
-    pub places: Vec<(String, String)>,
+    /// "Katowicach" and "Krakowa" are found for "katowice" and "krakow". Shared like `fixes`.
+    pub places: Arc<[Place]>,
+    /// Where the station is (latitude, longitude): of two places with equally long names the
+    /// one nearer to it is meant.
+    pub origin: Option<(f64, f64)>,
+}
+
+/// A destination as the parser knows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    /// Spoken name, lowercase ASCII.
+    pub name: String,
+    pub icao: String,
+    /// Latitude and longitude, to prefer a nearby place over a far one of the same name.
+    pub pos: Option<(f64, f64)>,
+}
+
+impl Place {
+    pub fn new(name: &str, icao: &str) -> Self {
+        Place {
+            name: name.into(),
+            icao: icao.into(),
+            pos: None,
+        }
+    }
+}
+
+/// Words that are never a destination, whatever an airport is called ("cleared to land",
+/// "final", "park", "read back").
+const NOT_PLACES: [&str; 5] = ["land", "landing", "final", "park", "read"];
+
+/// Squared distance on the plane (degrees, longitude scaled by latitude): enough to order
+/// places around a station.
+fn dist2(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dlon = (a.1 - b.1) * a.0.to_radians().cos();
+    (a.0 - b.0).powi(2) + dlon.powi(2)
 }
 
 /// Parses a pilot transmission in English or Polish. Polish is rewritten into the canonical
@@ -50,7 +91,17 @@ pub fn parse_pilot_known(text: &str, lang: Lang, known: &[Callsign]) -> PilotMes
 /// [`parse_pilot_known`] with the whole [`Vocabulary`]: callsigns, VFR points, procedure
 /// fixes and destination places.
 pub fn parse_pilot_with(text: &str, lang: Lang, vocab: &Vocabulary) -> PilotMessage {
-    let known = &vocab.callsigns[..];
+    parse_pilot_in(text, lang, vocab, &vocab.callsigns)
+}
+
+/// [`parse_pilot_with`] with the callsigns on frequency given apart from the (large, shared)
+/// vocabulary, so nothing big is copied per transmission.
+pub fn parse_pilot_in(
+    text: &str,
+    lang: Lang,
+    vocab: &Vocabulary,
+    known: &[Callsign],
+) -> PilotMessage {
     let mut msg = PilotMessage {
         addressee: None,
         station_called: false,
@@ -772,19 +823,29 @@ impl<'a> Scan<'a> {
             return Some((code, j + 4));
         }
         let w = self.w(j)?.to_uppercase();
+        if NOT_PLACES.iter().any(|n| n.eq_ignore_ascii_case(&w)) {
+            return None;
+        }
         self.vocab
             .places
             .iter()
-            .any(|(_, icao)| icao.to_uppercase() == w)
+            .any(|p| p.icao.to_uppercase() == w)
             .then_some((w, j + 1))
     }
 
-    /// A place name from the vocabulary at `j`; the longest name wins.
+    /// A place name from the vocabulary at `j`; the longest name wins, of equally long ones
+    /// the nearest to the station.
     fn place_at(&self, j: usize) -> Option<(String, usize)> {
+        let far = f64::INFINITY;
+        let dist = |p: &Place| match (self.vocab.origin, p.pos) {
+            (Some(o), Some(q)) => dist2(o, q),
+            _ => far,
+        };
         self.vocab
             .places
             .iter()
-            .filter_map(|(name, icao)| {
+            .filter_map(|place| {
+                let (name, icao) = (&place.name, &place.icao);
                 let words: Vec<&str> = name.split(' ').collect();
                 let (last, init) = words.split_last()?;
                 let said = |k: usize| match self.toks.get(j + k) {
@@ -796,11 +857,21 @@ impl<'a> Scan<'a> {
                         return None;
                     }
                 }
-                inflected_place(&said(init.len())?, last)
-                    .then(|| (words.len(), icao.to_uppercase(), j + words.len()))
+                let last_said = said(init.len())?;
+                if NOT_PLACES.contains(&last_said.as_str()) {
+                    return None;
+                }
+                inflected_place(&last_said, last).then(|| {
+                    (
+                        words.len(),
+                        dist(place),
+                        icao.to_uppercase(),
+                        j + words.len(),
+                    )
+                })
             })
-            .max_by_key(|(len, ..)| *len)
-            .map(|(_, icao, end)| (icao, end))
+            .max_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)))
+            .map(|(_, _, icao, end)| (icao, end))
     }
 
     /// An approach type at `i` and the end of its words: "ILS", "I L S", "VOR" ("DME" /
@@ -920,7 +991,7 @@ impl<'a> Scan<'a> {
                 Token::Letter(c) if !self.used[k] => spelled.push(*c),
                 _ => break,
             }
-            if self.vocab.fixes.contains(&spelled) {
+            if self.vocab.fixes.contains(&spelled) || self.vocab.place_fixes.contains(&spelled) {
                 best = Some((spelled.clone(), k + 1));
             }
         }

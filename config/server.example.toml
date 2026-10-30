@@ -1,7 +1,11 @@
 # Virtual ATC server. Copy this file to config/server.toml (git-ignored) and edit that copy.
 # Paths are relative to the working directory (the repo root).
 listen = "127.0.0.1:8740"
+# Omit `airport` to run every station directory of data_dir.
 airport = "EPKK"
+# With data_dir/enroute.toml present (written by the airport wizard), its real FIS/ACC units
+# answer on their frequencies instead of the stations' emulated adjacent units, even when
+# `airport` runs a single station.
 data_dir = "data/airports"
 # Airport layout (runways, taxiways, stands) from the scenery this X-Plane actually loads, so
 # taxi routes match the sim; without it (or if not found) data_dir/<airport>/apt.dat is used.

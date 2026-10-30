@@ -12,6 +12,7 @@ use atc_geo::{LatLon, bearing_deg};
 use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::Destination;
 use atc_navdata::procedures::VfrPoint;
+use atc_phraseology::Place;
 use atc_phraseology::{
     AtcItem, FlightRules, Level, PilotIntent, PilotMessage, Token, UnableReason, normalize,
 };
@@ -28,24 +29,20 @@ impl AtcEngine {
     /// Enables IFR: the airport's resolved procedures (SIDs, STARs, approaches). Their fix
     /// names are heard as procedure designators.
     pub fn with_procedure_set(mut self, set: ProcedureSet) -> Self {
-        self.vocab
-            .fixes
+        std::sync::Arc::make_mut(&mut self.vocab.fixes)
             .extend(set.fixes.keys().filter(|k| !k.starts_with("RW")).cloned());
         self.procedure_set = Some(set);
         self
     }
 
-    /// The airports a flight may be cleared to; they are heard by ICAO code or name, and by
-    /// name after "direct" (Approach clears departures direct to them).
-    pub fn with_destinations(mut self, d: Vec<Destination>) -> Self {
-        self.vocab
-            .fixes
-            .extend(d.iter().map(|d| direct_key(&d.name)));
-        self.vocab.places = d
-            .iter()
-            .map(|d| (ascii_fold(&d.name.to_lowercase()), d.icao.clone()))
-            .collect();
-        self.destinations = d;
+    /// The airports a flight may be cleared to ([`DestinationSet`], or a `Vec` of them);
+    /// they are heard by ICAO code or name, and by name after "direct" (Approach clears
+    /// departures direct to them). A set is built once and shared by the engines of a server.
+    pub fn with_destinations(mut self, d: impl Into<DestinationSet>) -> Self {
+        let d = d.into();
+        self.vocab.places = d.places.clone();
+        self.vocab.place_fixes = d.fixes.clone();
+        self.destinations = d.list;
         self
     }
 
@@ -411,6 +408,38 @@ pub(super) fn mentions_ifr(text: &str) -> bool {
         }
         _ => false,
     })
+}
+
+/// The destinations of an engine and what the parser needs to hear them: built once (the
+/// vocabulary of the world's airports is large) and cloned cheaply into each engine.
+#[derive(Clone, Debug)]
+pub struct DestinationSet {
+    pub(super) list: std::sync::Arc<[Destination]>,
+    places: std::sync::Arc<[Place]>,
+    fixes: std::sync::Arc<std::collections::HashSet<String>>,
+}
+
+impl DestinationSet {
+    pub fn new(list: Vec<Destination>) -> Self {
+        DestinationSet {
+            places: list
+                .iter()
+                .map(|d| Place {
+                    name: ascii_fold(&d.name.to_lowercase()),
+                    icao: d.icao.clone(),
+                    pos: Some((d.pos.lat, d.pos.lon)),
+                })
+                .collect(),
+            fixes: std::sync::Arc::new(list.iter().map(|d| direct_key(&d.name)).collect()),
+            list: list.into(),
+        }
+    }
+}
+
+impl From<Vec<Destination>> for DestinationSet {
+    fn from(list: Vec<Destination>) -> Self {
+        DestinationSet::new(list)
+    }
 }
 
 /// A name as the parser hears it after "direct": uppercase ASCII letters and digits only

@@ -120,15 +120,10 @@ async fn handshake(
     if let Err(e) = server.state.hub.lock().unwrap().join(id, cs.0.clone()) {
         return reject(&tx, format!("{e}: {callsign}"));
     }
-    server
-        .state
-        .engine
-        .lock()
-        .unwrap()
-        .register_pilot(PilotProfile {
-            callsign: cs.clone(),
-            aircraft_type,
-        });
+    server.state.network.register_pilot(PilotProfile {
+        callsign: cs.clone(),
+        aircraft_type,
+    });
     server.weather_source.lock().unwrap().get_or_insert(id);
     let _ = tx.send(Out::Msg(ServerMsg::Welcome {
         protocol: PROTOCOL_VERSION,
@@ -194,27 +189,24 @@ impl Session {
     }
 
     /// Tunes the hub to every frequency heard (also while paused); a radio newly tuned to
-    /// the ATIS plays it. Unpaused frames go to the engine.
+    /// an ATIS plays it. Unpaused frames go to the network.
     fn on_telemetry(&mut self, f: TelemetryFrame) {
         let server = &self.server;
         let heard = f.heard_khz();
         server.state.hub.lock().unwrap().tune(self.id, &heard);
         let prev = std::mem::replace(&mut self.tuned, heard);
-        if let Some(atis) = server.state.stations.atis_khz()
-            && self.tuned.contains(&atis)
-            && !prev.contains(&atis)
-        {
-            tokio::spawn(atis::send(server.clone(), vec![self.id]));
+        for atis in server.state.network.atis_khzs() {
+            if self.tuned.contains(&atis) && !prev.contains(&atis) {
+                tokio::spawn(atis::send(server.clone(), atis, vec![self.id]));
+            }
         }
         if f.paused {
             return;
         }
         self.last_t = f.t;
-        let (outputs, orders) = {
-            let mut engine = server.state.engine.lock().unwrap();
-            let outputs = engine.on_telemetry(convert::aircraft_state(&self.cs, &f));
-            (outputs, engine.take_vehicle_orders())
-        };
+        let network = &server.state.network;
+        let outputs = network.on_telemetry(convert::aircraft_state(&self.cs, &f));
+        let orders = network.take_vehicle_orders();
         server.send_vehicle_orders(orders);
         if !outputs.is_empty() {
             let server = server.clone();
@@ -222,8 +214,8 @@ impl Session {
         }
     }
 
-    /// Only the weather source's reports are used; a new ATIS letter goes to the ATIS
-    /// listeners at once.
+    /// Only the weather source's reports are used (by every station); a new ATIS letter goes
+    /// to that ATIS's listeners at once.
     fn on_weather(&mut self, w: WeatherFrame) {
         let server = &self.server;
         {
@@ -233,14 +225,8 @@ impl Session {
             }
             *source = Some(self.id);
         }
-        let changed = {
-            let mut engine = server.state.engine.lock().unwrap();
-            let before = engine.atis_broadcast().map(|a| a.0);
-            engine.on_weather(convert::weather(&w));
-            engine.atis_broadcast().map(|a| a.0) != before
-        };
-        if let (true, Some(khz)) = (changed, server.state.stations.atis_khz()) {
-            tokio::spawn(atis::send(server.clone(), server.listeners(khz)));
+        for khz in server.state.network.on_weather(convert::weather(&w)) {
+            tokio::spawn(atis::send(server.clone(), khz, server.listeners(khz)));
         }
     }
 
@@ -318,11 +304,12 @@ impl Session {
     }
 
     /// Disconnect: releases the PTT lock (an unfinished transmission is discarded) and the
-    /// weather source. The engine keeps the pilot's strip.
+    /// weather source. The engines keep the pilot's strip.
     fn leave(mut self) {
         self.server.state.hub.lock().unwrap().leave(self.id);
         self.end_relay();
         self.server.remove_client(self.id);
+        self.server.state.network.client_left(&self.cs);
         let mut source = self.server.weather_source.lock().unwrap();
         if *source == Some(self.id) {
             *source = None;

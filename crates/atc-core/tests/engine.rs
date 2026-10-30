@@ -3487,7 +3487,7 @@ mod approach_departure {
     /// An alternate frequency of the same Approach unit.
     pub(super) const APP_ALT: u32 = 126530;
     pub(super) const DEST_TWR: u32 = 118500;
-    const FIS: u32 = 119275;
+    pub(super) const FIS: u32 = 119275;
     pub(super) const HOLD_27: LatLon = LatLon {
         lat: 10.0004,
         lon: 10.016,
@@ -3500,11 +3500,11 @@ mod approach_departure {
         lat: 10.0,
         lon: 9.98333,
     };
-    const ZZ002: LatLon = LatLon {
+    pub(super) const ZZ002: LatLon = LatLon {
         lat: 10.0,
         lon: 9.9,
     };
-    const ALFAX: LatLon = LatLon {
+    pub(super) const ALFAX: LatLon = LatLon {
         lat: 10.1,
         lon: 9.8,
     };
@@ -3513,7 +3513,7 @@ mod approach_departure {
         lon: 10.0,
     };
     /// 80 NM north of ZZZZ.
-    const FARLAND: LatLon = LatLon {
+    pub(super) const FARLAND: LatLon = LatLon {
         lat: 11.3333,
         lon: 10.0,
     };
@@ -3530,6 +3530,24 @@ mod approach_departure {
 
     /// [`engine`] with the procedure set changed by `edit`.
     pub(super) fn engine_with(edit: impl FnOnce(&mut ProcedureSet)) -> AtcEngine {
+        engine_with_procs(|_| {}, edit)
+    }
+
+    /// [`engine`] with `procedures.toml` changed by `edit_procs` and the procedure set by
+    /// `edit`.
+    pub(super) fn engine_with_procs(
+        edit_procs: impl FnOnce(&mut Procedures),
+        edit: impl FnOnce(&mut ProcedureSet),
+    ) -> AtcEngine {
+        engine_full(Strictness::Standard, edit_procs, edit)
+    }
+
+    /// [`engine_with_procs`] judging readbacks with `strictness`.
+    pub(super) fn engine_full(
+        strictness: Strictness,
+        edit_procs: impl FnOnce(&mut Procedures),
+        edit: impl FnOnce(&mut ProcedureSet),
+    ) -> AtcEngine {
         let ap = resolve_airport(&root(), "ZZZZ")
             .unwrap()
             .parse("ZZZZ")
@@ -3563,6 +3581,7 @@ mod approach_departure {
                 None,
             ),
         ];
+        edit_procs(&mut procs);
         let mut dests = load_destinations(
             &root(),
             LatLon {
@@ -3581,7 +3600,7 @@ mod approach_departure {
         });
         let mut set = load_procedure_set(&root(), "ZZZZ").unwrap();
         edit(&mut set);
-        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(Strictness::Standard))
+        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(strictness))
             .with_procedure_set(set)
             .with_destinations(dests);
         e.register_pilot(PilotProfile {
@@ -3675,7 +3694,7 @@ mod approach_departure {
     }
 
     /// 90 kt, 700 fpm up to 5000 ft.
-    const CLIMB: (f64, f64, f64) = (90.0, 700.0, 5000.0);
+    pub(super) const CLIMB: (f64, f64, f64) = (90.0, 700.0, 5000.0);
 
     pub(super) fn never(_: &[AtcOutput]) -> bool {
         false
@@ -3769,7 +3788,7 @@ mod approach_departure {
         })
     }
 
-    const AIRBORNE: &str = "Zeta Approach, Sierra Papa Tango Sierra Tango, airborne, passing \
+    pub(super) const AIRBORNE: &str = "Zeta Approach, Sierra Papa Tango Sierra Tango, airborne, passing \
                             one thousand two hundred feet, climbing five thousand feet";
 
     #[test]
@@ -6115,5 +6134,346 @@ mod vfr_points {
             "cleared to Testville, Alfax one Alpha departure, climb five thousand feet",
         );
         assert_eq!(e.strip(&cs()).unwrap().vfr_exit, None);
+    }
+}
+
+/// Plan 9: a flight handed out of one engine and into another (the multi-station server).
+mod handover {
+    use atc_core::handover::FlightHandover;
+    use atc_core::strip::FlightPlan;
+    use atc_geo::{M_PER_NM, destination, distance_m};
+    use atc_navdata::procedures::AdjacentKind;
+    use atc_phraseology::{ApproachKind, FlightRules};
+
+    use super::approach_departure::{
+        AIRBORNE, ALFAX, APP, CLIMB, FARLAND, Flight, TWR, ZZ002, contact_of, departed, engine,
+        engine_full, engine_with_procs, never,
+    };
+    use super::*;
+
+    fn cs() -> Callsign {
+        Callsign::new("SPTST")
+    }
+
+    /// ZZZZ's reference point.
+    const HOME: LatLon = LatLon {
+        lat: 10.0,
+        lon: 10.0,
+    };
+
+    fn ifr_plan(dest: &str, name: &str, level_ft: i32) -> FlightPlan {
+        FlightPlan {
+            ifr: true,
+            destination: dest.into(),
+            dest_name: name.into(),
+            cruise_ft: level_ft,
+            sid: None,
+            dep_runway: None,
+            star: None,
+            approach: None,
+            vectors: false,
+            cleared_ft: level_ft,
+            direct: None,
+            heading: None,
+            approach_cleared: false,
+            pattern: None,
+            established_check: false,
+        }
+    }
+
+    fn handover(plan: FlightPlan) -> FlightHandover {
+        FlightHandover {
+            callsign: cs(),
+            aircraft_type: "C172".into(),
+            cleared_ft: Some(plan.cleared_ft),
+            plan: Some(plan),
+            squawk: Some(4601),
+            rules: Some(FlightRules::Ifr),
+        }
+    }
+
+    /// SPTST airborne at `alt` ft at `pos` on the Approach frequency, one sample taken.
+    fn airborne(e: &mut AtcEngine, pos: LatLon, alt: f64, hdg: f64) -> Flight {
+        let mut f = Flight {
+            t: 0.0,
+            pos,
+            alt,
+            com1: APP,
+            rolling: false,
+            xpdr: Some(4601),
+            heard: Vec::new(),
+        };
+        f.step(e, hdg, 250.0, 0.0, false);
+        assert!(f.heard.is_empty(), "{:?}", f.heard);
+        f
+    }
+
+    #[test]
+    fn export_then_import_keeps_plan_and_squawk() {
+        let mut e = engine();
+        departed(&mut e, "Testville", true);
+        let strip = e.strip(&cs()).unwrap().clone();
+        let h = e.export_flight(&cs()).expect("exported");
+        assert_eq!(h.callsign, cs());
+        assert_eq!(h.aircraft_type, "C172");
+        assert_eq!(h.plan, strip.plan);
+        assert_eq!(h.plan.as_ref().unwrap().destination, "ZZZY");
+        assert_eq!(h.squawk, strip.squawk);
+        assert!(h.squawk.is_some());
+        assert_eq!(h.cleared_ft, Some(5000));
+        assert_eq!(h.rules, Some(FlightRules::Ifr));
+        // Through JSON, as between stations.
+        let h: FlightHandover = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+        let mut other = engine();
+        other.import_flight(h.clone());
+        let got = other.strip(&cs()).unwrap();
+        // The departure airport's SID, runway and direct do not travel with it.
+        let mut expected = h.plan.clone().unwrap();
+        (expected.sid, expected.dep_runway, expected.direct) = (None, None, None);
+        assert_eq!(got.plan.as_ref(), Some(&expected));
+        assert_eq!(got.owner, Role::Approach);
+        assert_eq!(got.squawk, h.squawk);
+        assert!(got.handed_in);
+    }
+
+    #[test]
+    fn export_removes_flight_and_snapshot_entry() {
+        let mut e = engine();
+        departed(&mut e, "Testville", true);
+        assert!(e.export_flight(&cs()).is_some());
+        assert!(e.strip(&cs()).is_none());
+        let json = serde_json::to_string(&e.snapshot()).unwrap();
+        assert!(!json.contains("SPTST"), "{json}");
+        assert!(e.export_flight(&cs()).is_none());
+        assert_eq!(e.handoff_target(&cs()), None);
+        assert!(!e.remove_pilot(&cs()));
+        // Registered again: a fresh strip.
+        e.register_pilot(PilotProfile {
+            callsign: cs(),
+            aircraft_type: "C172".into(),
+        });
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.phase, FlightPhase::Parked);
+        assert!(s.plan.is_none());
+        assert!(s.issued.is_empty());
+        assert!(!s.handed_in);
+    }
+
+    /// An IFR flight bound for ZZZZ handed in from the station it departed: its first call
+    /// on Approach is answered as a flight handed over, with the arrival continuation.
+    #[test]
+    fn imported_flight_first_call_is_identified() {
+        let mut e = engine();
+        let mut plan = ifr_plan("ZZZZ", "Zeta", 5000);
+        plan.sid = Some("OTHER1A".into());
+        e.import_flight(handover(plan));
+        let west = LatLon {
+            lat: 10.0,
+            lon: 9.8,
+        };
+        airborne(&mut e, west, 5000.0, 90.0);
+        let out = say(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet",
+        );
+        let got = items(&out);
+        assert_eq!(got.first(), Some(&AtcItem::Identified), "{out:?}");
+        assert!(
+            got.iter()
+                .any(|i| matches!(i, AtcItem::ExpectApproach { .. })),
+            "{got:?}"
+        );
+        assert!(!got.contains(&AtcItem::SayIntentions), "{got:?}");
+        assert!(!got.contains(&AtcItem::NoFlightPlan), "{got:?}");
+        assert!(
+            out[0]
+                .text
+                .starts_with("Sierra Papa Tango Sierra Tango, identified"),
+            "{}",
+            out[0].text
+        );
+        let s = e.strip(&cs()).unwrap();
+        assert!(!s.handed_in);
+        assert!(s.identified);
+        assert!(s.plan.as_ref().unwrap().approach.is_some());
+    }
+
+    /// A flight handed in at 10000 ft, passing through to Farland, is identified and handed
+    /// off to the area control unit at the TMA boundary; read back, the hand-off target is
+    /// the unit's frequency.
+    /// A transit flight to Farland at 10000 ft handed in to `e`, identified, flown out to
+    /// the TMA boundary until Approach hands it to Zeta Radar: that transmission.
+    fn transit_to_the_boundary(e: &mut AtcEngine) -> AtcOutput {
+        e.import_flight(handover(ifr_plan("ZZZF", "Farland", 10000)));
+        let start = destination(HOME, 0.0, 30.0 * M_PER_NM);
+        let mut f = airborne(e, start, 10000.0, 0.0);
+        let out = say(
+            e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, flight level one zero zero",
+        );
+        assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+        let handed = |h: &[AtcOutput]| h.iter().any(|o| contact_of(o).is_some());
+        f.fly_to(e, FARLAND, (250.0, 0.0, 10000.0), &handed);
+        let contact = f.heard.iter().find(|o| contact_of(o).is_some()).unwrap();
+        assert_eq!(
+            contact_of(contact),
+            Some(("Zeta Radar".to_string(), 127660))
+        );
+        contact.clone()
+    }
+
+    /// Training strictness: the contact needs no readback, yet the flight is the old
+    /// engine's until the pilot answers it.
+    #[test]
+    fn handoff_target_waits_for_the_acknowledgement_without_readback() {
+        let mut e = engine_full(Strictness::Training, |_| {}, |_| {});
+        let contact = transit_to_the_boundary(&mut e);
+        assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+        assert_eq!(e.handoff_target(&cs()), None);
+        let rb = readback(&contact.message.items, CS_ABBR);
+        assert!(say(&mut e, APP, &rb).is_empty());
+        assert_eq!(e.handoff_target(&cs()), Some(127660));
+    }
+
+    /// First calls that would begin a new flight of an aircraft that went away ("inbound",
+    /// an approach request) keep a handed-in flight's plan.
+    #[test]
+    fn handed_in_inbound_call_keeps_the_plan() {
+        let mut e = engine();
+        e.import_flight(handover(ifr_plan("ZZZF", "Farland", 10000)));
+        airborne(
+            &mut e,
+            destination(HOME, 0.0, 30.0 * M_PER_NM),
+            10000.0,
+            0.0,
+        );
+        let out = say(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, flight level one zero zero, \
+             inbound",
+        );
+        assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.plan.as_ref().unwrap().destination, "ZZZF");
+        assert_eq!(s.plan.as_ref().unwrap().cleared_ft, 10000);
+    }
+
+    #[test]
+    fn handed_in_approach_request_is_identified_with_it() {
+        let mut e = engine();
+        e.import_flight(handover(ifr_plan("ZZZZ", "Zeta", 5000)));
+        let west = LatLon {
+            lat: 10.0,
+            lon: 9.8,
+        };
+        airborne(&mut e, west, 5000.0, 90.0);
+        let out = say(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet, request ILS \
+             approach",
+        );
+        let got = items(&out);
+        assert_eq!(got.first(), Some(&AtcItem::Identified), "{out:?}");
+        assert!(
+            got.contains(&AtcItem::ExpectApproach {
+                kind: ApproachKind::Ils,
+                runway: "27".into()
+            }),
+            "{got:?}"
+        );
+        let s = e.strip(&cs()).unwrap();
+        assert!(s.identified);
+        let plan = s.plan.as_ref().unwrap();
+        assert_eq!(plan.destination, "ZZZZ");
+        assert_eq!(plan.approach, Some((ApproachKind::Ils, "27".into())));
+    }
+
+    #[test]
+    fn handoff_target_after_readback() {
+        let mut e = engine();
+        e.import_flight(handover(ifr_plan("ZZZF", "Farland", 10000)));
+        let start = destination(HOME, 0.0, 30.0 * M_PER_NM);
+        let mut f = airborne(&mut e, start, 10000.0, 0.0);
+        let out = say(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, flight level one zero zero",
+        );
+        assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+        assert_eq!(e.handoff_target(&cs()), None);
+        let handed = |h: &[AtcOutput]| h.iter().any(|o| contact_of(o).is_some());
+        f.fly_to(&mut e, FARLAND, (250.0, 0.0, 10000.0), &handed);
+        let contact = f.heard.iter().find(|o| contact_of(o).is_some()).unwrap();
+        assert_eq!(
+            contact_of(contact),
+            Some(("Zeta Radar".to_string(), 127660))
+        );
+        // Not read back yet.
+        assert_eq!(e.handoff_target(&cs()), None);
+        let rb = readback(&contact.message.items, CS_ABBR);
+        assert!(say(&mut e, APP, &rb).is_empty());
+        assert_eq!(e.handoff_target(&cs()), Some(127660));
+        assert!(e.export_flight(&cs()).is_some());
+        assert_eq!(e.handoff_target(&cs()), None);
+    }
+
+    /// An internal handover (Tower -> Approach) is no hand-off out of the engine.
+    #[test]
+    fn internal_handover_is_no_target() {
+        let mut e = engine();
+        let f = departed(&mut e, "Testville", true);
+        let tower = &f.heard[0];
+        assert!(say(&mut e, TWR, &readback(&tower.message.items, CS_ABBR)).is_empty());
+        assert_eq!(e.strip(&cs()).unwrap().owner, Role::Approach);
+        assert_eq!(e.handoff_target(&cs()), None);
+    }
+
+    /// Neither an area control unit nor an information unit: at the TMA boundary the
+    /// departure is released.
+    #[test]
+    fn no_adjacent_unit_releases_at_boundary() {
+        let mut e = engine_with_procs(
+            |p| p.adjacent.retain(|u| u.kind == AdjacentKind::Tower),
+            |_| {},
+        );
+        let mut f = departed(&mut e, "Farland", true);
+        let tower = f.heard.drain(..).next().unwrap();
+        assert!(say(&mut e, TWR, &readback(&tower.message.items, CS_ABBR)).is_empty());
+        assert_eq!(
+            items(&say(&mut e, APP, AIRBORNE)),
+            vec![AtcItem::Identified]
+        );
+        let any = |h: &[AtcOutput]| !h.is_empty();
+        f.fly_to(&mut e, ZZ002, CLIMB, &any);
+        assert!(say(&mut e, APP, &format!("direct Alfax, {CS_ABBR}")).is_empty());
+        f.heard.clear();
+        f.fly_to(&mut e, ALFAX, CLIMB, &any);
+        f.fly_to(&mut e, FARLAND, CLIMB, &any);
+        let out = distance_m(f.pos, HOME) / M_PER_NM;
+        assert!((39.5..=41.0).contains(&out), "{out} NM");
+        assert_eq!(
+            items(&f.heard),
+            vec![
+                AtcItem::RadarServiceTerminated,
+                AtcItem::FrequencyChangeApproved
+            ]
+        );
+        assert!(
+            f.heard[0]
+                .text
+                .ends_with("radar service terminated, frequency change approved"),
+            "{}",
+            f.heard[0].text
+        );
+        assert!(e.strip(&cs()).unwrap().handed_off.is_some());
+        assert_eq!(e.handoff_target(&cs()), None);
+        // Approach says nothing more.
+        f.heard.clear();
+        f.fly_to(&mut e, FARLAND, CLIMB, &never);
+        assert!(f.heard.is_empty(), "{:?}", f.heard);
     }
 }

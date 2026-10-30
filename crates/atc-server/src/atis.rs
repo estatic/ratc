@@ -1,6 +1,7 @@
 //! ATIS broadcast: the current letter as text plus looping audio, synthesized once per letter
-//! and language.
+//! and language, for each station's ATIS frequency.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use atc_phraseology::Lang;
@@ -19,55 +20,54 @@ struct Cached {
     pcm: Arc<Pcm>,
 }
 
-/// Synthesized audio of the current letter and language. A failed synthesis is not cached
-/// (retried on the next send).
+/// Synthesized audio of the current letter and language per ATIS frequency. A failed
+/// synthesis is not cached (retried on the next send).
 #[derive(Default)]
 pub(crate) struct AtisCache {
-    current: Mutex<Option<Cached>>,
+    current: Mutex<HashMap<u32, Cached>>,
 }
 
 impl AtisCache {
-    fn get(&self, letter: char, lang: Lang) -> Option<Cached> {
+    fn get(&self, freq_khz: u32, letter: char, lang: Lang) -> Option<Cached> {
         self.current
             .lock()
             .unwrap()
-            .clone()
+            .get(&freq_khz)
             .filter(|c| (c.letter, c.lang) == (letter, lang))
+            .cloned()
     }
 
-    /// Stores `c` unless its letter and language are already cached (a concurrent synthesis
-    /// won); returns the cached entry.
-    fn put(&self, c: Cached) -> Cached {
+    /// Stores `c` for `freq_khz` unless its letter and language are already cached there (a
+    /// concurrent synthesis won); returns the cached entry.
+    fn put(&self, freq_khz: u32, c: Cached) -> Cached {
         let mut cur = self.current.lock().unwrap();
-        match &*cur {
+        match cur.get(&freq_khz) {
             Some(old) if (old.letter, old.lang) == (c.letter, c.lang) => old.clone(),
             _ => {
-                *cur = Some(c.clone());
+                cur.insert(freq_khz, c.clone());
                 c
             }
         }
     }
 }
 
-/// Sends the current ATIS (`AtcText`, then `AtcAudioStart { looping: true }` with its frames)
-/// to `ids`, spoken by the ATIS voice of the engine's ATIS language. Nothing before the first
-/// weather report or without an ATIS position.
-pub(crate) async fn send(server: Arc<Server>, ids: Vec<ClientId>) {
+/// Sends the current ATIS on `freq_khz` (`AtcText`, then `AtcAudioStart { looping: true }`
+/// with its frames) to `ids`, spoken by the ATIS voice of its engine's ATIS language. Nothing
+/// before the first weather report or on a frequency without an ATIS position.
+pub(crate) async fn send(server: Arc<Server>, freq_khz: u32, ids: Vec<ClientId>) {
     if ids.is_empty() {
         return;
     }
-    let stations = &server.state.stations;
-    let Some(freq_khz) = stations.atis_khz() else {
-        return;
-    };
-    let station = stations
+    let station = server
+        .state
+        .stations
         .station_name(freq_khz)
         .unwrap_or_default()
         .to_string();
-    let Some((letter, lang, text)) = broadcast(&server) else {
+    let Some((letter, lang, text)) = server.state.network.atis_broadcast(freq_khz) else {
         return;
     };
-    let cached = match server.atis.get(letter, lang) {
+    let cached = match server.atis.get(freq_khz, letter, lang) {
         Some(c) => Some(c),
         None => {
             let utterance = server.next_utterance();
@@ -81,16 +81,20 @@ pub(crate) async fn send(server: Arc<Server>, ids: Vec<ClientId>) {
             .await;
             // The letter (or language) may have moved on while synthesizing: this result is
             // stale (neither cached nor sent); the newer broadcast's own send delivers it.
-            if broadcast(&server).map(|b| (b.0, b.1)) != Some((letter, lang)) {
+            let now = server.state.network.atis_broadcast(freq_khz);
+            if now.map(|b| (b.0, b.1)) != Some((letter, lang)) {
                 return;
             }
             pcm.map(|pcm| {
-                server.atis.put(Cached {
-                    letter,
-                    lang,
-                    utterance,
-                    pcm: Arc::new(pcm),
-                })
+                server.atis.put(
+                    freq_khz,
+                    Cached {
+                        letter,
+                        lang,
+                        utterance,
+                        pcm: Arc::new(pcm),
+                    },
+                )
             })
         }
     };
@@ -109,11 +113,4 @@ pub(crate) async fn send(server: Arc<Server>, ids: Vec<ClientId>) {
     if let Some(c) = cached {
         send_audio(&server, &ids, utterance, &station, freq_khz, &c.pcm, true);
     }
-}
-
-/// The engine's current ATIS letter, language and text.
-fn broadcast(server: &Server) -> Option<(char, Lang, String)> {
-    let engine = server.state.engine.lock().unwrap();
-    let (letter, text) = engine.atis_broadcast()?;
-    Some((letter, engine.atis_lang(), text))
 }

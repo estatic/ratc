@@ -45,6 +45,24 @@ pub fn destination(p: LatLon, bearing_deg: f64, dist_m: f64) -> LatLon {
     }
 }
 
+/// Ray-casting point-in-polygon on `[lat, lon]` points and rings (planar: fine for airspace
+/// sized areas away from the poles and the antimeridian). A closing vertex repeating the
+/// first is allowed; a point on the boundary may fall either way.
+pub fn point_in_polygon(p: [f64; 2], ring: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let mut j = ring.len().wrapping_sub(1);
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[j]);
+        if (a[0] > p[0]) != (b[0] > p[0])
+            && p[1] < (b[1] - a[1]) * (p[0] - a[0]) / (b[0] - a[0]) + a[1]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Local runway frame: origin at the threshold, axis along the takeoff direction.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RunwayFrame {
@@ -143,5 +161,36 @@ mod tests {
         let side = destination(t, f.course_deg + 90.0, 100.0);
         let (al, rt) = f.to_local(side);
         assert!(al.abs() < 1.0 && (rt - 100.0).abs() < 1.0, "{al} {rt}");
+    }
+    #[test]
+    fn point_in_square_and_concave_ring() {
+        let square = [[50.0, 20.0], [50.0, 21.0], [51.0, 21.0], [51.0, 20.0]];
+        assert!(point_in_polygon([50.5, 20.5], &square));
+        assert!(!point_in_polygon([51.5, 20.5], &square));
+        assert!(!point_in_polygon([50.5, 19.9], &square));
+        // Closed ring (first vertex repeated) gives the same answers.
+        let closed = [square.as_slice(), &[square[0]]].concat();
+        assert!(point_in_polygon([50.5, 20.5], &closed));
+        assert!(!point_in_polygon([51.5, 20.5], &closed));
+        // A "U": the notch between the arms is outside.
+        let u = [
+            [0.0, 0.0],
+            [0.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 2.0],
+            [1.0, 2.0],
+            [1.0, 1.0],
+            [3.0, 1.0],
+            [3.0, 0.0],
+        ];
+        assert!(point_in_polygon([2.0, 0.5], &u));
+        assert!(!point_in_polygon([2.0, 1.5], &u));
+        assert!(point_in_polygon([2.0, 2.5], &u));
+    }
+
+    #[test]
+    fn degenerate_rings_contain_nothing() {
+        assert!(!point_in_polygon([0.0, 0.0], &[]));
+        assert!(!point_in_polygon([0.0, 0.0], &[[0.0, 0.0]]));
     }
 }

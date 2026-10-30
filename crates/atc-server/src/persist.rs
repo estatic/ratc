@@ -1,14 +1,21 @@
-//! The engine's dynamic state on disk ([`EngineSnapshot`]), so a server restart keeps the
-//! flights in progress. One JSON file per airport under `data/cache/` (git-ignored), written
-//! atomically (temporary file, then rename) while the server runs and once more on shutdown.
-//! A snapshot older than [`MAX_AGE`], of another format or airport, or unreadable is not
-//! restored: the server starts afresh and logs why.
+//! The engines' dynamic state on disk ([`EngineSnapshot`]), so a server restart keeps the
+//! flights in progress. One JSON file per station under `data/cache/` (git-ignored), plus
+//! `network.json` with who works each flight and the en-route units' flights
+//! ([`NetworkState`]); all written atomically (temporary file, then rename) in the same tick
+//! while the server runs and once more on shutdown. A file older than [`MAX_AGE`], of another
+//! format or airport, or unreadable is not restored: the server starts afresh and logs why.
+//! Owners naming a station or unit that is no longer there are ignored.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use atc_core::engine::{AtcEngine, EngineSnapshot};
+use atc_core::engine::EngineSnapshot;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+use crate::network::{Network, NetworkState};
 
 /// Directory of the snapshot files, relative to the working directory (the repo root).
 pub const STATE_DIR: &str = "data/cache";
@@ -22,6 +29,11 @@ pub fn state_path(airport: &str) -> PathBuf {
     Path::new(STATE_DIR).join(format!("state-{airport}.json"))
 }
 
+/// `data/cache/network.json`: the owners and the units' flights.
+pub fn network_path(dir: &Path) -> PathBuf {
+    dir.join("network.json")
+}
+
 /// What [`load`] found.
 #[derive(Debug)]
 pub enum Loaded {
@@ -30,31 +42,38 @@ pub enum Loaded {
     Skipped(String),
 }
 
-/// The snapshot at `path` when it was written at most `max_age` before `now`.
-pub fn load(path: &Path, max_age: Duration, now: SystemTime) -> Loaded {
-    let skipped = |why: String| Loaded::Skipped(format!("{}: {why}", path.display()));
+/// The JSON at `path` parsed as `T` when it was written at most `max_age` before `now`; else
+/// why not, for the log.
+fn read_fresh<T: DeserializeOwned>(
+    path: &Path,
+    max_age: Duration,
+    now: SystemTime,
+) -> Result<T, String> {
+    let skipped = |why: String| format!("{}: {why}", path.display());
     let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return skipped("no saved state".into());
+            return Err(skipped("no saved state".into()));
         }
-        Err(e) => return skipped(e.to_string()),
+        Err(e) => return Err(skipped(e.to_string())),
     };
     let age = now.duration_since(modified).unwrap_or_default();
     if age > max_age {
-        return skipped(format!(
+        return Err(skipped(format!(
             "saved {} min ago, older than {} min",
             age.as_secs() / 60,
             max_age.as_secs() / 60
-        ));
+        )));
     }
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) => return skipped(e.to_string()),
-    };
-    match serde_json::from_str(&text) {
+    let text = std::fs::read_to_string(path).map_err(|e| skipped(e.to_string()))?;
+    serde_json::from_str(&text).map_err(|e| skipped(format!("unreadable: {e}")))
+}
+
+/// The snapshot at `path` when it was written at most `max_age` before `now`.
+pub fn load(path: &Path, max_age: Duration, now: SystemTime) -> Loaded {
+    match read_fresh(path, max_age, now) {
         Ok(s) => Loaded::Snapshot(Box::new(s)),
-        Err(e) => skipped(format!("unreadable: {e}")),
+        Err(why) => Loaded::Skipped(why),
     }
 }
 
@@ -68,36 +87,96 @@ fn write_atomic(path: &Path, json: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Saves the engine's snapshot to `path` when it differs from `last` (the JSON last written,
-/// updated here). Errors are logged, not returned: a failed save must not stop the server.
-pub fn save(engine: &Mutex<AtcEngine>, path: &Path, last: &mut String) {
-    let snapshot = engine.lock().unwrap().snapshot();
-    let json = match serde_json::to_string(&snapshot) {
+/// Saves `value` to `path` when it differs from `last` (the JSON last written, updated
+/// here); `true` when the file was written. Errors are logged, not returned: a failed save
+/// must not stop the server.
+pub fn save<T: Serialize>(value: &T, path: &Path, last: &mut String) -> bool {
+    let json = match serde_json::to_string(value) {
         Ok(j) => j,
         Err(e) => {
-            tracing::error!("state snapshot not serialisable: {e}");
-            return;
+            tracing::error!("state {} not serialisable: {e}", path.display());
+            return false;
         }
     };
     if json == *last {
-        return;
+        return false;
     }
     match write_atomic(path, &json) {
-        Ok(()) => *last = json,
-        Err(e) => tracing::error!("saving state to {}: {e}", path.display()),
+        Ok(()) => {
+            *last = json;
+            true
+        }
+        Err(e) => {
+            tracing::error!("saving state to {}: {e}", path.display());
+            false
+        }
     }
 }
 
+/// Saves every station's snapshot and the [`NetworkState`] under `dir`; `last` holds the
+/// JSON last written per file. The network file is rewritten whenever a snapshot was, even if
+/// unchanged: files age by modification time ([`MAX_AGE`]), and a stable owner map must not
+/// age out during a long session.
+pub fn save_all_in(dir: &Path, network: &Network, last: &mut HashMap<String, String>) {
+    let (snapshots, state) = network.persisted();
+    let mut any = false;
+    for (id, snapshot) in snapshots {
+        any |= save(
+            &snapshot,
+            &dir.join(format!("state-{id}.json")),
+            last.entry(id).or_default(),
+        );
+    }
+    let last_network = last.entry("network.json".into()).or_default();
+    if any {
+        last_network.clear();
+    }
+    save(&state, &network_path(dir), last_network);
+}
+
+/// [`save_all_in`] for [`STATE_DIR`].
+pub fn save_all(network: &Network, last: &mut HashMap<String, String>) {
+    save_all_in(Path::new(STATE_DIR), network, last);
+}
+
+/// Restores every station's flights and the [`NetworkState`] from `dir` unless `fresh`; logs
+/// what happened.
+pub fn restore_all_in(dir: &Path, network: &Network, fresh: bool, now: SystemTime) {
+    if fresh {
+        tracing::info!("--fresh: saved state in {} not restored", dir.display());
+        return;
+    }
+    for s in network.stations() {
+        let path = dir.join(format!("state-{}.json", s.id));
+        match load(&path, MAX_AGE, now) {
+            Loaded::Snapshot(snap) => match s.engine.lock().unwrap().restore(*snap) {
+                Ok(()) => tracing::info!("flights in progress restored from {}", path.display()),
+                Err(e) => tracing::warn!("saved state at {} not restored: {e}", path.display()),
+            },
+            Loaded::Skipped(why) => tracing::info!("starting afresh ({why})"),
+        }
+    }
+    match read_fresh::<NetworkState>(&network_path(dir), MAX_AGE, now) {
+        Ok(state) => network.restore_state(state),
+        Err(why) => tracing::info!("no owners restored ({why})"),
+    }
+}
+
+/// [`restore_all_in`] for [`STATE_DIR`] and the present time.
+pub fn restore_all(network: &Network, fresh: bool) {
+    restore_all_in(Path::new(STATE_DIR), network, fresh, SystemTime::now());
+}
+
 /// Saves every [`SAVE_PERIOD`] until the task is dropped.
-pub async fn save_loop(engine: Arc<Mutex<AtcEngine>>, path: PathBuf) {
-    let mut last = String::new();
+pub async fn save_loop(network: Arc<Network>) {
+    let mut last = HashMap::new();
     let mut tick = tokio::time::interval(SAVE_PERIOD);
     loop {
         tick.tick().await;
-        let (engine, path) = (engine.clone(), path.clone());
+        let network = network.clone();
         let mut prev = std::mem::take(&mut last);
         last = tokio::task::spawn_blocking(move || {
-            save(&engine, &path, &mut prev);
+            save_all(&network, &mut prev);
             prev
         })
         .await

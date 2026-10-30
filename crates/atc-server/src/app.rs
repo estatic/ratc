@@ -1,6 +1,6 @@
 //! Shared server state and the axum router (`GET /ws`).
 //!
-//! Locking: `engine`, `hub` and the internal maps are `std::sync::Mutex`es, locked only for
+//! Locking: the network's engines, `hub` and the internal maps are `std::sync::Mutex`es, locked only for
 //! short synchronous sections and never held across an `.await` (STT/TTS run in
 //! `spawn_blocking` with no lock held).
 
@@ -8,12 +8,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use atc_core::engine::{AtcEngine, VehicleOrder};
+use atc_core::engine::VehicleOrder;
+use atc_geo::LatLon;
+use atc_navdata::enroute::EnrouteUnitDef;
 use atc_navdata::model::FreqKind;
 use atc_navdata::procedures::Procedures;
-use atc_phraseology::Lang;
+use atc_phraseology::{Callsign, Lang, station_name};
 use atc_proto::{AudioFrame, ServerMsg};
-use atc_voice::{SpeechToText, TextToSpeech, VoiceId};
+use atc_voice::{SpeechToText, TextToSpeech, VoiceId, initial_prompt};
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
@@ -24,15 +26,20 @@ use tokio::sync::mpsc;
 
 use crate::atis::AtisCache;
 use crate::hub::{ClientId, Hub};
+use crate::network::{Network, Owner};
+use crate::stations::LoadedStation;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub engine: Arc<Mutex<AtcEngine>>,
+    pub network: Arc<Network>,
     pub hub: Arc<Mutex<Hub>>,
     pub stt: Arc<dyn SpeechToText>,
     pub tts: Arc<dyn TextToSpeech>,
     pub stations: StationMap,
+    /// The prompt when no owner's fits (nobody works the frequency and no station is known).
     pub stt_prompts: SttPrompts,
+    /// Each station's and unit's own prompts, see [`OwnerPrompts`].
+    pub owner_prompts: OwnerPrompts,
 }
 
 /// The static Whisper prompt ([`atc_voice::initial_prompt`]) in each language.
@@ -43,12 +50,94 @@ pub struct SttPrompts {
 }
 
 impl SttPrompts {
+    /// The prompts of a place: `airport` is its name, `callsigns` the stations said there
+    /// ("Kraków Ground"), each as spoken in the language of the prompt.
+    pub fn build(airport: &str, callsigns: &[&str]) -> Self {
+        let prompt = |lang: Lang, code: &str| {
+            let names: Vec<String> = callsigns.iter().map(|c| station_name(c, lang)).collect();
+            initial_prompt(airport, &names, &[], code)
+        };
+        SttPrompts {
+            en: prompt(Lang::En, "en"),
+            pl: prompt(Lang::Pl, "pl"),
+        }
+    }
+
     pub fn get(&self, lang: Lang) -> &str {
         match lang {
             Lang::En => &self.en,
             Lang::Pl => &self.pl,
         }
     }
+}
+
+/// The speech-to-text prompt of every station (from its own airport and positions) and of
+/// every en-route unit (its callsign and the nearest stations'): a transmission is heard
+/// against the names of whoever works its frequency, not against every station of the
+/// server.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OwnerPrompts {
+    stations: Vec<SttPrompts>,
+    units: Vec<SttPrompts>,
+}
+
+/// How many of the nearest stations a unit's prompt names.
+const UNIT_PROMPT_STATIONS: usize = 2;
+
+impl OwnerPrompts {
+    pub fn for_network(network: &Network) -> Self {
+        let stations: Vec<&LoadedStation> = network.stations().iter().collect();
+        let units = network
+            .units()
+            .iter()
+            .map(|def| {
+                let nearest = network.nearest_stations(centre(def), UNIT_PROMPT_STATIONS);
+                let airport = nearest
+                    .first()
+                    .map_or("", |&i| stations[i].airport.name.as_str());
+                let mut callsigns = vec![def.callsign.as_str()];
+                for &i in &nearest {
+                    callsigns.extend(position_names(stations[i]));
+                }
+                SttPrompts::build(airport, &callsigns)
+            })
+            .collect();
+        OwnerPrompts {
+            stations: stations
+                .iter()
+                .map(|s| SttPrompts::build(&s.airport.name, &position_names(s)))
+                .collect(),
+            units,
+        }
+    }
+
+    pub fn get(&self, owner: Owner) -> Option<&SttPrompts> {
+        match owner {
+            Owner::Station(i) => self.stations.get(i),
+            Owner::Unit(k) => self.units.get(k),
+        }
+    }
+}
+
+fn position_names(s: &LoadedStation) -> Vec<&str> {
+    s.procs
+        .positions
+        .iter()
+        .map(|p| p.callsign.as_str())
+        .collect()
+}
+
+/// The mean of the corners of the unit's sectors.
+fn centre(def: &EnrouteUnitDef) -> Option<LatLon> {
+    let corners: Vec<&[f64; 2]> = def.sectors.iter().flat_map(|s| &s.polygon).collect();
+    if corners.is_empty() {
+        return None;
+    }
+    let n = corners.len() as f64;
+    Some(LatLon {
+        lat: corners.iter().map(|c| c[0]).sum::<f64>() / n,
+        lon: corners.iter().map(|c| c[1]).sum::<f64>() / n,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +157,47 @@ pub struct StationMap {
 
 impl StationMap {
     pub fn new(procs: &Procedures) -> Self {
+        Self::union([procs])
+    }
+
+    /// The frequencies of several stations: every station's positions first, then the
+    /// adjacent units they emulate; of two entries on the same kHz the first is kept (a real
+    /// station's voice wins over an emulated unit's).
+    pub fn union<'a>(all: impl IntoIterator<Item = &'a Procedures>) -> Self {
+        Self::union_with_units(all, &[])
+    }
+
+    /// [`StationMap::union`] with the en-route units (Radar voice, FIS and ACC alike) after
+    /// the positions and before the emulated adjacent units: a real unit wins over a
+    /// station's emulation of it.
+    pub fn union_with_units<'a>(
+        all: impl IntoIterator<Item = &'a Procedures>,
+        units: &[EnrouteUnitDef],
+    ) -> Self {
+        let all: Vec<&Procedures> = all.into_iter().collect();
+        let mut stations = Vec::new();
+        for procs in &all {
+            stations.extend(Self::positions(procs));
+        }
+        stations.extend(units.iter().map(|u| Station {
+            khz: u.khz,
+            name: u.callsign.clone(),
+            voice: VoiceId::Radar,
+        }));
+        for procs in &all {
+            stations.extend(procs.adjacent.iter().map(|u| Station {
+                khz: u.khz,
+                name: u.callsign.clone(),
+                voice: VoiceId::Radar,
+            }));
+        }
+        let mut seen = std::collections::HashSet::new();
+        stations.retain(|s| seen.insert(s.khz));
+        StationMap { stations }
+    }
+
+    /// The staffed positions of one station and its alternate Approach frequencies.
+    fn positions(procs: &Procedures) -> Vec<Station> {
         let mut stations: Vec<Station> = procs
             .positions
             .iter()
@@ -98,12 +228,7 @@ impl StationMap {
                 voice: VoiceId::Approach,
             }));
         }
-        stations.extend(procs.adjacent.iter().map(|u| Station {
-            khz: u.khz,
-            name: u.callsign.clone(),
-            voice: VoiceId::Radar,
-        }));
-        StationMap { stations }
+        stations
     }
 
     /// The published name of the station on the same carrier as `freq_khz` (a 25 kHz
@@ -122,13 +247,6 @@ impl StationMap {
     /// `None` for an unstaffed frequency.
     pub fn voice_for(&self, freq_khz: u32) -> Option<VoiceId> {
         self.get(freq_khz).map(|s| s.voice)
-    }
-
-    pub fn atis_khz(&self) -> Option<u32> {
-        self.stations
-            .iter()
-            .find(|s| s.voice == VoiceId::Atis)
-            .map(|s| s.khz)
     }
 
     /// Station callsign on `freq_khz`, e.g. `"Kraków ATIS"`.
@@ -184,10 +302,16 @@ impl Server {
             .insert(freq_khz, text.to_string());
     }
 
-    /// The static aviation prompt in `lang` plus the last controller transmission on
-    /// `freq_khz`.
-    pub(crate) fn stt_prompt(&self, freq_khz: u32, lang: Lang) -> String {
-        let prompt = self.state.stt_prompts.get(lang);
+    /// The aviation prompt of whoever works `freq_khz` (a station or unit; unowned, the
+    /// station nearest the speaking aircraft `from`) in `lang`, plus the last controller
+    /// transmission on `freq_khz`.
+    pub(crate) fn stt_prompt(&self, freq_khz: u32, lang: Lang, from: &Callsign) -> String {
+        let network = &self.state.network;
+        let prompt = network
+            .stt_prompt_owner(freq_khz, network.pilot_pos(from))
+            .and_then(|o| self.state.owner_prompts.get(o))
+            .unwrap_or(&self.state.stt_prompts)
+            .get(lang);
         match self.last_said.lock().unwrap().get(&freq_khz) {
             Some(said) => format!("{prompt} {said}"),
             None => prompt.to_string(),
@@ -270,7 +394,6 @@ mod tests {
         );
         let procs = parse_procedures(&std::fs::read_to_string(path).unwrap()).unwrap();
         let m = StationMap::new(&procs);
-        assert_eq!(m.atis_khz(), Some(126_130));
         assert_eq!(m.voice_for(126_130), Some(VoiceId::Atis));
         assert_eq!(m.voice_for(121_980), Some(VoiceId::Delivery));
         assert_eq!(m.voice_for(118_105), Some(VoiceId::Ground));

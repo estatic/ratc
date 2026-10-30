@@ -430,6 +430,9 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             out.push(format!("join downwind runway {}", runway_words(runway)))
         }
         AtcItem::FrequencyChangeApproved => out.push("frequency change approved".into()),
+        AtcItem::ChangeTo { station, khz } => {
+            out.push(format!("change to {station} {}", frequency_words(*khz)))
+        }
     }
 }
 

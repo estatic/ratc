@@ -314,6 +314,11 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             runway_words(runway)
         )),
         AtcItem::FrequencyChangeApproved => out.push("zmiana częstotliwości zatwierdzona".into()),
+        AtcItem::ChangeTo { station, khz } => out.push(format!(
+            "przejdź na {} {}",
+            station_name(station, Lang::Pl),
+            frequency(*khz)
+        )),
         // Approach-only items: the engine never asks for Polish, English fallback.
         AtcItem::Star { .. }
         | AtcItem::DescendTo(_)

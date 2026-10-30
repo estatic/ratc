@@ -49,6 +49,7 @@ mod stand;
 mod tower;
 mod vfr;
 
+pub use delivery::DestinationSet;
 pub(crate) use delivery::direct_key;
 pub use follow_me::{READY_S as FOLLOW_ME_READY_S, VehicleCommand, VehicleOrder};
 pub use snapshot::{EngineSnapshot, SNAPSHOT_VERSION, SnapshotMismatch};
@@ -61,12 +62,13 @@ use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::{Airport, Destination};
 use atc_navdata::procedures::{PositionDef, Procedures};
 use atc_phraseology::{
-    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, Lang, PilotIntent,
-    PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_with, render,
+    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
+    PilotIntent, PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_in, render,
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
 use crate::compliance::{ComplianceMonitor, Deviation, hold_line_cross_m};
+use crate::handover::FlightHandover;
 use crate::phase::{FlightPhase, PhaseTracker};
 use crate::readback::{ReadbackResult, Strictness, check_readback, correction};
 use crate::runway::RunwayResource;
@@ -181,12 +183,21 @@ pub struct AtcEngine {
     /// The airport's procedures; `None`: no IFR.
     procedure_set: Option<ProcedureSet>,
     /// Airports a flight may be cleared to.
-    destinations: Vec<Destination>,
+    destinations: std::sync::Arc<[Destination]>,
     /// Words the parser knows besides the callsigns: VFR points, procedure fixes, places.
     vocab: Vocabulary,
     /// Sim UTC time of day (s) and day of year of the latest telemetry sample that had a
     /// time; `(None, None)` before any.
     clock: (Option<f64>, Option<u16>),
+}
+
+/// Midpoint of the first runway (latitude, longitude).
+fn runway_midpoint(ap: &Airport) -> Option<(f64, f64)> {
+    let [a, b] = &ap.runways.first()?.ends;
+    Some((
+        (a.threshold.lat + b.threshold.lat) / 2.0,
+        (a.threshold.lon + b.threshold.lon) / 2.0,
+    ))
 }
 
 impl AtcEngine {
@@ -199,6 +210,7 @@ impl AtcEngine {
                 .iter()
                 .map(|p| p.name.to_uppercase())
                 .collect(),
+            origin: runway_midpoint(&airport),
             ..Vocabulary::default()
         };
         AtcEngine {
@@ -221,7 +233,7 @@ impl AtcEngine {
             vehicle_orders: Vec::new(),
             next_vehicle: 0,
             procedure_set: None,
-            destinations: Vec::new(),
+            destinations: std::sync::Arc::from([]),
             vocab,
             clock: (None, None),
         }
@@ -238,6 +250,106 @@ impl AtcEngine {
         }
         self.strips.push(strip);
         self.pilots.push(p);
+    }
+
+    /// Drops aircraft `cs` and everything the engine keeps about it (strip, surveillance,
+    /// radio memory, greetings, runway claims, its broken-off transmission); a follow-me car
+    /// leading it is cancelled ([`AtcEngine::take_vehicle_orders`]). Registered again, it
+    /// starts afresh. `false`: not registered.
+    pub fn remove_pilot(&mut self, cs: &Callsign) -> bool {
+        let Some(i) = self.strip_index(cs) else {
+            return false;
+        };
+        self.cancel_follow_me(i);
+        let lang = self.strips[i].lang;
+        if self
+            .fragment
+            .as_ref()
+            .is_some_and(|(_, text, _)| self.heard(text, lang).1 == Some(i))
+        {
+            self.fragment = None;
+        }
+        self.strips.remove(i);
+        self.pilots.retain(|p| &p.callsign != cs);
+        self.tracks.remove(cs);
+        self.last_told.remove(cs);
+        self.last_sent.retain(|(c, _), _| c != cs);
+        self.last_addressed.retain(|_, c| c != cs);
+        self.greeted.retain(|(c, _)| c != cs);
+        self.runway.release(cs);
+        true
+    }
+
+    /// Hands flight `cs` out of this engine: its data for the next station, then the flight
+    /// is removed completely ([`AtcEngine::remove_pilot`]). `None`: not registered.
+    pub fn export_flight(&mut self, cs: &Callsign) -> Option<FlightHandover> {
+        let strip = self.strip(cs)?;
+        let plan = strip.plan.clone();
+        let h = FlightHandover {
+            callsign: cs.clone(),
+            aircraft_type: self
+                .pilots
+                .iter()
+                .find(|p| &p.callsign == cs)
+                .map(|p| p.aircraft_type.clone())
+                .unwrap_or_default(),
+            cleared_ft: plan.as_ref().map(|p| p.cleared_ft).filter(|&ft| ft > 0),
+            rules: plan.as_ref().map(|p| {
+                if p.ifr {
+                    FlightRules::Ifr
+                } else {
+                    FlightRules::Vfr
+                }
+            }),
+            squawk: strip.squawk,
+            plan,
+        };
+        self.remove_pilot(cs);
+        Some(h)
+    }
+
+    /// Takes in a flight handed over by another station: registered afresh (replacing any
+    /// strip of the same callsign) with its plan (without the departure airport's SID,
+    /// runway and direct), cleared level and transponder code; its first call is answered as
+    /// a flight handed over ([`Strip::handed_in`]). The owner is set to Approach (IFR) or
+    /// Tower and moves to the position it first calls.
+    pub fn import_flight(&mut self, h: FlightHandover) {
+        self.remove_pilot(&h.callsign);
+        self.register_pilot(PilotProfile {
+            callsign: h.callsign.clone(),
+            aircraft_type: h.aircraft_type,
+        });
+        let i = self.strip_index(&h.callsign).expect("registered above");
+        let strip = &mut self.strips[i];
+        let mut plan = h.plan;
+        if let Some(p) = plan.as_mut() {
+            p.sid = None;
+            p.dep_runway = None;
+            p.direct = None;
+            if let Some(ft) = h.cleared_ft {
+                p.cleared_ft = ft;
+            }
+        }
+        let ifr = plan
+            .as_ref()
+            .map_or(h.rules == Some(FlightRules::Ifr), |p| p.ifr);
+        strip.owner = if ifr { Role::Approach } else { Role::Tower };
+        strip.plan = plan;
+        strip.squawk = h.squawk;
+        strip.handed_in = true;
+    }
+
+    /// The frequency (kHz) of the adjacent unit flight `cs` was handed off to, once the
+    /// pilot has answered the hand-off here (its next understood transmission: the readback
+    /// where one is required, else any acknowledgement) or called the unit: the flight is to
+    /// be taken by the station working that frequency. `None` before, for handovers between
+    /// this engine's own positions, for a release without a unit, and once the flight was
+    /// taken (exported).
+    pub fn handoff_target(&self, cs: &Callsign) -> Option<u32> {
+        let strip = self.strip(cs)?;
+        strip.handed_off_khz.filter(|_| {
+            strip.handed_off.is_some() && strip.handoff_acked && strip.pending_readback.is_none()
+        })
     }
 
     /// New weather: issues the first ATIS, or a new letter on a significant change.
@@ -428,6 +540,11 @@ impl AtcEngine {
         };
         if understood(&msg) {
             self.understood_in(i, heard_lang);
+            // The pilot has answered after its hand-off (read back, or acknowledged where no
+            // readback is required).
+            if self.strips[i].handed_off.is_some() {
+                self.strips[i].handoff_acked = true;
+            }
         }
         let text = text.as_str();
         if let Some(to) = self.called_elsewhere(role, &msg) {
@@ -461,6 +578,11 @@ impl AtcEngine {
             Some(to) if to == role => strip.readback_complete(),
             Some(_) => {}
             None => strip.owner = role,
+        }
+        // A flight handed in is answered as handed over by Approach; elsewhere its call is
+        // served as it is.
+        if role != Role::Approach {
+            strip.handed_in = false;
         }
         // Taxi help replaces an open taxi clearance with the route from where it is now; a
         // follow-me request and an on-stand report are answered whatever is open.
@@ -557,7 +679,8 @@ impl AtcEngine {
     /// handed off.
     fn starts_new_flight(&self, i: usize, role: Role, msg: &PilotMessage) -> bool {
         let strip = &self.strips[i];
-        if !strip.phase.is_airborne() {
+        // A flight handed in from another station carries its plan into its first call.
+        if !strip.phase.is_airborne() || strip.handed_in {
             return false;
         }
         match (role, &msg.intent) {
@@ -690,11 +813,8 @@ impl AtcEngine {
     /// parsed callsign is no registered aircraft (another letter group taken for it, a letter
     /// lost), every letter group of the text is tried: as said, then with letters missing.
     fn heard(&self, text: &str, lang: Lang) -> (PilotMessage, Option<usize>) {
-        let vocab = Vocabulary {
-            callsigns: self.strips.iter().map(|s| s.callsign.clone()).collect(),
-            ..self.vocab.clone()
-        };
-        let msg = parse_pilot_with(text, lang, &vocab);
+        let callsigns: Vec<Callsign> = self.strips.iter().map(|s| s.callsign.clone()).collect();
+        let msg = parse_pilot_in(text, lang, &self.vocab, &callsigns);
         let i = msg
             .callsign
             .as_deref()

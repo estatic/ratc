@@ -7,22 +7,21 @@
 //! `atc-server airports [--config <path>]` runs the interactive airport wizard (stations from
 //! OpenAIP) instead of serving.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use atc_core::engine::{AtcEngine, EngineConfig};
+use atc_core::engine::EngineConfig;
 use atc_core::readback::Strictness;
-use atc_phraseology::{Lang, station_name};
+use atc_navdata::enroute::{EnrouteUnitDef, load_enroute};
 use atc_server::config::{ServerConfig, StrictnessSetting, check_models, load_config};
 use atc_server::hub::Hub;
-use atc_server::layout::{
-    adjacent_names, load_airport, load_destinations_near, load_procedure_set_for, load_procedures,
-};
-use atc_server::{AppState, StationMap, SttPrompts, persist, router};
-use atc_voice::{PiperTts, VoiceError, WhisperStt, initial_prompt, load_voices_config};
+use atc_server::network::Network;
+use atc_server::stations::load_stations;
+use atc_server::{AppState, OwnerPrompts, StationMap, SttPrompts, persist, router};
+use atc_voice::{PiperTts, VoiceError, WhisperStt, load_voices_config};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG: &str = "config/server.toml";
@@ -97,39 +96,25 @@ fn run_wizard(config: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Restores the saved flights unless `fresh`; logs what happened.
-fn restore_state(engine: &Mutex<AtcEngine>, path: &Path, fresh: bool) {
-    if fresh {
-        tracing::info!("--fresh: saved state at {} not restored", path.display());
-        return;
-    }
-    match persist::load(path, persist::MAX_AGE, SystemTime::now()) {
-        persist::Loaded::Snapshot(s) => match engine.lock().unwrap().restore(*s) {
-            Ok(()) => tracing::info!("flights in progress restored from {}", path.display()),
-            Err(e) => tracing::warn!("saved state at {} not restored: {e}", path.display()),
-        },
-        persist::Loaded::Skipped(why) => tracing::info!("starting afresh ({why})"),
+/// The en-route units of `data_dir/enroute.toml` (written by the airport wizard); none
+/// without the file, and none with a warning when it does not load.
+fn load_units(data_dir: &Path) -> Vec<EnrouteUnitDef> {
+    match load_enroute(&data_dir.join("enroute.toml")) {
+        Ok(units) => {
+            if !units.is_empty() {
+                let names: Vec<&str> = units.iter().map(|u| u.callsign.as_str()).collect();
+                tracing::info!("en-route units: {}", names.join(", "));
+            }
+            units
+        }
+        Err(e) => {
+            tracing::warn!("en-route units skipped: {e}");
+            Vec::new()
+        }
     }
 }
 
 fn build_state(cfg: &ServerConfig) -> Result<AppState> {
-    let dir = cfg.data_dir.join(&cfg.airport);
-    let airport = load_airport(cfg.xplane_root.as_deref(), &dir, &cfg.airport)?;
-    let procs = load_procedures(&dir)?;
-    let stations = StationMap::new(&procs);
-    // The prompt is in the language the aircraft speaks, with the stations as said in it.
-    let prompt_in = |lang: Lang, code: &str| {
-        let names: Vec<String> = procs
-            .positions
-            .iter()
-            .map(|p| station_name(&p.callsign, lang))
-            .collect();
-        initial_prompt(&airport.name, &names, &[], code)
-    };
-    let stt_prompts = SttPrompts {
-        en: prompt_in(Lang::En, "en"),
-        pl: prompt_in(Lang::Pl, "pl"),
-    };
     let strictness = match cfg.strictness {
         StrictnessSetting::Standard => Strictness::Standard,
         StrictnessSetting::Training => Strictness::Training,
@@ -138,31 +123,49 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
         language: cfg.whisper.language_mode()?,
         ..EngineConfig::new(strictness)
     };
-    let set = load_procedure_set_for(cfg.xplane_root.as_deref(), &cfg.airport);
-    let destinations = load_destinations_near(
+    let loaded = load_stations(
+        &cfg.data_dir,
+        cfg.airport.as_deref(),
         cfg.xplane_root.as_deref(),
-        &airport,
-        &adjacent_names(&procs),
-    );
-    let mut engine = AtcEngine::new(airport, procs, engine_cfg).with_destinations(destinations);
-    if let Some(set) = set {
-        engine = engine.with_procedure_set(set);
-    }
-
+        &engine_cfg,
+    )?;
+    let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();
+    tracing::info!("stations: {}", ids.join(", "));
+    let units = load_units(&cfg.data_dir);
+    let stations = StationMap::union_with_units(loaded.iter().map(|s| &s.procs), &units);
     let stt = WhisperStt::new(&cfg.whisper.model, cfg.whisper.language.as_deref())
         .context("load whisper")?;
     let voices_text = std::fs::read_to_string(&cfg.piper.voices)
         .with_context(|| format!("read {}", cfg.piper.voices.display()))?;
     let voices = load_voices_config(&voices_text, Path::new("."))?;
     let tts = PiperTts::new(cfg.piper.bin.clone(), voices).context("load piper")?;
-    Ok(AppState {
-        engine: Arc::new(Mutex::new(engine)),
+    let network = Network::new(loaded).with_units(units);
+    // The fallback prompt (an unowned frequency with no position to pick a station by) names
+    // every station; each owner has its own.
+    let airports: Vec<&str> = network
+        .stations()
+        .iter()
+        .map(|s| s.airport.name.as_str())
+        .collect();
+    let callsigns: Vec<&str> = network
+        .stations()
+        .iter()
+        .flat_map(|s| &s.procs.positions)
+        .map(|p| p.callsign.as_str())
+        .chain(network.units().iter().map(|u| u.callsign.as_str()))
+        .collect();
+    let stt_prompts = SttPrompts::build(&airports.join(", "), &callsigns);
+    let owner_prompts = OwnerPrompts::for_network(&network);
+    let state = AppState {
+        network: Arc::new(network),
         hub: Arc::new(Mutex::new(Hub::default())),
         stt: Arc::new(stt),
         tts: Arc::new(tts),
         stations,
         stt_prompts,
-    })
+        owner_prompts,
+    };
+    Ok(state)
 }
 
 async fn run() -> Result<()> {
@@ -173,15 +176,14 @@ async fn run() -> Result<()> {
     let cfg = read_config(&path)?;
     check_models(&cfg).map_err(|e| anyhow::Error::new(ModelsMissing(e)))?;
     // Model loading is blocking (seconds on a cold start).
-    let state = tokio::task::spawn_blocking(move || build_state(&cfg).map(|s| (s, cfg))).await??;
-    let (state, cfg) = state;
+    let built = tokio::task::spawn_blocking(move || build_state(&cfg).map(|s| (s, cfg))).await??;
+    let (state, cfg) = built;
     let listener = tokio::net::TcpListener::bind(&cfg.listen)
         .await
         .with_context(|| format!("bind {}", cfg.listen))?;
-    let engine = state.engine.clone();
-    let state_path = persist::state_path(&cfg.airport);
-    restore_state(&engine, &state_path, fresh);
-    let saver = tokio::spawn(persist::save_loop(engine.clone(), state_path.clone()));
+    let network = state.network.clone();
+    persist::restore_all(&network, fresh);
+    let saver = tokio::spawn(persist::save_loop(network.clone()));
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, router(state))
         .with_graceful_shutdown(async {
@@ -189,8 +191,8 @@ async fn run() -> Result<()> {
         })
         .await?;
     saver.abort();
-    persist::save(&engine, &state_path, &mut String::new());
-    tracing::info!("state saved to {}", state_path.display());
+    persist::save_all(&network, &mut HashMap::new());
+    tracing::info!("state saved to {}", persist::STATE_DIR);
     Ok(())
 }
 

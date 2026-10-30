@@ -1,0 +1,16 @@
+# Synthetic test station, not real data.
+icao = "ZZZY"
+source = "synthetic test fixture"
+airac = "none"
+transition_altitude_ft = 4000
+preferred_runway = "18"
+
+[[circuits]]
+runway = "18"
+side = "Left"
+altitude_ft_msl = 1500
+
+[[positions]]
+role = "Tower"
+callsign = "Testville Tower"
+khz = 118500

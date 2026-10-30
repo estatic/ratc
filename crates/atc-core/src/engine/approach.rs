@@ -8,7 +8,9 @@
 //!
 //! Hand-off: to the destination's adjacent tower 10 NM from it; otherwise at the TMA radius
 //! from the airport, to the area control unit when the flight is cleared at or above its
-//! lowest level, else "radar service terminated" and the flight information unit. Spec 3.2
+//! lowest level, else "radar service terminated" and the flight information unit (neither
+//! unit: "radar service terminated, frequency change approved", the flight leaves Approach's
+//! service). Spec 3.2
 //! step 6 also allows a hand-off "on reaching the cleared level near the boundary"; here it is
 //! always made at the TMA radius (ruling: one rule, the same unit either way). Without a TMA
 //! in `procedures.toml` there is no boundary hand-off. The adjacent unit answers the first
@@ -141,6 +143,9 @@ const NIGHT_WINTER_UTC: (f64, f64) = (20.0, 4.0);
 impl AtcEngine {
     /// A call on the Approach frequency.
     pub(super) fn approach_request(&mut self, i: usize, msg: &PilotMessage) -> Vec<AtcItem> {
+        if std::mem::take(&mut self.strips[i].handed_in) {
+            return self.handed_in_call(i, msg);
+        }
         if self.arrival(i).is_some() && self.strips[i].missed_approach {
             return self.after_missed_approach(i);
         }
@@ -179,6 +184,41 @@ impl AtcEngine {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The first call of a flight handed in from another station ([`AtcEngine::import_flight`]):
+    /// a flight bound for this airport (or without a plan) is served as an inbound arrival
+    /// ("identified" and the route to its approach; VFR: sent to Tower), a flight passing
+    /// through is identified and keeps its plan.
+    fn handed_in_call(&mut self, i: usize, msg: &PilotMessage) -> Vec<AtcItem> {
+        let here = &self.airport.icao;
+        let plan = self.strips[i].plan.clone();
+        if plan
+            .as_ref()
+            .is_some_and(|p| !p.destination.eq_ignore_ascii_case(here))
+        {
+            self.strips[i].identified = true;
+            return vec![AtcItem::Identified];
+        }
+        if plan.as_ref().is_some_and(|p| !p.ifr) {
+            return self.redirect(i, Role::Tower);
+        }
+        self.strips[i].plan = None;
+        let (kind, full) = match msg.intent {
+            PilotIntent::RequestApproach {
+                kind,
+                full_procedure,
+            } => (kind, full_procedure),
+            _ => (None, false),
+        };
+        let items = self.inbound(i, msg, kind, full);
+        if items.is_empty() {
+            // No telemetry yet: still the flight handed over, served on its next call.
+            let strip = &mut self.strips[i];
+            strip.plan = plan;
+            strip.handed_in = true;
+        }
+        items
     }
 
     /// The flight plan of aircraft `i` when it is an IFR arrival to this airport.
@@ -969,7 +1009,13 @@ impl AtcEngine {
         }
         if let Some((unit, items)) = self.hand_off(&plan, s.pos) {
             let strip = &mut self.strips[i];
+            // An empty unit: released, no unit to contact (see `Strip::handed_off`).
             strip.handed_off = Some(unit);
+            strip.handoff_acked = false;
+            strip.handed_off_khz = items.iter().find_map(|it| match it {
+                AtcItem::Contact { khz, .. } => Some(*khz),
+                _ => None,
+            });
             strip.expect_readback(&items, self.cfg.strictness);
             return self.transmit(i, Role::Approach, items);
         }
@@ -1009,7 +1055,7 @@ impl AtcEngine {
         Some((alt, items))
     }
 
-    /// The hand-off due at `pos`: the unit's callsign and the items.
+    /// The hand-off due at `pos`: the unit's callsign (empty for a release) and the items.
     fn hand_off(&self, plan: &FlightPlan, pos: LatLon) -> Option<(String, Vec<AtcItem>)> {
         let contact = |u: &AdjacentUnit| AtcItem::Contact {
             station: u.callsign.clone(),
@@ -1031,7 +1077,16 @@ impl AtcEngine {
         if let Some(acc) = acc {
             return Some((acc.callsign.clone(), vec![contact(acc)]));
         }
-        let fis = units.iter().find(|u| u.kind == AdjacentKind::Fis)?;
+        // Neither unit: released, no unit to contact.
+        let Some(fis) = units.iter().find(|u| u.kind == AdjacentKind::Fis) else {
+            return Some((
+                String::new(),
+                vec![
+                    AtcItem::RadarServiceTerminated,
+                    AtcItem::FrequencyChangeApproved,
+                ],
+            ));
+        };
         Some((
             fis.callsign.clone(),
             vec![AtcItem::RadarServiceTerminated, contact(fis)],
@@ -1197,6 +1252,7 @@ impl AtcEngine {
                 return Vec::new();
             }
             strip.adjacent_identified = true;
+            strip.handoff_acked = true;
             // Calling the unit completes the hand-off, read back or not.
             if strip.pending_readback.is_some() {
                 strip.readback_complete();
