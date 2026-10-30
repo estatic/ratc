@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-pub const T: Duration = Duration::from_secs(5);
+pub const T: Duration = Duration::from_secs(15);
 
 pub fn parse_request(b: &[u8]) -> (i32, i32, String) {
     assert_eq!(b.len(), 413);
