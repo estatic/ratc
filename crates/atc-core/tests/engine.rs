@@ -1823,7 +1823,12 @@ fn second_taxi_help_sends_the_follow_me_car() {
     assert_eq!(callsign, &Callsign::new("SPABC"));
     let (ap, _) = epkk();
     let stand = ap.stands.iter().find(|s| s.name == "20").unwrap();
-    assert_eq!(path.last(), Some(&stand.pos));
+    // The car's path ends 25 m short of the stand, so the car never drives into it.
+    let end = path.last().unwrap();
+    assert!(
+        (atc_geo::distance_m(*end, stand.pos) - 25.0).abs() < 0.5,
+        "{path:?}"
+    );
     assert!(path.len() >= 2, "{path:?}");
     assert_eq!(*end_heading_deg, stand.heading_deg);
     assert!(say(&mut e, GROUND, &format!("Holding position, {ABC}")).is_empty());
@@ -1919,15 +1924,23 @@ fn no_follow_call_when_already_at_the_end() {
     let orders = e.take_vehicle_orders();
     let [
         VehicleOrder {
-            command: VehicleCommand::FollowMe { id, .. },
+            command: VehicleCommand::FollowMe { id, path, .. },
             ..
         },
     ] = &orders[..]
     else {
         panic!("{orders:?}")
     };
+    // The aircraft taxis to where the car's path ends (short of the stand).
+    let (ap, _) = epkk();
+    let stand = ap.stands.iter().find(|s| s.name == "20").unwrap().pos;
+    let end = *path.last().unwrap();
+    let (end_m, end_from) = (
+        atc_geo::distance_m(stand, end),
+        atc_geo::bearing_deg(stand, end),
+    );
     // To a stand the pilot is released with the plain taxi instruction.
-    let out = move_abc(&mut e, FOLLOW_ME_READY_S, 10.0, 167.7);
+    let out = move_abc(&mut e, FOLLOW_ME_READY_S, end_m, end_from);
     assert!(
         matches!(&items(&out)[..], [AtcItem::Taxi { .. }]),
         "{out:?}"

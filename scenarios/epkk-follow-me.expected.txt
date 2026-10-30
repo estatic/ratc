@@ -21,7 +21,7 @@
 [  740.0] PILOT: Taxi to stand three five via Bravo four, Sierra Bravo Charlie
 [  760.0] PILOT: Sierra Papa Alpha Bravo Charlie, still lost, I need help
 [  760.0] Kraków Ground: Sierra Bravo Charlie, hold position, follow-me car is on the way
-[  760.0] VEHICLE: follow-me 1 for SPABC, 2 points to 50.07612 19.79612 heading 257
+[  760.0] VEHICLE: follow-me 1 for SPABC, 2 points to 50.07631 19.79631 heading 257
 [  760.0] PILOT: Holding position, Sierra Bravo Charlie
 [  772.0] Kraków Ground: Sierra Bravo Charlie, follow the follow-me car to stand three five
 [  775.0] PILOT: Follow the follow-me, Sierra Bravo Charlie

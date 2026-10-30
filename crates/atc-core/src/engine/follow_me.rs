@@ -21,6 +21,9 @@ use crate::taxi::TaxiTarget;
 pub const READY_S: f64 = 12.0;
 /// To a holding point the car's path ends this far before it.
 const SHORT_OF_HOLD_M: f64 = 20.0;
+/// To a stand it ends this far before the stand point, so the car stops short of the stand
+/// and pulls aside instead of driving into it (the stand heading may point at the terminal).
+const SHORT_OF_STAND_M: f64 = 25.0;
 /// Radius of the arcs that round the path's corners.
 const CORNER_RADIUS_M: f64 = 25.0;
 /// Corners turning less than this stay sharp.
@@ -123,9 +126,16 @@ impl AtcEngine {
             return self.taxi_instruction(i, target);
         }
         let mut path = smooth_corners(&path, CORNER_RADIUS_M);
-        if matches!(target, TaxiTarget::HoldingPoint { .. }) {
-            trim_end(&mut path, SHORT_OF_HOLD_M);
-        }
+        // The length check above (MIN_ROUTE_M) is on the untrimmed route: it is the distance
+        // the aircraft has to taxi. ALREADY_THERE_M is measured to the trimmed end, where the
+        // car actually waits, so a pilot who stops near the car is not led again.
+        trim_end(
+            &mut path,
+            match target {
+                TaxiTarget::HoldingPoint { .. } => SHORT_OF_HOLD_M,
+                TaxiTarget::Stand { .. } => SHORT_OF_STAND_M,
+            },
+        );
         let end = path.last().copied();
         self.next_vehicle += 1;
         let id = self.next_vehicle;
