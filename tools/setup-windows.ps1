@@ -25,6 +25,18 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw 'winget not found: install "App Installer" from the Microsoft Store, then run again'
 }
 
+# whisper.cpp's Vulkan shader generator builds deep under target\ (MSBuild fails past 260
+# characters): allow long paths, and keep the checkout short (C:\vatc).
+$fs = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+if ((Get-ItemProperty $fs -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled -ne 1) {
+    Step 'enabling long paths'
+    Set-ItemProperty $fs -Name LongPathsEnabled -Value 1 -Type DWord
+}
+$root = (Get-Location).Path
+if ($root.Length -gt 20) {
+    Write-Warning "the checkout path $root is long; if the build fails on a long path, clone to C:\vatc"
+}
+
 # id, extra winget arguments
 $packages = @(
     @('Git.Git', @()),
