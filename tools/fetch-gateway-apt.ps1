@@ -9,9 +9,20 @@ $Out = Join-Path (Split-Path -Parent $PSScriptRoot) "data\airports\$Icao"
 $Api = 'https://gateway.x-plane.com/apiv1'
 New-Item -ItemType Directory -Force $Out | Out-Null
 
-$id = (Invoke-RestMethod "$Api/airport/$Icao").airport.recommendedSceneryId
+# Windows PowerShell's JSON conversion gives up on these responses (it returns the raw
+# text), so the two fields are read from the text directly.
+function Field([string]$json, [string]$name, [string]$value) {
+    $m = [regex]::Match($json, '"' + $name + '"\s*:\s*' + $value)
+    if (-not $m.Success) { return $null }
+    $m.Groups[1].Value
+}
+$airport = (Invoke-WebRequest "$Api/airport/$Icao" -UseBasicParsing).Content
+$id = Field $airport 'recommendedSceneryId' '(\d+)'
 if (-not $id) { throw "no recommendedSceneryId for $Icao" }
-$blob = (Invoke-RestMethod "$Api/scenery/$id").scenery.masterZipBlob
+$scenery = (Invoke-WebRequest "$Api/scenery/$id" -UseBasicParsing).Content
+$blob = Field $scenery 'masterZipBlob' '"([^"]+)"'
+if (-not $blob) { throw "no masterZipBlob in scenery $id" }
+$blob = $blob.Replace('\/', '/')
 $zip = New-Object IO.Compression.ZipArchive(
     (New-Object IO.MemoryStream(, [Convert]::FromBase64String($blob))))
 try {
