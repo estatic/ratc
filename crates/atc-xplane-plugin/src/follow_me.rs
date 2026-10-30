@@ -7,10 +7,10 @@
 //! [`WAIT_GAP_M`] ahead, and drives at most [`MAX_SPEED`] (15 kt). Its heading follows the
 //! path's chord over ±3 m, turning at most [`MAX_TURN_DEG_S`]. At the end of the path it
 //! leaves along a forward arc (a cubic Bézier, followed at most [`ARC_SPEED`]) to a point
-//! [`ASIDE_M`] to the right of where it arrived and [`ARC_FORWARD_M`] on, in the heading it
-//! arrived with. It ends facing the end heading if that is within [`ARC_ALIGN_DEG`] of the
-//! arrival heading, else the arrival heading, and waits; it never moves sideways or
-//! turns abruptly. It is gone [`LINGER_S`] after the aircraft reaches the end (or
+//! [`ASIDE_M`] to the right (or, when told, the left) of where it arrived and
+//! [`ARC_FORWARD_M`] on, in the heading it arrived with. It ends facing the end heading if
+//! that is within [`ARC_ALIGN_DEG`] of the arrival heading toward the aside side, else the
+//! arrival heading, and waits; it never moves sideways or turns abruptly. It is gone [`LINGER_S`] after the aircraft reaches the end (or
 //! [`MAX_PARKED_S`] after parking).
 //!
 //! The pose also carries what a real car shows: the front-wheel angle from the heading
@@ -32,7 +32,7 @@ const ACCEL: f64 = 2.0;
 const MAX_TURN_DEG_S: f64 = 45.0;
 /// Half the chord the heading is taken over.
 const CHORD_M: f64 = 3.0;
-/// At the end the car pulls this far to the right and this far on (a car cannot get 12 m
+/// At the end the car pulls this far to the side and this far on (a car cannot get 12 m
 /// to the side and face the same way without moving forward; 16 m keeps the curvature
 /// below about 0.155/m, a steering angle of about 23 degrees)...
 const ASIDE_M: f64 = 12.0;
@@ -44,8 +44,9 @@ const ARC_MIN_SPEED: f64 = 0.3;
 /// ...a cubic Bézier whose inner control points lie this far from its ends along the
 /// headings there...
 const ARC_LEAD_M: f64 = ARC_FORWARD_M / 2.0;
-/// ...ending on the end heading only if it is within this of the arrival heading (a
-/// larger turn cannot be driven on the arc, and the other way would point at the aircraft).
+/// ...ending on the end heading only if it is within this of the arrival heading, turned
+/// toward the aside side (a larger turn cannot be driven on the arc, one the other way
+/// tightens the S past the steering limit, and a reversal would point at the aircraft).
 const ARC_ALIGN_DEG: f64 = 30.0;
 /// Distance between the front and rear axle, for the front-wheel angle.
 const WHEELBASE_M: f64 = 2.7;
@@ -68,8 +69,8 @@ const MAX_PARKED_S: f64 = 120.0;
 const BACK_M: f64 = 30.0;
 const AHEAD_M: f64 = 150.0;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
-/// A follow-me path has at most this many points...
-pub const MAX_POINTS: usize = 500;
+/// A follow-me path has at most this many points (the limit the engine keeps to)...
+pub const MAX_POINTS: usize = atc_proto::FOLLOW_ME_MAX_POINTS;
 /// ...all this close to its first one (an airport, not a country).
 pub const MAX_SPREAD_M: f64 = 10_000.0;
 
@@ -199,6 +200,8 @@ pub struct FollowMe {
     pts: Vec<(f64, f64)>,
     cum: Vec<f64>,
     end_heading: f64,
+    /// The side the car pulls aside to at the end.
+    aside: Signal,
     /// The heading the car ends on (see [`ARC_ALIGN_DEG`]); set when the arc is planned.
     park_heading: f64,
     /// Arc length of the car and of the aircraft's projection.
@@ -217,11 +220,13 @@ pub struct FollowMe {
 }
 
 impl FollowMe {
-    /// Refuses a path [`check`] refuses, or of less than two distinct points.
+    /// Refuses a path [`check`] refuses, or of less than two distinct points. At the end the
+    /// car pulls aside to the right, or to the left with `aside_left`.
     pub fn new(
         id: u32,
         path: &[LatLon],
         end_heading_deg: f64,
+        aside_left: bool,
         aircraft: LatLon,
     ) -> Result<Self, PathError> {
         check(path, end_heading_deg, aircraft)?;
@@ -252,6 +257,11 @@ impl FollowMe {
             pts,
             cum,
             end_heading: end_heading_deg.rem_euclid(360.0),
+            aside: if aside_left {
+                Signal::Left
+            } else {
+                Signal::Right
+            },
             park_heading: end_heading_deg.rem_euclid(360.0),
             s_car: 0.0,
             s_ac: 0.0,
@@ -286,7 +296,7 @@ impl FollowMe {
                 self.drive(dt, ac);
                 if self.s_car >= self.len() {
                     self.plan_arc(end);
-                    (end, Phase::Arc { t: 0.0 }, Signal::Right)
+                    (end, Phase::Arc { t: 0.0 }, self.aside)
                 } else {
                     (
                         self.point_at(self.s_car),
@@ -309,7 +319,7 @@ impl FollowMe {
                 } else {
                     Phase::Arc { t }
                 };
-                (self.bezier(t), phase, Signal::Right)
+                (self.bezier(t), phase, self.aside)
             }
             Phase::Parked { t, near } => {
                 let t = t + dt;
@@ -373,20 +383,30 @@ impl FollowMe {
     }
 
     /// Plans the end arc from `end` in the arrival frame: the car's heading now is forward,
-    /// the aside point is [`ASIDE_M`] to the right and [`ARC_FORWARD_M`] on, and the arc
+    /// the aside point is [`ASIDE_M`] to the side and [`ARC_FORWARD_M`] on, and the arc
     /// starts along the arrival heading, so the heading never jumps. It ends along the
-    /// end heading if that is within [`ARC_ALIGN_DEG`] of the arrival heading, else along
-    /// the arrival heading. An S-shaped lane change: the velocity always has a forward
-    /// and a rightward part, so the car never reverses or slides.
+    /// end heading if that is within [`ARC_ALIGN_DEG`] of the arrival heading toward the
+    /// aside side, else along the arrival heading. An S-shaped lane change: the velocity always has a forward
+    /// and a sideways part toward the aside side, so the car never reverses or slides.
     fn plan_arc(&mut self, end: (f64, f64)) {
         let arrival = self.heading;
-        let off = (self.end_heading - arrival + 540.0).rem_euclid(360.0) - 180.0;
-        self.park_heading = if off.abs() <= ARC_ALIGN_DEG {
+        let sign = if self.aside == Signal::Left {
+            -1.0
+        } else {
+            1.0
+        };
+        // The end heading's turn from the arrival, positive toward the aside side.
+        let off = sign * ((self.end_heading - arrival + 540.0).rem_euclid(360.0) - 180.0);
+        self.park_heading = if (0.0..=ARC_ALIGN_DEG).contains(&off) {
             self.end_heading
         } else {
             arrival
         };
-        let aside = offset(offset(end, arrival + 90.0, ASIDE_M), arrival, ARC_FORWARD_M);
+        let aside = offset(
+            offset(end, arrival + sign * 90.0, ASIDE_M),
+            arrival,
+            ARC_FORWARD_M,
+        );
         self.arc = [
             end,
             offset(end, arrival, ARC_LEAD_M),
@@ -599,7 +619,7 @@ mod tests {
     /// 400 m north, then 200 m east; ends facing east.
     fn car(aircraft: LatLon) -> FollowMe {
         let path = [at(0.0, 0.0), at(0.0, 400.0), at(200.0, 400.0)];
-        FollowMe::new(1, &path, 90.0, aircraft).unwrap()
+        FollowMe::new(1, &path, 90.0, false, aircraft).unwrap()
     }
 
     /// The aircraft at arc length `s` of the test path.
@@ -703,10 +723,13 @@ mod tests {
     #[test]
     fn rejects_degenerate_paths() {
         let short = Some(PathError::TooShort);
-        assert_eq!(FollowMe::new(1, &[at(0.0, 0.0)], 0.0, O).err(), short);
+        assert_eq!(
+            FollowMe::new(1, &[at(0.0, 0.0)], 0.0, false, O).err(),
+            short
+        );
         let same = [at(0.0, 0.0), at(0.0, 0.0)];
-        assert_eq!(FollowMe::new(1, &same, 0.0, O).err(), short);
-        assert_eq!(FollowMe::new(1, &[], 0.0, O).err(), short);
+        assert_eq!(FollowMe::new(1, &same, 0.0, false, O).err(), short);
+        assert_eq!(FollowMe::new(1, &[], 0.0, false, O).err(), short);
     }
 
     /// Datagram input that must never reach the driver.
@@ -775,9 +798,9 @@ mod tests {
         }
         let many: Vec<LatLon> = (0..=MAX_POINTS).map(|k| at(0.0, k as f64)).collect();
         assert_eq!(check(&many, 0.0, O), Err(PathError::TooManyPoints));
-        assert!(FollowMe::new(1, &many[..MAX_POINTS], 0.0, O).is_ok());
+        assert!(FollowMe::new(1, &many[..MAX_POINTS], 0.0, false, O).is_ok());
         assert_eq!(
-            FollowMe::new(1, &with(bad_lat()), 0.0, O).err(),
+            FollowMe::new(1, &with(bad_lat()), 0.0, false, O).err(),
             Some(PathError::BadPoint)
         );
     }
@@ -785,7 +808,7 @@ mod tests {
     /// 400 m north, then 200 m west: a left corner at 400 m.
     fn left_car() -> FollowMe {
         let path = [at(0.0, 0.0), at(0.0, 400.0), at(-200.0, 400.0)];
-        FollowMe::new(1, &path, 270.0, at(0.0, 0.0)).unwrap()
+        FollowMe::new(1, &path, 270.0, false, at(0.0, 0.0)).unwrap()
     }
 
     /// The aircraft at arc length `s` of [`left_car`]'s path.
@@ -847,10 +870,11 @@ mod tests {
     }
 
     /// Frames of a car driving the last 50 m of the test path (east), its arc and parking,
-    /// with the path ending on `end_heading`. The frame before the first is included.
-    fn end_frames(end_heading: f64) -> Vec<Pose> {
+    /// with the path ending on `end_heading` and the car pulling aside to the left with
+    /// `aside_left`. The frame before the first is included.
+    fn end_frames(end_heading: f64, aside_left: bool) -> Vec<Pose> {
         let path = [at(0.0, 0.0), at(0.0, 400.0), at(200.0, 400.0)];
-        let mut c = FollowMe::new(1, &path, end_heading, on_path(0.0)).unwrap();
+        let mut c = FollowMe::new(1, &path, end_heading, aside_left, on_path(0.0)).unwrap();
         let mut s = 0.0;
         let mut frames = Vec::new();
         for _ in 0..20_000 {
@@ -868,11 +892,22 @@ mod tests {
 
     #[test]
     fn parking_never_moves_sideways() {
-        // The car arrives heading east. Stand headings: the same, 20 off (taken), 90 and
-        // 180 off (not: the car ends facing the way it arrived).
-        for (end_heading, parks_on) in [(90.0, 90.0), (110.0, 110.0), (180.0, 90.0), (270.0, 90.0)]
-        {
-            let frames = end_frames(end_heading);
+        // The car arrives heading east. Stand headings: the same, 20 off toward the aside
+        // side (taken), 20 off the other way, 90 and 180 off (not: the car ends facing the
+        // way it arrived). Either side.
+        for (end_heading, aside_left, parks_on) in [
+            (90.0, false, 90.0),
+            (110.0, false, 110.0),
+            (70.0, false, 90.0),
+            (180.0, false, 90.0),
+            (270.0, false, 90.0),
+            (90.0, true, 90.0),
+            (70.0, true, 70.0),
+            (110.0, true, 90.0),
+            (180.0, true, 90.0),
+            (0.0, true, 90.0),
+        ] {
+            let frames = end_frames(end_heading, aside_left);
             assert!(frames.len() > 40);
             for w in frames.windows(2) {
                 // The car arrives along the path: displacement along the heading, 5 deg.
@@ -897,12 +932,31 @@ mod tests {
             let last = frames.last().unwrap();
             let diff = (last.heading_deg - parks_on + 540.0).rem_euclid(360.0) - 180.0;
             assert!(diff.abs() < 2.0, "{end_heading}: {}", last.heading_deg);
-            // 12 m right of the east-facing end (200, 400) and 16 m on.
-            let expect = (200.0 + ARC_FORWARD_M, 400.0 - ASIDE_M);
+            // 12 m right (south) or left (north) of the east-facing end (200, 400), 16 m on.
+            let (side, other) = if aside_left {
+                (1.0, Signal::Right)
+            } else {
+                (-1.0, Signal::Left)
+            };
+            let expect = (200.0 + ARC_FORWARD_M, 400.0 + side * ASIDE_M);
             let q = xy(last.pos);
-            assert!(dist(q, expect) < 0.5, "{end_heading}: {q:?} {expect:?}");
+            assert!(
+                dist(q, expect) < 0.5,
+                "{end_heading} {aside_left}: {q:?} {expect:?}"
+            );
+            // Never across to the other side (a stand-side heading may bend the arc a few
+            // metres past the aside line, no more).
+            for p in &frames {
+                let n = xy(p.pos).1 - 400.0;
+                assert!(
+                    n * side >= -0.01 && n * side <= ASIDE_M + 3.0,
+                    "{end_heading} {aside_left}: {n}"
+                );
+            }
             assert!(last.beacon_on);
-            assert!(frames.iter().any(|p| p.turn_signal == Signal::Right));
+            // The arc is signalled to the side the car pulls to, never the other.
+            assert!(frames.iter().any(|p| p.turn_signal != Signal::Off));
+            assert!(frames.iter().all(|p| p.turn_signal != other));
         }
     }
 
@@ -957,7 +1011,7 @@ mod tests {
         for k in 1..=50 {
             path.push(at(-20.0 - 2.0 * k as f64, 120.0));
         }
-        let mut c = FollowMe::new(1, &path, 270.0, at(0.0, 0.0)).unwrap();
+        let mut c = FollowMe::new(1, &path, 270.0, false, at(0.0, 0.0)).unwrap();
         let len = c.len();
         let ac = |s: f64| c_point(&path, s.min(len));
         let out = signals(&mut c, ac);
@@ -991,7 +1045,7 @@ mod tests {
     #[test]
     fn signal_off_on_straight() {
         let path = [at(0.0, 0.0), at(0.0, 300.0), at(3.0, 600.0)];
-        let mut c = FollowMe::new(1, &path, 0.0, at(0.0, 0.0)).unwrap();
+        let mut c = FollowMe::new(1, &path, 0.0, false, at(0.0, 0.0)).unwrap();
         let out = signals(&mut c, |s| at(0.0, s));
         assert!(out.len() > 100);
         assert!(out.iter().all(|&(_, sig)| sig == Signal::Off));

@@ -513,6 +513,7 @@ impl Overlay {
                 id,
                 path,
                 end_heading_deg,
+                aside_left,
             } => {
                 let Some(own) = &self.own else {
                     return log("no aircraft position datarefs: no follow-me car");
@@ -520,7 +521,7 @@ impl Overlay {
                 let path: Vec<LatLon> =
                     path.iter().map(|&[lat, lon]| LatLon { lat, lon }).collect();
                 let (aircraft, _) = own.pos();
-                let driver = match FollowMe::new(id, &path, end_heading_deg, aircraft) {
+                let driver = match FollowMe::new(id, &path, end_heading_deg, aside_left, aircraft) {
                     Ok(d) => d,
                     Err(e) => return log(&format!("follow-me {id} ignored: {e}")),
                 };

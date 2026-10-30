@@ -63,27 +63,27 @@ freq = "ground"
 text = "Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie"
 
 [[say]]
-t = 740
+t = 700
 freq = "ground"
 text = "Sierra Papa Alpha Bravo Charlie, I am lost, I need help, taxi"
 
 [[say]]
-t = 740
+t = 700
 freq = "ground"
 text = "Taxi to stand three five via Bravo four, Sierra Bravo Charlie"
 
 [[say]]
-t = 760
+t = 712
 freq = "ground"
 text = "Sierra Papa Alpha Bravo Charlie, still lost, I need help"
 
 [[say]]
-t = 760
+t = 712
 freq = "ground"
 text = "Holding position, Sierra Bravo Charlie"
 
 [[say]]
-t = 775
+t = 727
 freq = "ground"
 text = "Follow the follow-me, Sierra Bravo Charlie"
 

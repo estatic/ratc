@@ -457,6 +457,7 @@ mod tests {
             id: 3,
             path: vec![[50.0, 19.0], [50.001, 19.0]],
             end_heading_deg: 0.0,
+            aside_left: true,
         };
         app.server_msg(&m);
         app.server_msg(&ServerMsg::FollowMeCancel { id: 3 });

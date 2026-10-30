@@ -2,14 +2,17 @@
 //!
 //! Sent on request ("request follow-me") or on the second taxi help request since the last
 //! taxi clearance: "hold position, follow-me car is on the way", with a [`VehicleCommand`]
-//! carrying the car's path (the taxi route from where the aircraft is, plus the last leg to
-//! the stand; to a holding point it stops [`SHORT_OF_HOLD_M`] short). The plugin shows the
+//! carrying the car's path (the taxi route from where the aircraft is; to a stand it ends at
+//! the last taxiway node, where the route leaves the network for the stand, and the car
+//! pulls aside away from the stand; to a holding point it stops [`SHORT_OF_HOLD_M`] short).
+//! The plugin shows the
 //! car at once, ahead of the aircraft on the path; the engine has no feedback from it and
 //! says "follow the follow-me car" a fixed [`READY_S`] seconds of sim time later. The car
 //! is the aircraft's until it parks or holds short (or a new taxi clearance cancels it).
 
 use atc_geo::{LatLon, bearing_deg, destination, distance_m};
 use atc_phraseology::{AtcItem, Callsign, TaxiTo};
+use atc_proto::FOLLOW_ME_MAX_POINTS;
 
 use super::ground::unable;
 use super::{AtcEngine, AtcOutput, standby};
@@ -19,17 +22,16 @@ use crate::taxi::TaxiTarget;
 
 /// "Follow the follow-me car" this long after "on the way".
 pub const READY_S: f64 = 12.0;
-/// To a holding point the car's path ends this far before it.
-const SHORT_OF_HOLD_M: f64 = 20.0;
-/// To a stand it ends this far before the stand point, so the car stops short of the stand
-/// and pulls aside instead of driving into it (the stand heading may point at the terminal).
-const SHORT_OF_STAND_M: f64 = 25.0;
+/// To a holding point the car's path ends this far before it (the car then pulls 16 m on
+/// and aside, so it waits about 24 m short of the hold).
+const SHORT_OF_HOLD_M: f64 = 40.0;
 /// Radius of the arcs that round the path's corners.
 const CORNER_RADIUS_M: f64 = 25.0;
 /// Corners turning less than this stay sharp.
 const MIN_ROUNDED_TURN_DEG: f64 = 10.0;
-/// Spacing of the points along a rounded corner.
-const ARC_STEP_M: f64 = 2.0;
+/// Spacing of the points along a rounded corner, finest first: a coarser one is used when
+/// the path would otherwise have more than [`FOLLOW_ME_MAX_POINTS`].
+const ARC_STEPS_M: [f64; 3] = [2.0, 4.0, 8.0];
 /// A route shorter than this is not worth a car: plain taxi instructions are given.
 const MIN_ROUTE_M: f64 = 150.0;
 /// An aircraft this close to the end of the car's path needs no car to lead it.
@@ -38,12 +40,14 @@ const ALREADY_THERE_M: f64 = 30.0;
 /// An order for the simulator's ground vehicles, for one aircraft's client.
 #[derive(Clone, Debug, PartialEq)]
 pub enum VehicleCommand {
-    /// Show a follow-me car leading along `path` (first point near the aircraft); it ends
-    /// facing `end_heading_deg` (true).
+    /// Show a follow-me car leading along `path` (first point near the aircraft, at most
+    /// [`FOLLOW_ME_MAX_POINTS`]); it ends facing `end_heading_deg` (true), pulled aside to
+    /// the right of the path's end, or to the left with `aside_left`.
     FollowMe {
         id: u32,
         path: Vec<LatLon>,
         end_heading_deg: f64,
+        aside_left: bool,
     },
     /// Remove follow-me car `id`.
     FollowMeCancel { id: u32 },
@@ -102,45 +106,54 @@ impl AtcEngine {
             Ok(r) => r,
             Err(e) => return vec![unable(&e)],
         };
-        let mut path: Vec<LatLon> = route
+        // Set before any plain taxi instruction below, so later help knows the target.
+        self.strips[i].taxi_target = Some(target.clone());
+        let path: Vec<LatLon> = route
             .nodes
             .iter()
             .filter_map(|&n| self.graph.node_pos(n))
             .collect();
-        let end_heading_deg = match &target {
+        // The stand itself is off the network: the car stops at the last node and pulls
+        // aside away from it.
+        let (end_heading_deg, stand_pos) = match &target {
             TaxiTarget::Stand { name } => {
                 let Some(st) = self.airport.stands.iter().find(|s| &s.name == name) else {
                     return vec![AtcItem::SayIntentions];
                 };
-                path.push(st.pos);
-                st.heading_deg
+                (st.heading_deg, Some(st.pos))
             }
             TaxiTarget::HoldingPoint { .. } => match path[..] {
-                [.., a, b] => bearing_deg(a, b),
-                _ => self.tracks[&self.strips[i].callsign].last.heading_deg,
+                [.., a, b] => (bearing_deg(a, b), None),
+                _ => (self.tracks[&self.strips[i].callsign].last.heading_deg, None),
             },
         };
+        // The distance the aircraft has to taxi, to the stand point itself.
         let route_m = path.first().map_or(0.0, |&first| distance_m(pos, first))
-            + path.windows(2).map(|w| distance_m(w[0], w[1])).sum::<f64>();
-        if route_m < MIN_ROUTE_M {
+            + path.windows(2).map(|w| distance_m(w[0], w[1])).sum::<f64>()
+            + path
+                .last()
+                .zip(stand_pos)
+                .map_or(0.0, |(&last, st)| distance_m(last, st));
+        if route_m < MIN_ROUTE_M || path.len() < 2 {
             return self.taxi_instruction(i, target);
         }
-        let mut path = smooth_corners(&path, CORNER_RADIUS_M);
+        let aside_left = match (&path[..], stand_pos) {
+            ([.., a, b], Some(st)) => on_the_right(*a, *b, st),
+            _ => false,
+        };
+        let Some(mut path) = smoothed_within(&path, FOLLOW_ME_MAX_POINTS) else {
+            return self.taxi_instruction(i, target);
+        };
         // The length check above (MIN_ROUTE_M) is on the untrimmed route: it is the distance
         // the aircraft has to taxi. ALREADY_THERE_M is measured to the trimmed end, where the
         // car actually waits, so a pilot who stops near the car is not led again.
-        trim_end(
-            &mut path,
-            match target {
-                TaxiTarget::HoldingPoint { .. } => SHORT_OF_HOLD_M,
-                TaxiTarget::Stand { .. } => SHORT_OF_STAND_M,
-            },
-        );
+        if let TaxiTarget::HoldingPoint { .. } = target {
+            trim_end(&mut path, SHORT_OF_HOLD_M);
+        }
         let end = path.last().copied();
         self.next_vehicle += 1;
         let id = self.next_vehicle;
         let strip = &mut self.strips[i];
-        strip.taxi_target = Some(target);
         strip.follow_me = Some(FollowMe {
             id,
             sent_s: t,
@@ -153,6 +166,7 @@ impl AtcEngine {
                 id,
                 path,
                 end_heading_deg,
+                aside_left,
             },
         });
         let items = on_the_way();
@@ -220,11 +234,26 @@ impl AtcEngine {
     }
 }
 
+/// True if `p` lies to the right of the line from `a` through `b` (seen along it).
+fn on_the_right(a: LatLon, b: LatLon, p: LatLon) -> bool {
+    let off = (bearing_deg(b, p) - bearing_deg(a, b)).rem_euclid(360.0);
+    distance_m(b, p) > 0.01 && off > 0.0 && off < 180.0
+}
+
+/// `path` with rounded corners ([`CORNER_RADIUS_M`]), sampled as finely as
+/// [`ARC_STEPS_M`] allows within `max_points`; `None` if even the coarsest is too long.
+fn smoothed_within(path: &[LatLon], max_points: usize) -> Option<Vec<LatLon>> {
+    ARC_STEPS_M
+        .iter()
+        .map(|&step| smooth_corners(path, CORNER_RADIUS_M, step))
+        .find(|p| p.len() <= max_points)
+}
+
 /// Rounds the corners of the polyline with arcs of `radius_m`. An arc never uses more than
 /// half of either adjacent segment (its radius shrinks to fit); corners turning less than
 /// [`MIN_ROUNDED_TURN_DEG`] stay as they are, and so do the end points. Arcs are sampled
-/// every [`ARC_STEP_M`].
-fn smooth_corners(path: &[LatLon], radius_m: f64) -> Vec<LatLon> {
+/// every `step_m`.
+fn smooth_corners(path: &[LatLon], radius_m: f64, step_m: f64) -> Vec<LatLon> {
     if path.len() < 3 {
         return path.to_vec();
     }
@@ -266,7 +295,7 @@ fn smooth_corners(path: &[LatLon], radius_m: f64) -> Vec<LatLon> {
         let side = cross.signum();
         let start = (p.0 - u1.0 * t, p.1 - u1.1 * t);
         let centre = (start.0 - side * u1.1 * r, start.1 + side * u1.0 * r);
-        let steps = (r * turn / ARC_STEP_M).ceil().max(1.0) as usize;
+        let steps = (r * turn / step_m).ceil().max(1.0) as usize;
         for s in 0..=steps {
             let phi = side * turn * s as f64 / steps as f64;
             let (sn, cs) = phi.sin_cos();
@@ -326,6 +355,49 @@ mod tests {
     }
 
     #[test]
+    fn stand_side_of_the_last_leg() {
+        // Northbound leg a -> b; points east of b are on the right, west on the left.
+        let a = origin();
+        let b = destination(a, 0.0, 100.0);
+        assert!(on_the_right(a, b, destination(b, 90.0, 30.0)));
+        assert!(on_the_right(a, b, destination(b, 135.0, 30.0)));
+        assert!(!on_the_right(a, b, destination(b, 270.0, 30.0)));
+        assert!(!on_the_right(a, b, destination(b, 300.0, 30.0)));
+        // Westbound: north is on the right.
+        let c = destination(b, 270.0, 100.0);
+        assert!(on_the_right(b, c, destination(c, 0.0, 30.0)));
+        assert!(!on_the_right(b, c, destination(c, 180.0, 30.0)));
+        // Straight ahead, or on the node itself: no side (right, the default).
+        assert!(!on_the_right(a, b, b));
+    }
+
+    /// M-2: a path that would pass the plugin's limit is sampled coarser, and none at all
+    /// if even the coarsest is too long.
+    #[test]
+    fn long_paths_are_sampled_coarser() {
+        // Twelve right-angle corners, about 20 points each at 2 m, 10 at 4 m, 5 at 8 m.
+        let steps: Vec<(f64, f64)> = (0..13)
+            .map(|k| (if k % 2 == 0 { 90.0 } else { 0.0 }, 100.0))
+            .collect();
+        let path = polyline(&steps);
+        let fine = smooth_corners(&path, CORNER_RADIUS_M, 2.0).len();
+        let coarse = smooth_corners(&path, CORNER_RADIUS_M, 8.0).len();
+        assert!(fine > 200 && coarse < 100, "{fine} {coarse}");
+        assert_eq!(smoothed_within(&path, 1000).map(|p| p.len()), Some(fine));
+        let within = smoothed_within(&path, fine - 1).unwrap();
+        assert!(
+            within.len() < fine && within.len() > coarse,
+            "{}",
+            within.len()
+        );
+        assert_eq!(
+            smoothed_within(&path, coarse).map(|p| p.len()),
+            Some(coarse)
+        );
+        assert_eq!(smoothed_within(&path, coarse - 1), None);
+    }
+
+    #[test]
     fn trim_shortens_the_end() {
         let a = origin();
         let b = destination(a, 90.0, 100.0);
@@ -342,7 +414,7 @@ mod tests {
     #[test]
     fn right_angle_becomes_an_arc() {
         let path = polyline(&[(90.0, 100.0), (0.0, 100.0)]);
-        let smooth = smooth_corners(&path, 25.0);
+        let smooth = smooth_corners(&path, 25.0, 2.0);
         assert!(smooth.len() > 10, "{smooth:?}");
         let headings: Vec<f64> = smooth.windows(2).map(|w| bearing_deg(w[0], w[1])).collect();
         for w in headings.windows(2) {
@@ -376,19 +448,19 @@ mod tests {
     #[test]
     fn straight_path_unchanged() {
         let path = polyline(&[(90.0, 100.0), (90.0, 50.0), (90.0, 80.0)]);
-        assert_eq!(smooth_corners(&path, 25.0), path);
+        assert_eq!(smooth_corners(&path, 25.0, 2.0), path);
     }
 
     #[test]
     fn small_turn_unchanged() {
         let path = polyline(&[(90.0, 100.0), (98.0, 100.0)]);
-        assert_eq!(smooth_corners(&path, 25.0), path);
+        assert_eq!(smooth_corners(&path, 25.0, 2.0), path);
     }
 
     #[test]
     fn short_segments_shrink_the_arc() {
         let path = polyline(&[(90.0, 8.0), (0.0, 8.0)]);
-        let smooth = smooth_corners(&path, 25.0);
+        let smooth = smooth_corners(&path, 25.0, 2.0);
         assert!(smooth.len() > 3, "{smooth:?}");
         // The arc starts at most half of the first leg from the corner (and ends likewise).
         let corner = path[1];
@@ -413,7 +485,7 @@ mod tests {
     #[test]
     fn adjacent_clamped_corners_share_one_point() {
         let path = polyline(&[(90.0, 10.0), (0.0, 10.0), (90.0, 10.0)]);
-        let smooth = smooth_corners(&path, 25.0);
+        let smooth = smooth_corners(&path, 25.0, 2.0);
         for w in smooth.windows(2) {
             assert!(distance_m(w[0], w[1]) > 0.01, "{smooth:?}");
         }
@@ -424,9 +496,9 @@ mod tests {
     #[test]
     fn endpoints_kept() {
         let path = polyline(&[(90.0, 100.0), (0.0, 100.0), (270.0, 60.0)]);
-        let smooth = smooth_corners(&path, 25.0);
+        let smooth = smooth_corners(&path, 25.0, 2.0);
         assert_eq!(smooth.first(), path.first());
         assert_eq!(smooth.last(), path.last());
-        assert_eq!(smooth_corners(&path[..2], 25.0), path[..2]);
+        assert_eq!(smooth_corners(&path[..2], 25.0, 2.0), path[..2]);
     }
 }

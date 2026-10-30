@@ -178,17 +178,25 @@ pub enum ServerMsg {
         from: String,
     },
     /// Show a follow-me car leading this client's aircraft along `path` (`[lat, lon]`
-    /// degrees, the first point near the aircraft); it ends facing `end_heading_deg` (true).
+    /// degrees, the first point near the aircraft, at most [`FOLLOW_ME_MAX_POINTS`]); it
+    /// ends facing `end_heading_deg` (true). At the end it pulls aside to the right, or to
+    /// the left with `aside_left` (absent in older messages: right).
     FollowMe {
         id: u32,
         path: Vec<[f64; 2]>,
         end_heading_deg: f64,
+        #[serde(default)]
+        aside_left: bool,
     },
     /// Remove follow-me car `id`.
     FollowMeCancel {
         id: u32,
     },
 }
+
+/// A follow-me path has at most this many points: the engine sends no more, the plugin
+/// takes no more (about 20 KB of JSON, well inside its 64 KiB datagram buffer).
+pub const FOLLOW_ME_MAX_POINTS: usize = 500;
 
 /// Prefix of a vehicle command on the client -> X-Plane plugin UDP channel; the rest of the
 /// datagram is the `ServerMsg` as JSON. Every other datagram is an overlay text line.
@@ -458,6 +466,7 @@ mod tests {
                 id: 1,
                 path: vec![[50.07, 19.78], [50.071, 19.781]],
                 end_heading_deg: 257.0,
+                aside_left: true,
             },
             ServerMsg::FollowMeCancel { id: 1 },
         ];
@@ -467,12 +476,28 @@ mod tests {
         }
     }
 
+    /// A follow-me command from before `aside_left` pulls aside to the right.
+    #[test]
+    fn follow_me_without_aside_side_pulls_right() {
+        let old = r#"{"type":"follow_me","id":2,"path":[[50.0,19.0],[50.1,19.0]],"end_heading_deg":90.0}"#;
+        assert_eq!(
+            serde_json::from_str::<ServerMsg>(old).unwrap(),
+            ServerMsg::FollowMe {
+                id: 2,
+                path: vec![[50.0, 19.0], [50.1, 19.0]],
+                end_heading_deg: 90.0,
+                aside_left: false,
+            }
+        );
+    }
+
     #[test]
     fn overlay_commands_roundtrip() {
         let m = ServerMsg::FollowMe {
             id: 7,
             path: vec![[50.07, 19.78]],
             end_heading_deg: 90.0,
+            aside_left: true,
         };
         let line = overlay_command(&m).unwrap();
         assert!(

@@ -1814,6 +1814,7 @@ fn second_taxi_help_sends_the_follow_me_car() {
                     id,
                     path,
                     end_heading_deg,
+                    ..
                 },
         },
     ] = &orders[..]
@@ -1823,12 +1824,11 @@ fn second_taxi_help_sends_the_follow_me_car() {
     assert_eq!(callsign, &Callsign::new("SPABC"));
     let (ap, _) = epkk();
     let stand = ap.stands.iter().find(|s| s.name == "20").unwrap();
-    // The car's path ends 25 m short of the stand, so the car never drives into it.
+    // The car's path ends at the taxiway node the stand is reached from, so the car never
+    // drives into the stand (see `follow_me_pulls_aside_away_from_the_stand`).
     let end = path.last().unwrap();
-    assert!(
-        (atc_geo::distance_m(*end, stand.pos) - 25.0).abs() < 0.5,
-        "{path:?}"
-    );
+    let node = node_nearest(&ap, stand.pos);
+    assert!(atc_geo::distance_m(*end, node) < 0.01, "{path:?}");
     assert!(path.len() >= 2, "{path:?}");
     assert_eq!(*end_heading_deg, stand.heading_deg);
     assert!(say(&mut e, GROUND, &format!("Holding position, {ABC}")).is_empty());
@@ -1882,6 +1882,77 @@ fn second_taxi_help_sends_the_follow_me_car() {
     );
 }
 
+/// The taxi-network node (one with an edge) nearest `p`: where a route to a stand at `p`
+/// leaves the network.
+fn node_nearest(ap: &Airport, p: LatLon) -> LatLon {
+    ap.taxi
+        .nodes
+        .iter()
+        .filter(|n| ap.taxi.edges.iter().any(|e| e.from == n.id || e.to == n.id))
+        .map(|n| n.pos)
+        .min_by(|a, b| atc_geo::distance_m(*a, p).total_cmp(&atc_geo::distance_m(*b, p)))
+        .unwrap()
+}
+
+/// The words for a stand name of digits: "1A" is not one of them.
+fn digit_words(name: &str) -> Option<String> {
+    const W: [&str; 10] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "niner",
+    ];
+    name.chars()
+        .map(|c| c.to_digit(10).map(|d| W[d as usize]))
+        .collect::<Option<Vec<_>>>()
+        .map(|w| w.join(" "))
+}
+
+/// I-1: to a stand the car stops at the last taxiway node, where the route leaves the
+/// network for the stand, and pulls aside away from it: to the left when the stand lies to
+/// the right of the last leg, else to the right. EPKK has stands on both sides.
+#[test]
+fn follow_me_pulls_aside_away_from_the_stand() {
+    let (ap, _) = epkk();
+    let mut sides = Vec::new();
+    for stand in &ap.stands {
+        let Some(words) = digit_words(&stand.name) else {
+            continue;
+        };
+        let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 0.0);
+        say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, {ABC}, request taxi to stand {words}"),
+        );
+        say(&mut e, GROUND, &format!("{ABC}, request follow me"));
+        let orders = e.take_vehicle_orders();
+        let [
+            VehicleOrder {
+                command:
+                    VehicleCommand::FollowMe {
+                        path, aside_left, ..
+                    },
+                ..
+            },
+        ] = &orders[..]
+        else {
+            continue;
+        };
+        let name = &stand.name;
+        let node = node_nearest(&ap, stand.pos);
+        let [.., a, b] = path[..] else {
+            panic!("{name}: {path:?}")
+        };
+        assert!(atc_geo::distance_m(b, node) < 0.01, "{name}: {path:?}");
+        if atc_geo::distance_m(b, stand.pos) < 1.0 {
+            continue;
+        }
+        let off =
+            (atc_geo::bearing_deg(b, stand.pos) - atc_geo::bearing_deg(a, b)).rem_euclid(360.0);
+        assert_eq!(*aside_left, off > 0.0 && off < 180.0, "{name}: {off}");
+        sides.push(*aside_left);
+    }
+    assert!(sides.contains(&true) && sides.contains(&false), "{sides:?}");
+}
+
 /// R1: a car is not worth sending when the stand is close; the taxi route is repeated.
 #[test]
 fn no_car_for_a_short_route() {
@@ -1931,7 +2002,7 @@ fn no_follow_call_when_already_at_the_end() {
     else {
         panic!("{orders:?}")
     };
-    // The aircraft taxis to where the car's path ends (short of the stand).
+    // The aircraft taxis to where the car's path ends (the node the stand is reached from).
     let (ap, _) = epkk();
     let stand = ap.stands.iter().find(|s| s.name == "20").unwrap().pos;
     let end = *path.last().unwrap();
@@ -1939,10 +2010,11 @@ fn no_follow_call_when_already_at_the_end() {
         atc_geo::distance_m(stand, end),
         atc_geo::bearing_deg(stand, end),
     );
-    // To a stand the pilot is released with the plain taxi instruction.
+    // To a stand the pilot is released with the plain taxi instruction (and, this close,
+    // where the stand is).
     let out = move_abc(&mut e, FOLLOW_ME_READY_S, end_m, end_from);
     assert!(
-        matches!(&items(&out)[..], [AtcItem::Taxi { .. }]),
+        matches!(&items(&out)[..], [AtcItem::Taxi { .. }, ..]),
         "{out:?}"
     );
     assert!(!out[0].text.contains("follow"), "{out:?}");
@@ -2061,7 +2133,7 @@ fn follow_me_to_the_holding_point() {
         .iter()
         .map(|&h| atc_geo::distance_m(h, end))
         .fold(f64::INFINITY, f64::min);
-    assert!((to_hold - 20.0).abs() < 1.0, "{to_hold}");
+    assert!((to_hold - 40.0).abs() < 1.0, "{to_hold}");
 }
 
 /// Real: "Dunn, wind, full stop" is the downwind report.
@@ -4374,6 +4446,48 @@ mod approach_departure {
         assert_eq!(strip.phase, FlightPhase::Parked);
         assert_eq!(strip.handed_off, None);
         assert_eq!(strip.plan, None);
+    }
+
+    /// M-4: taxiing in near the home stand with no taxi clearance, "request follow me" gets
+    /// the plain taxi instruction (too short for a car), and the stand it names becomes the
+    /// taxi target, so later help knows where the aircraft is going.
+    #[test]
+    fn short_follow_me_fallback_sets_the_taxi_target() {
+        let mut e = engine();
+        // First seen on Stand 1: its home stand.
+        let mut parked = Flight {
+            t: 0.0,
+            pos: STAND_1,
+            alt: 100.0,
+            com1: GND,
+            rolling: true,
+            xpdr: None,
+            heard: Vec::new(),
+        };
+        parked.step(&mut e, 0.0, 0.0, 0.0, true);
+        let mut f = departed_at(&mut e, "Testville", true, "five thousand", 10.0);
+        fly_to_testville_tower(&mut e, &mut f);
+        f.pos = LatLon {
+            lat: STAND_1.lat + 0.0005,
+            lon: STAND_1.lon,
+        };
+        f.alt = 800.0;
+        f.rolling = true;
+        for _ in 0..3 {
+            f.step(&mut e, 0.0, 0.0, 0.0, true);
+        }
+        let cs = Callsign::new("SPTST");
+        let strip = e.strip(&cs).unwrap();
+        assert_eq!(strip.phase, FlightPhase::TaxiIn);
+        assert_eq!(strip.taxi_target, None);
+        let stand = strip.home_stand.clone().expect("home stand");
+        let out = items(&say(&mut e, GND, &format!("{CS}, request follow me")));
+        assert!(matches!(out[0], AtcItem::Taxi { .. }), "{out:?}");
+        assert!(e.take_vehicle_orders().is_empty());
+        assert_eq!(
+            e.strip(&cs).unwrap().taxi_target,
+            Some(atc_core::taxi::TaxiTarget::Stand { name: stand })
+        );
     }
 
     /// Spec 3.6: a departure handed to the information unit beyond the TMA turns back and
