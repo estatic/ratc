@@ -7,10 +7,11 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atc_proto::{AudioFrame, ClientMsg, ServerMsg, overlay_command};
-use tokio::sync::mpsc;
+use atc_proto::{AudioFrame, CallsignSource, ClientMsg, ServerMsg, overlay_command};
+use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
+use crate::aircraft::{Identity, IdentityTracker};
 use crate::capture::PILOT_RATE;
 use crate::connection::{ConnConfig, Outgoing, ServerEvent, run_connection};
 use crate::playback::{Playback, should_play};
@@ -20,6 +21,12 @@ use crate::xplane::{XpConfig, XpUpdate, run_xplane};
 
 /// After stdin ends, keep printing replies to what was typed for this long.
 const LINGER: Duration = Duration::from_secs(3);
+
+/// How often the latest sim aircraft is re-offered to the debounce.
+const IDENTITY_TICK: Duration = Duration::from_millis(500);
+
+/// How often "waiting for X-Plane" is repeated.
+const WAIT_NOTICE: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub enum Input {
@@ -38,13 +45,14 @@ pub enum Input {
 /// sender for messages to the server.
 pub fn spawn_links(
     conn: ConnConfig,
+    identity: watch::Receiver<Option<Identity>>,
     xp: XpConfig,
     inputs: mpsc::Sender<Input>,
 ) -> mpsc::Sender<Outgoing> {
     let (out_tx, out_rx) = mpsc::channel(1024);
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     tokio::spawn(async move {
-        if let Err(e) = run_connection(conn, out_rx, ev_tx).await {
+        if let Err(e) = run_connection(conn, identity, out_rx, ev_tx).await {
             tracing::error!("server connection stopped: {e:#}");
         }
     });
@@ -114,6 +122,15 @@ pub struct App {
     ptt: PttMerger,
     tx: Option<Transmission>,
     typed_any: bool,
+    /// Turns the sim's aircraft into the identity the connection uses.
+    identity: Option<IdentityTracker>,
+    /// X-Plane address, named in the "waiting" notice.
+    xplane_addr: String,
+    last_wait_notice: Option<std::time::Instant>,
+    /// What the server identified us as, for the refusal line.
+    identified: Option<(String, String)>,
+    /// The last refusal line printed; the same one is not repeated.
+    last_refusal: Option<String>,
 }
 
 impl App {
@@ -130,7 +147,19 @@ impl App {
             ptt: PttMerger::default(),
             tx: None,
             typed_any: false,
+            identity: None,
+            xplane_addr: String::new(),
+            last_wait_notice: None,
+            identified: None,
+            last_refusal: None,
         }
+    }
+
+    /// Takes the aircraft from X-Plane (at `xplane_addr`) and publishes the identity.
+    pub fn with_identity(mut self, tracker: IdentityTracker, xplane_addr: String) -> Self {
+        self.identity = Some(tracker);
+        self.xplane_addr = xplane_addr;
+        self
     }
 
     /// Where `FollowMe` / `FollowMeCancel` go, framed for the plugin.
@@ -152,13 +181,21 @@ impl App {
     /// Runs until `Quit`, the end of `inputs`, or [`LINGER`] after `Eof`.
     pub async fn run(mut self, mut inputs: mpsc::Receiver<Input>) {
         let mut deadline: Option<Instant> = None;
+        let mut tick = tokio::time::interval(IDENTITY_TICK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            let input = match deadline {
-                Some(d) => tokio::select! {
-                    i = inputs.recv() => i,
-                    _ = tokio::time::sleep_until(d) => return,
-                },
-                None => inputs.recv().await,
+            let input = tokio::select! {
+                i = inputs.recv() => i,
+                _ = async {
+                    match deadline {
+                        Some(d) => tokio::time::sleep_until(d).await,
+                        None => std::future::pending().await,
+                    }
+                } => return,
+                _ = tick.tick() => {
+                    self.identity_tick(std::time::Instant::now());
+                    continue;
+                }
             };
             let Some(input) = input else { return };
             match input {
@@ -184,6 +221,29 @@ impl App {
 
     async fn send(&mut self, m: ClientMsg) {
         let _ = self.to_conn.send(Outgoing::Msg(m)).await;
+    }
+
+    /// Re-offers the sim aircraft to the debounce and repeats the "waiting" notice.
+    fn identity_tick(&mut self, now: std::time::Instant) {
+        let Some(tracker) = &mut self.identity else {
+            return;
+        };
+        let line = tracker.tick(now);
+        let waiting = tracker.waiting_for_sim();
+        if let Some(l) = line {
+            self.say(l);
+        }
+        if waiting
+            && self
+                .last_wait_notice
+                .is_none_or(|t| now.duration_since(t) >= WAIT_NOTICE)
+        {
+            self.last_wait_notice = Some(now);
+            let addr = self.xplane_addr.clone();
+            self.say(&format!(
+                "Waiting for X-Plane at {addr} for the aircraft type…"
+            ));
+        }
     }
 
     async fn xp(&mut self, u: XpUpdate) {
@@ -212,8 +272,13 @@ impl App {
                 self.send(ClientMsg::Telemetry(f)).await;
             }
             XpUpdate::Weather(w) => self.send(ClientMsg::Weather(w)).await,
-            // Identifying the pilot from the sim aircraft is wired up separately.
-            XpUpdate::Aircraft(_) => {}
+            XpUpdate::Aircraft(a) => {
+                if let Some(tracker) = &mut self.identity
+                    && let Some(l) = tracker.observe(std::time::Instant::now(), a)
+                {
+                    self.say(l);
+                }
+            }
         }
     }
 
@@ -337,6 +402,32 @@ impl App {
                 }
                 self.say(&format!("frequency {} busy", fmt_khz(*freq_khz)));
             }
+            ServerMsg::Identified {
+                callsign,
+                aircraft_type,
+                callsign_source,
+            } => {
+                let from = match callsign_source {
+                    CallsignSource::Config => "from config",
+                    CallsignSource::Sim => "X-Plane tail number",
+                };
+                self.say(&format!(
+                    "Aircraft: {aircraft_type}, callsign {callsign} ({from})"
+                ));
+                self.identified = Some((callsign.clone(), aircraft_type.clone()));
+                self.last_refusal = None;
+            }
+            ServerMsg::AircraftChangeRefused { reason } => {
+                let still = match &self.identified {
+                    Some((c, t)) => format!("; still flying as {c} ({t})"),
+                    None => String::new(),
+                };
+                let line = format!("Aircraft change refused: {reason}{still}");
+                if self.last_refusal.as_ref() != Some(&line) {
+                    self.say(&line);
+                    self.last_refusal = Some(line);
+                }
+            }
             ServerMsg::Rejected { reason } => {
                 self.say(&format!("server rejected the connection: {reason}"));
             }
@@ -368,6 +459,71 @@ mod tests {
         assert_eq!(sent.len(), 2);
         assert_eq!(atc_proto::parse_overlay_command(&sent[0]), Some(m));
         assert!(printed.lock().unwrap().is_empty());
+    }
+
+    fn capture() -> (App, Arc<Mutex<Vec<String>>>, mpsc::Receiver<Outgoing>) {
+        let (tx, rx) = mpsc::channel(8);
+        let printed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let p = printed.clone();
+        let app = App::new(tx, Box::new(move |l| p.lock().unwrap().push(l.into())));
+        (app, printed, rx)
+    }
+
+    #[test]
+    fn identified_prints_line() {
+        let (mut app, printed, _rx) = capture();
+        for (source, from) in [
+            (CallsignSource::Config, "from config"),
+            (CallsignSource::Sim, "X-Plane tail number"),
+        ] {
+            app.server_msg(&ServerMsg::Identified {
+                callsign: "SP-ABC".into(),
+                aircraft_type: "C172".into(),
+                callsign_source: source,
+            });
+            let last = printed.lock().unwrap().last().cloned().unwrap();
+            assert_eq!(last, format!("Aircraft: C172, callsign SP-ABC ({from})"));
+        }
+    }
+
+    #[test]
+    fn refusal_printed_once_and_not_retried() {
+        let (mut app, printed, mut rx) = capture();
+        app.server_msg(&ServerMsg::Identified {
+            callsign: "SP-ABC".into(),
+            aircraft_type: "C172".into(),
+            callsign_source: CallsignSource::Sim,
+        });
+        let refused = ServerMsg::AircraftChangeRefused {
+            reason: "callsign SP-XYZ is already in use".into(),
+        };
+        app.server_msg(&refused);
+        app.server_msg(&refused);
+        let printed = printed.lock().unwrap();
+        assert_eq!(
+            printed[1..],
+            [
+                "Aircraft change refused: callsign SP-XYZ is already in use; still flying as SP-ABC (C172)"
+            ]
+        );
+        // The client sends nothing in answer.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn waiting_notice_names_the_address_every_10_s() {
+        let (app, printed, _rx) = capture();
+        let (tx, _id) = watch::channel(None);
+        let mut app = app.with_identity(IdentityTracker::new(None, tx), "127.0.0.1:49000".into());
+        let t0 = std::time::Instant::now();
+        let s = Duration::from_secs;
+        app.identity_tick(t0);
+        app.identity_tick(t0 + s(5));
+        app.identity_tick(t0 + s(10));
+        assert_eq!(
+            *printed.lock().unwrap(),
+            ["Waiting for X-Plane at 127.0.0.1:49000 for the aircraft type…"; 2]
+        );
     }
 
     #[test]

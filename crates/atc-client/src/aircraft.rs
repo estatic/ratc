@@ -1,5 +1,9 @@
-//! The aircraft the sim reports (type and tail number) and a debounce for changes of it.
+//! The aircraft the sim reports (type and tail number), a debounce for changes of it, and
+//! the identity (callsign and type) the client presents to the server.
 use std::time::{Duration, Instant};
+
+use atc_proto::CallsignSource;
+use tokio::sync::watch;
 
 /// What X-Plane says about the loaded aircraft; `None` is unknown or empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,9 +47,167 @@ impl ChangeFilter {
     }
 }
 
+/// Type sent while X-Plane has not reported one.
+pub const UNKNOWN_TYPE: &str = "ZZZZ";
+
+/// Printed (once) when there is neither a config callsign nor a tail number.
+pub const MISSING_CALLSIGN: &str =
+    "X-Plane has no tail number for this aircraft; set callsign in config/client.toml";
+
+/// Who the client tells the server it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub callsign: String,
+    pub aircraft_type: String,
+    pub source: CallsignSource,
+}
+
+/// No callsign in the config and no tail number from the sim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingCallsign;
+
+/// The config callsign wins; otherwise the sim tail number. Unknown type is `ZZZZ`.
+pub fn resolve(
+    config_callsign: Option<&str>,
+    sim: &SimAircraft,
+) -> Result<Identity, MissingCallsign> {
+    let (callsign, source) = match (config_callsign, sim.tail.as_deref()) {
+        (Some(c), _) => (c, CallsignSource::Config),
+        (None, Some(t)) => (t, CallsignSource::Sim),
+        (None, None) => return Err(MissingCallsign),
+    };
+    Ok(Identity {
+        callsign: callsign.to_string(),
+        aircraft_type: sim.icao.clone().unwrap_or_else(|| UNKNOWN_TYPE.into()),
+        source,
+    })
+}
+
+/// Debounces what the sim reports, resolves it and publishes the identity for the connection.
+pub struct IdentityTracker {
+    config_callsign: Option<String>,
+    filter: ChangeFilter,
+    /// The latest sim report, re-offered on every [`IdentityTracker::tick`].
+    last: Option<SimAircraft>,
+    tx: watch::Sender<Option<Identity>>,
+    missing_reported: bool,
+}
+
+impl IdentityTracker {
+    pub fn new(config_callsign: Option<String>, tx: watch::Sender<Option<Identity>>) -> Self {
+        Self {
+            config_callsign,
+            filter: ChangeFilter::new(Duration::from_secs(2)),
+            last: None,
+            tx,
+            missing_reported: false,
+        }
+    }
+
+    /// The connection is held back for want of the sim's aircraft: nothing reported yet and
+    /// no identity to start with.
+    pub fn waiting_for_sim(&self) -> bool {
+        self.last.is_none() && self.tx.borrow().is_none()
+    }
+
+    /// A new report from the sim. Returns a line to show, if any.
+    pub fn observe(&mut self, now: Instant, mut sim: SimAircraft) -> Option<&'static str> {
+        if self.config_callsign.is_some() {
+            // Only the type matters; the tail number must not restart the debounce.
+            sim.tail = None;
+        }
+        self.last = Some(sim);
+        self.tick(now)
+    }
+
+    /// Re-offers the latest report so a value that has become stable is released although
+    /// the sim sent nothing new (it updates at 1 Hz).
+    pub fn tick(&mut self, now: Instant) -> Option<&'static str> {
+        let sim = self.filter.offer(now, self.last.clone()?)?;
+        match resolve(self.config_callsign.as_deref(), &sim) {
+            Ok(id) => {
+                self.missing_reported = false;
+                self.tx.send_replace(Some(id));
+                None
+            }
+            Err(MissingCallsign) if !self.missing_reported => {
+                self.missing_reported = true;
+                Some(MISSING_CALLSIGN)
+            }
+            Err(MissingCallsign) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sim(icao: Option<&str>, tail: Option<&str>) -> SimAircraft {
+        SimAircraft {
+            icao: icao.map(Into::into),
+            tail: tail.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn resolve_prefers_config_callsign() {
+        let id = resolve(Some("SP-ABC"), &sim(Some("C172"), Some("N123"))).unwrap();
+        assert_eq!(id.callsign, "SP-ABC");
+        assert_eq!(id.aircraft_type, "C172");
+        assert_eq!(id.source, CallsignSource::Config);
+    }
+
+    #[test]
+    fn resolve_uses_tail_number() {
+        let id = resolve(None, &sim(Some("B738"), Some("SP-LWA"))).unwrap();
+        assert_eq!(id.callsign, "SP-LWA");
+        assert_eq!(id.source, CallsignSource::Sim);
+    }
+
+    #[test]
+    fn resolve_without_any_callsign_is_missing() {
+        assert_eq!(
+            resolve(None, &sim(Some("C172"), None)),
+            Err(MissingCallsign)
+        );
+    }
+
+    #[test]
+    fn unknown_type_is_zzzz() {
+        let id = resolve(Some("SP-ABC"), &sim(None, None)).unwrap();
+        assert_eq!(id.aircraft_type, "ZZZZ");
+    }
+
+    #[test]
+    fn tracker_releases_a_stable_value_on_ticks_alone() {
+        let (tx, rx) = watch::channel(None);
+        let mut t = IdentityTracker::new(None, tx);
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        assert_eq!(t.observe(t0, sim(Some("C1"), Some("SP-A"))), None);
+        // The prefix is replaced before it was stable.
+        assert_eq!(
+            t.observe(t0 + s(1), sim(Some("C172"), Some("SP-ABC"))),
+            None
+        );
+        assert_eq!(*rx.borrow(), None);
+        t.tick(t0 + s(2));
+        assert_eq!(*rx.borrow(), None);
+        t.tick(t0 + s(3));
+        assert_eq!(rx.borrow().as_ref().unwrap().callsign, "SP-ABC");
+    }
+
+    #[test]
+    fn tracker_reports_a_missing_callsign_once() {
+        let (tx, rx) = watch::channel(None);
+        let mut t = IdentityTracker::new(None, tx);
+        let t0 = Instant::now();
+        t.observe(t0, sim(Some("C172"), None));
+        assert_eq!(t.tick(t0 + Duration::from_secs(2)), Some(MISSING_CALLSIGN));
+        assert_eq!(t.tick(t0 + Duration::from_secs(3)), None);
+        assert_eq!(*rx.borrow(), None);
+    }
 
     fn ac(icao: &str) -> SimAircraft {
         SimAircraft {

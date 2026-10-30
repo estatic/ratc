@@ -1,12 +1,11 @@
 # Virtual ATC client. Copy this file to config/client.toml (git-ignored) and edit that copy.
 # Run from the repo root: `atc-client [--text] [--record track.csv]`.
 server = "ws://127.0.0.1:8740/ws"
-callsign = "SP-ABC"
-aircraft_type = "C172"
+# Always fly under this callsign. Without it, the X-Plane tail number of the loaded aircraft is
+# used. The aircraft type always comes from X-Plane.
+# callsign = "SP-ABC"
 # X-Plane 11 host:port (UDP RREF, read-only)
 xplane = "127.0.0.1:49000"
-# EPKK field elevation, for cloud bases above ground in the weather sent to the server
-field_elev_ft = 791
 # Audio devices by name substring; the system default when omitted.
 # input_device = "USB"
 # output_device = "Headset"
