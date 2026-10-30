@@ -5,7 +5,6 @@ mod common;
 
 use std::sync::Mutex;
 
-use atc_core::atis::Weather;
 use atc_core::engine::AtcOutput;
 use atc_core::handover::FlightHandover;
 use atc_core::state::{AircraftState, SimTime};
@@ -14,7 +13,8 @@ use atc_geo::LatLon;
 use atc_navdata::enroute::{EnrouteKind, EnrouteUnitDef, SectorDef};
 use atc_navdata::model::{Destination, FreqKind};
 use atc_navdata::procedures::PositionDef;
-use atc_phraseology::{AtcItem, Callsign, FlightRules, Lang, Wind};
+use atc_phraseology::{AtcItem, Callsign, FlightRules, Lang};
+use atc_proto::{CloudLayer, WeatherFrame};
 use atc_server::network::{Network, Owner};
 use atc_server::stations::LoadedStation;
 use common::fixture_station;
@@ -52,6 +52,19 @@ callsign = "Shared Approach"
 khz = 119100
 "#;
 
+/// Calm-ish weather with the given cloud layers.
+fn frame(clouds: Vec<CloudLayer>) -> WeatherFrame {
+    WeatherFrame {
+        wind_dir_deg: 90,
+        wind_speed_kt: 5,
+        visibility_m: 10_000,
+        clouds,
+        temp_c: 15,
+        dewpoint_c: 10,
+        qnh_hpa: 1013,
+    }
+}
+
 fn cs(s: &str) -> Callsign {
     Callsign::new(s)
 }
@@ -61,18 +74,7 @@ fn network(zzzy_extra: &str, zzzz_extra: &str) -> Network {
         fixture_station("ZZZY", zzzy_extra),
         fixture_station("ZZZZ", zzzz_extra),
     ]);
-    net.on_weather(Weather {
-        wind: Wind {
-            dir_deg: 90,
-            speed_kt: 5,
-            calm: false,
-        },
-        visibility_m: 10_000,
-        clouds: vec![],
-        temp_c: 15,
-        dewpoint_c: 10,
-        qnh_hpa: 1013,
-    });
+    net.on_weather(&frame(vec![]));
     net
 }
 
@@ -723,18 +725,7 @@ fn silent_station_change_to_or_release() {
         let net = Network::new(vec![testville, fixture_station("ZZZZ", ZZZZ_EXTRA)])
             .with_units(vec![alpha()]);
         let c = join(&net, "SPTST");
-        net.on_weather(Weather {
-            wind: Wind {
-                dir_deg: 90,
-                speed_kt: 5,
-                calm: false,
-            },
-            visibility_m: 10_000,
-            clouds: vec![],
-            temp_c: 15,
-            dewpoint_c: 10,
-            qnh_hpa: 1013,
-        });
+        net.on_weather(&frame(vec![]));
         identified_by_alpha(&net, &c, 10.2);
         let mut heard = Vec::new();
         let (mut lat, mut t) = (10.2, 1.0);
@@ -882,18 +873,7 @@ kind = "Acc"
             ..bravo()
         },
     ]);
-    net.on_weather(Weather {
-        wind: Wind {
-            dir_deg: 90,
-            speed_kt: 5,
-            calm: false,
-        },
-        visibility_m: 10_000,
-        clouds: vec![],
-        temp_c: 15,
-        dewpoint_c: 10,
-        qnh_hpa: 1013,
-    });
+    net.on_weather(&frame(vec![]));
     let c = join(&net, "SPTST");
     let mut h = ifr_to_testville(&c);
     let plan = h.plan.as_mut().unwrap();
@@ -1031,18 +1011,7 @@ fn crossing_unstaffed_atz_keeps_flight_with_unit() {
     }];
     let net = Network::new(vec![testville, fixture_station("ZZZZ", ZZZZ_EXTRA)])
         .with_units(vec![wide_alpha()]);
-    net.on_weather(Weather {
-        wind: Wind {
-            dir_deg: 90,
-            speed_kt: 5,
-            calm: false,
-        },
-        visibility_m: 10_000,
-        clouds: vec![],
-        temp_c: 15,
-        dewpoint_c: 10,
-        qnh_hpa: 1013,
-    });
+    net.on_weather(&frame(vec![]));
     let c = join(&net, "SPTST");
     identified_by_alpha(&net, &c, 10.2);
     let mut heard = Vec::new();
@@ -1095,18 +1064,7 @@ mod restart {
     fn net() -> Network {
         let net = Network::new(vec![fixture_station("ZZZY", ""), zeta_with_testville()])
             .with_units(vec![alpha()]);
-        net.on_weather(Weather {
-            wind: Wind {
-                dir_deg: 90,
-                speed_kt: 5,
-                calm: false,
-            },
-            visibility_m: 10_000,
-            clouds: vec![],
-            temp_c: 15,
-            dewpoint_c: 10,
-            qnh_hpa: 1013,
-        });
+        net.on_weather(&frame(vec![]));
         net
     }
 
@@ -1246,6 +1204,47 @@ mod restart {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    /// A flight ended by the network is gone from stations, units, owners and the saved
+    /// state; the same callsign registered again is a fresh flight.
+    #[test]
+    fn end_flight_forgets_everywhere() {
+        let n = net();
+        // SPONE is a station's flight, SPTST a unit's.
+        let (one, c) = in_flight(&n);
+        assert_eq!(n.owner(&c), Some(Owner::Unit(0)));
+        assert!(registered(&n, ZZZY, &one));
+        n.end_flight(&c);
+        assert_eq!(n.owner(&c), None);
+        let (_, state) = n.persisted();
+        assert!(
+            state.units.iter().all(|u| u.flights.is_empty()),
+            "{state:?}"
+        );
+        assert!(!state.owners.contains_key(&c.0), "{state:?}");
+        // The other flight is untouched.
+        assert_eq!(n.owner(&one), Some(Owner::Station(ZZZY)));
+        assert!(registered(&n, ZZZY, &one));
+
+        n.end_flight(&one);
+        assert_eq!(n.owner(&one), None);
+        assert!(!registered(&n, ZZZY, &one) && !registered(&n, ZZZZ, &one));
+        let (snaps, state) = n.persisted();
+        assert!(state.owners.is_empty(), "{state:?}");
+        for (_, s) in &snaps {
+            assert!(!serde_json::to_string(s).unwrap().contains("SPONE"));
+        }
+        // The same callsign again, another aircraft: a fresh strip.
+        n.register_pilot(PilotProfile {
+            callsign: one.clone(),
+            aircraft_type: "B738".into(),
+        });
+        n.on_telemetry(sample(&one, 10.0, at(10.5), 0.0, 0.0, TESTVILLE_TWR));
+        let mut eng = n.stations()[ZZZY].engine.lock().unwrap();
+        let s = eng.strip(&one).expect("fresh strip");
+        assert!(s.plan.is_none());
+        assert_eq!(eng.export_flight(&one).unwrap().aircraft_type, "B738");
+    }
+
     /// An owner entry nobody holds any more is dropped at disconnect and at save time.
     #[test]
     fn owners_nobody_holds_are_dropped() {
@@ -1290,4 +1289,30 @@ mod restart {
         assert!(!json.exists(), "rewritten although nothing changed");
         std::fs::remove_dir_all(&d).unwrap();
     }
+}
+
+/// The frame's cloud bases are above sea level; every station reports them over its own field.
+#[test]
+fn weather_cloud_bases_follow_each_stations_elevation() {
+    let net = Network::new(vec![
+        fixture_station("ZZZY", ""),
+        fixture_station("ZZZZ", ""),
+    ]);
+    let elev: Vec<i32> = net
+        .stations()
+        .iter()
+        .map(|s| s.engine.lock().unwrap().field_elevation_ft())
+        .collect();
+    assert_eq!(elev, [50, 100]);
+    net.on_weather(&frame(vec![CloudLayer {
+        cover: "bkn".into(),
+        base_ft_msl: 2150,
+    }]));
+    let atis: Vec<String> = net
+        .stations()
+        .iter()
+        .map(|s| s.engine.lock().unwrap().atis_broadcast().unwrap().1)
+        .collect();
+    assert!(atis[0].contains("broken clouds two thousand one hundred feet"));
+    assert!(atis[1].contains("broken clouds two thousand feet"));
 }

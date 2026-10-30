@@ -328,10 +328,25 @@ connect; this is on purpose (protection from foreign web pages). The native clie
 
 ## 5. Client
 
-Settings: `config/client.toml`: `server`, `callsign` (SP-ABC), `aircraft_type`, `xplane`,
-`field_elev_ft` (791 for EPKK), `overlay` (the on-screen plugin's address, default
-`127.0.0.1:48010`), `input_device` / `output_device` (part of the device name; system defaults
-without them).
+Settings: `config/client.toml`: `server`, `xplane`, `overlay` (the on-screen plugin's address,
+default `127.0.0.1:48010`), `input_device` / `output_device` (part of the device name; system
+defaults without them), and optionally `callsign` (SP-ABC).
+
+The aircraft type always comes from X-Plane. The callsign is the one in `client.toml` when set;
+otherwise it is the tail number of the loaded aircraft. The client waits for X-Plane to report the
+aircraft (`Waiting for X-Plane at <address> for the aircraft type…` every 10 s) before it
+connects; only `--text` mode with a `callsign` connects without waiting, with type `ZZZZ` until
+X-Plane reports the real one. If the aircraft has no tail number (and no `callsign` is set), the
+client says so and does not connect; if that happens after you changed aircraft mid-session, it
+keeps flying as before and says so.
+
+After connecting, the client prints the identity the server settled on, e.g.
+`Aircraft: C172, callsign SPABC (X-Plane tail number)` (or `(from config)`; the server writes
+callsigns without hyphens). Changing the aircraft
+in X-Plane starts a new flight: the old strip, clearances and frequencies are dropped, even under
+the same callsign. If the new tail number is taken by another pilot the change is refused, the old
+flight continues and the client says `Aircraft change refused: …` once. Old `aircraft_type` and
+`field_elev_ft` lines are ignored with a warning; remove them.
 
 ```
 target/release/atc-client --help

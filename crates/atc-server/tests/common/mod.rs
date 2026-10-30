@@ -11,7 +11,10 @@ use atc_core::testkit::circuit_track;
 use atc_navdata::model::{Airport, Destination};
 use atc_navdata::parse_apt_dat;
 use atc_navdata::procedures::{Procedures, parse_procedures};
-use atc_proto::{AudioFrame, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame, WeatherFrame};
+use atc_proto::{
+    AudioFrame, CallsignSource, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame,
+    WeatherFrame,
+};
 use atc_server::app::{AppState, OwnerPrompts, StationMap, SttPrompts, router};
 use atc_server::hub::Hub;
 use atc_server::network::Network;
@@ -242,11 +245,16 @@ impl Client {
             protocol: PROTOCOL_VERSION,
             callsign: callsign.into(),
             aircraft_type: "C172".into(),
+            callsign_source: CallsignSource::Config,
         })
         .await;
         match c.recv().await {
             In::Msg(ServerMsg::Welcome { protocol, .. }) => assert_eq!(protocol, PROTOCOL_VERSION),
             other => panic!("expected welcome, got {other:?}"),
+        }
+        match c.recv().await {
+            In::Msg(ServerMsg::Identified { .. }) => {}
+            other => panic!("expected identified, got {other:?}"),
         }
         c
     }

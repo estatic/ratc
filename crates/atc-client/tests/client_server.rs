@@ -6,25 +6,48 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use atc_client::aircraft::Identity;
 use atc_client::app::{App, Input, spawn_links};
 use atc_client::connection::{Backoff, ConnConfig, Outgoing, ServerEvent, run_connection};
 use atc_client::{XpConfig, XpUpdate};
-use atc_proto::{ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame};
+use atc_proto::{CallsignSource, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame};
 use common::fake_xp::{T, answer, read_subscriptions};
 use common::server::{GROUND, TAXI_REQUEST, parked, start, start_on};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
 fn conn_cfg(url: String, backoff: Backoff) -> ConnConfig {
-    ConnConfig {
-        url,
-        callsign: "SP-ABC".into(),
-        aircraft_type: "C172".into(),
-        backoff,
+    ConnConfig { url, backoff }
+}
+
+fn ident(callsign: &str, aircraft_type: &str) -> Identity {
+    Identity {
+        callsign: callsign.into(),
+        aircraft_type: aircraft_type.into(),
+        source: CallsignSource::Config,
     }
+}
+
+fn hello(callsign: &str, aircraft_type: &str) -> ClientMsg {
+    ClientMsg::Hello {
+        protocol: PROTOCOL_VERSION,
+        callsign: callsign.into(),
+        aircraft_type: aircraft_type.into(),
+        callsign_source: CallsignSource::Config,
+    }
+}
+
+fn welcome() -> Message {
+    Message::text(
+        serde_json::to_string(&ServerMsg::Welcome {
+            protocol: PROTOCOL_VERSION,
+            session: "1".into(),
+        })
+        .unwrap(),
+    )
 }
 
 fn telemetry(com1_khz: u32) -> TelemetryFrame {
@@ -73,8 +96,10 @@ async fn client_reconnects_with_backoff() {
     let url = format!("ws://{}/ws", listener.local_addr().unwrap());
     let (to_conn, from_ui) = mpsc::channel(16);
     let (to_ui, mut events) = mpsc::channel(16);
+    let (_id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
     let task = tokio::spawn(run_connection(
         conn_cfg(url, Backoff::new(ms(40), ms(320))),
+        id_rx,
         from_ui,
         to_ui,
     ));
@@ -114,6 +139,7 @@ async fn client_reconnects_with_backoff() {
         protocol: PROTOCOL_VERSION,
         callsign: "SP-ABC".into(),
         aircraft_type: "C172".into(),
+        callsign_source: CallsignSource::Config,
     };
     let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
     let capped = at[4].elapsed();
@@ -162,8 +188,10 @@ async fn client_joins_real_server_once_it_starts() {
     let (to_conn, from_ui) = mpsc::channel(16);
     let (to_ui, mut events) = mpsc::channel(16);
     let backoff = Backoff::new(Duration::from_millis(50), Duration::from_millis(200));
+    let (_id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
     tokio::spawn(run_connection(
         conn_cfg(format!("ws://{addr}/ws"), backoff),
+        id_rx,
         from_ui,
         to_ui,
     ));
@@ -210,7 +238,7 @@ fn parked_value(name: &str) -> f32 {
 async fn text_mode_roundtrip() {
     let srv = start().await;
     let fake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let mut xp = XpConfig::new(fake.local_addr().unwrap(), 791.0);
+    let mut xp = XpConfig::new(fake.local_addr().unwrap());
     xp.local_bind = "127.0.0.1:0".parse().unwrap();
     let fake_xp = tokio::spawn(async move {
         let (client, names) = read_subscriptions(&fake).await;
@@ -222,7 +250,13 @@ async fn text_mode_roundtrip() {
 
     let (inputs, inputs_rx) = mpsc::channel(256);
     let backoff = Backoff::new(Duration::from_millis(50), Duration::from_millis(200));
-    let to_conn = spawn_links(conn_cfg(srv.url.clone(), backoff), xp, inputs.clone());
+    let (_id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
+    let to_conn = spawn_links(
+        conn_cfg(srv.url.clone(), backoff),
+        id_rx,
+        xp,
+        inputs.clone(),
+    );
     let (lines_tx, mut lines) = mpsc::unbounded_channel::<String>();
     let printed = Arc::new(Mutex::new(Vec::new()));
     let p = printed.clone();
@@ -269,11 +303,13 @@ async fn text_mode_roundtrip() {
 async fn xplane_reader_feeds_links() {
     // spawn_links forwards X-Plane updates as inputs even with no server around
     let fake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let mut xp = XpConfig::new(fake.local_addr().unwrap(), 791.0);
+    let mut xp = XpConfig::new(fake.local_addr().unwrap());
     xp.local_bind = "127.0.0.1:0".parse().unwrap();
     let (inputs, mut rx) = mpsc::channel(64);
+    let (_id_tx, id_rx) = watch::channel(None);
     let _to_conn = spawn_links(
         conn_cfg("ws://127.0.0.1:9/ws".into(), Backoff::default()),
+        id_rx,
         xp,
         inputs,
     );
@@ -285,4 +321,204 @@ async fn xplane_reader_feeds_links() {
             break;
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hello_waits_for_identity() {
+    let ms = Duration::from_millis;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let (_to_conn, from_ui) = mpsc::channel(16);
+    let (to_ui, _events) = mpsc::channel(16);
+    let (id_tx, id_rx) = watch::channel(None);
+    tokio::spawn(run_connection(
+        conn_cfg(url, Backoff::new(ms(40), ms(80))),
+        id_rx,
+        from_ui,
+        to_ui,
+    ));
+    // No identity: no connection attempt at all.
+    assert!(
+        timeout(ms(300), listener.accept()).await.is_err(),
+        "connected without an identity"
+    );
+    id_tx.send_replace(Some(ident("SP-LWA", "B738")));
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-LWA", "B738"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn identity_change_sends_aircraft_changed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let (_to_conn, from_ui) = mpsc::channel(16);
+    let (to_ui, _events) = mpsc::channel(16);
+    let (id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
+    tokio::spawn(run_connection(
+        conn_cfg(url, Backoff::default()),
+        id_rx,
+        from_ui,
+        to_ui,
+    ));
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+
+    id_tx.send_replace(Some(ident("SP-ABC", "B738")));
+    assert_eq!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged {
+            callsign: "SP-ABC".into(),
+            aircraft_type: "B738".into(),
+            callsign_source: CallsignSource::Config,
+        }
+    );
+    // The same identity again is not a change.
+    id_tx.send_replace(Some(ident("SP-ABC", "B738")));
+    id_tx.send_replace(Some(ident("SP-ABC", "A320")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { aircraft_type, .. } if aircraft_type == "A320"
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconnect_uses_latest_identity() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let (_to_conn, from_ui) = mpsc::channel(16);
+    let (to_ui, _events) = mpsc::channel(16);
+    let (id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
+    tokio::spawn(run_connection(
+        conn_cfg(
+            url,
+            Backoff::new(Duration::from_millis(40), Duration::from_millis(80)),
+        ),
+        id_rx,
+        from_ui,
+        to_ui,
+    ));
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+    id_tx.send_replace(Some(ident("SP-ABC", "B738")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { .. }
+    ));
+    drop(ws);
+
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "B738"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refused_change_is_not_resent() {
+    let ms = Duration::from_millis;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let (_to_conn, from_ui) = mpsc::channel(16);
+    let (to_ui, _events) = mpsc::channel(64);
+    let (id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
+    tokio::spawn(run_connection(
+        conn_cfg(url, Backoff::new(ms(40), ms(80))),
+        id_rx,
+        from_ui,
+        to_ui,
+    ));
+    let identified = |c: &str, t: &str| {
+        Message::text(
+            serde_json::to_string(&ServerMsg::Identified {
+                callsign: c.into(),
+                aircraft_type: t.into(),
+                callsign_source: CallsignSource::Config,
+            })
+            .unwrap(),
+        )
+    };
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+    ws.send(identified("SP-ABC", "C172")).await.unwrap();
+
+    id_tx.send_replace(Some(ident("SP-XYZ", "B738")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { callsign, .. } if callsign == "SP-XYZ"
+    ));
+    let refusal = ServerMsg::AircraftChangeRefused {
+        reason: "callsign SP-XYZ is already in use".into(),
+    };
+    ws.send(Message::text(serde_json::to_string(&refusal).unwrap()))
+        .await
+        .unwrap();
+    // Give the client time to take the refusal in, then drop the link.
+    tokio::time::sleep(ms(100)).await;
+    drop(ws);
+
+    // The reconnect presents the accepted identity, and the refused one is not offered again.
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+    ws.send(identified("SP-ABC", "C172")).await.unwrap();
+    assert!(
+        timeout(ms(400), next_text(&mut ws)).await.is_err(),
+        "the refused change was sent again"
+    );
+
+    // A different sim identity is offered normally.
+    id_tx.send_replace(Some(ident("SP-QRS", "B738")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { callsign, .. } if callsign == "SP-QRS"
+    ));
+}
+
+/// The server answers with the callsign normalized (`SPABC`); the sim reporting the same
+/// aircraft again is no change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn normalized_identified_is_not_a_change() {
+    let ms = Duration::from_millis;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let (_to_conn, from_ui) = mpsc::channel(16);
+    let (to_ui, _events) = mpsc::channel(64);
+    let (id_tx, id_rx) = watch::channel(Some(ident("SP-ABC", "C172")));
+    tokio::spawn(run_connection(
+        conn_cfg(url, Backoff::new(ms(40), ms(80))),
+        id_rx,
+        from_ui,
+        to_ui,
+    ));
+    let (s, _) = timeout(T, listener.accept()).await.unwrap().unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, hello("SP-ABC", "C172"));
+    ws.send(welcome()).await.unwrap();
+    let identified = ServerMsg::Identified {
+        callsign: "SPABC".into(),
+        aircraft_type: "C172".into(),
+        callsign_source: CallsignSource::Config,
+    };
+    ws.send(Message::text(serde_json::to_string(&identified).unwrap()))
+        .await
+        .unwrap();
+    tokio::time::sleep(ms(100)).await;
+
+    id_tx.send_replace(Some(ident("SP-ABC", "C172")));
+    assert!(
+        timeout(ms(400), next_text(&mut ws)).await.is_err(),
+        "the same aircraft was announced as a change"
+    );
+    // A real change still goes out.
+    id_tx.send_replace(Some(ident("SP-ABC", "B738")));
+    assert!(matches!(
+        next_text(&mut ws).await,
+        ClientMsg::AircraftChanged { aircraft_type, .. } if aircraft_type == "B738"
+    ));
 }

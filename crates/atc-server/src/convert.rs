@@ -34,8 +34,9 @@ fn cloud_cover(s: &str) -> Option<CloudCover> {
     }
 }
 
-/// Layers with an unknown cover are skipped. Zero wind speed is calm.
-pub(crate) fn weather(f: &WeatherFrame) -> Weather {
+/// Layers with an unknown cover are skipped. Zero wind speed is calm. Cloud bases arrive
+/// above mean sea level and become heights above the field (never below zero).
+pub(crate) fn weather(f: &WeatherFrame, field_elev_ft: i32) -> Weather {
     Weather {
         wind: Wind {
             dir_deg: f.wind_dir_deg,
@@ -46,7 +47,10 @@ pub(crate) fn weather(f: &WeatherFrame) -> Weather {
         clouds: f
             .clouds
             .iter()
-            .filter_map(|l| Some((cloud_cover(&l.cover)?, l.base_ft_agl)))
+            .filter_map(|l| {
+                let agl = (i64::from(l.base_ft_msl) - i64::from(field_elev_ft)).max(0);
+                Some((cloud_cover(&l.cover)?, agl as u32))
+            })
             .collect(),
         temp_c: f.temp_c,
         dewpoint_c: f.dewpoint_c,
@@ -85,7 +89,7 @@ mod tests {
     fn layer(cover: &str, base: u32) -> CloudLayer {
         CloudLayer {
             cover: cover.into(),
-            base_ft_agl: base,
+            base_ft_msl: base,
         }
     }
 
@@ -107,7 +111,7 @@ mod tests {
             qnh_hpa: 1021,
         };
         assert_eq!(
-            weather(&f),
+            weather(&f, 0),
             Weather {
                 wind: Wind {
                     dir_deg: 250,
@@ -129,6 +133,27 @@ mod tests {
     }
 
     #[test]
+    fn weather_converts_msl_to_agl_with_station_elevation() {
+        let f = WeatherFrame {
+            wind_dir_deg: 250,
+            wind_speed_kt: 8,
+            visibility_m: 9000,
+            clouds: vec![layer("sct", 2791), layer("bkn", 500)],
+            temp_c: 5,
+            dewpoint_c: 1,
+            qnh_hpa: 1013,
+        };
+        assert_eq!(
+            weather(&f, 791).clouds,
+            vec![(CloudCover::Sct, 2000), (CloudCover::Bkn, 0)]
+        );
+        assert_eq!(
+            weather(&f, 0).clouds,
+            vec![(CloudCover::Sct, 2791), (CloudCover::Bkn, 500)]
+        );
+    }
+
+    #[test]
     fn zero_wind_is_calm() {
         let f = WeatherFrame {
             wind_dir_deg: 0,
@@ -139,7 +164,7 @@ mod tests {
             dewpoint_c: 5,
             qnh_hpa: 1013,
         };
-        assert!(weather(&f).wind.calm);
+        assert!(weather(&f, 0).wind.calm);
     }
 
     #[test]

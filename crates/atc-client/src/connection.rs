@@ -1,7 +1,8 @@
 //! WebSocket link to the server with automatic reconnection.
 //!
-//! [`run_connection`] connects, says `Hello`, and after `Welcome` re-sends the latest
-//! weather and telemetry so the server re-tunes the client. When the link drops (or a
+//! [`run_connection`] waits for the aircraft identity, connects, says `Hello`, and after
+//! `Welcome` re-sends the latest weather and telemetry so the server re-tunes the client.
+//! A changed identity while connected goes out as `AircraftChanged`. When the link drops (or a
 //! connection attempt fails) it waits per [`Backoff`] and tries again. While disconnected,
 //! telemetry and weather only update the "latest" copy; PTT, audio and text are dropped.
 
@@ -10,9 +11,11 @@ use std::time::Duration;
 use atc_proto::{AudioFrame, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame, WeatherFrame};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+use crate::aircraft::Identity;
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -59,8 +62,6 @@ impl Default for Backoff {
 pub struct ConnConfig {
     /// e.g. `ws://127.0.0.1:8740/ws`
     pub url: String,
-    pub callsign: String,
-    pub aircraft_type: String,
     pub backoff: Backoff,
 }
 
@@ -87,6 +88,8 @@ pub enum ServerEvent {
 struct Latest {
     weather: Option<WeatherFrame>,
     telemetry: Option<TelemetryFrame>,
+    /// What the server said about our identity; survives reconnects like the rest.
+    known: Known,
 }
 
 impl Latest {
@@ -112,14 +115,43 @@ enum End {
     Lost,
 }
 
-/// Runs until `from_ui` is closed or `to_ui` is dropped.
+/// Waits until an identity is published; `None` when the UI side went away first.
+async fn wait_identity(
+    identity: &mut watch::Receiver<Option<Identity>>,
+    latest: &mut Latest,
+    from_ui: &mut mpsc::Receiver<Outgoing>,
+    to_ui: &mpsc::Sender<ServerEvent>,
+) -> Option<Identity> {
+    loop {
+        if let Some(id) = identity.borrow_and_update().clone() {
+            return Some(id);
+        }
+        tokio::select! {
+            c = identity.changed() => c.ok()?,
+            m = from_ui.recv() => note_offline(latest, &m?),
+            _ = to_ui.closed() => return None,
+        }
+    }
+}
+
+/// Runs until `from_ui` is closed or `to_ui` is dropped. Connects only once `identity` holds
+/// a value; every (re)connect says `Hello` with the latest one.
 pub async fn run_connection(
     mut cfg: ConnConfig,
+    mut identity: watch::Receiver<Option<Identity>>,
     mut from_ui: mpsc::Receiver<Outgoing>,
     to_ui: mpsc::Sender<ServerEvent>,
 ) -> anyhow::Result<()> {
     let mut latest = Latest::default();
     loop {
+        let Some(id) = wait_identity(&mut identity, &mut latest, &mut from_ui, &to_ui).await else {
+            return Ok(());
+        };
+        // A refused identity must not be presented again: keep the accepted one.
+        let id = match (&latest.known.refused, &latest.known.accepted) {
+            (Some(r), Some(a)) if *r == id => a.clone(),
+            _ => id,
+        };
         let attempt = tokio::time::timeout(
             CONNECT_TIMEOUT,
             tokio_tungstenite::connect_async(cfg.url.as_str()),
@@ -127,7 +159,17 @@ pub async fn run_connection(
         match attempt.await {
             Ok(Ok((ws, _))) => {
                 tracing::debug!(url = %cfg.url, "connected");
-                if let End::Exit = session(ws, &mut cfg, &mut latest, &mut from_ui, &to_ui).await {
+                if let End::Exit = session(
+                    ws,
+                    &mut cfg,
+                    id,
+                    &mut identity,
+                    &mut latest,
+                    &mut from_ui,
+                    &to_ui,
+                )
+                .await
+                {
                     return Ok(());
                 }
             }
@@ -169,18 +211,59 @@ async fn send(ws: &mut Ws, out: Outgoing) -> bool {
     ws.send(msg).await.is_ok()
 }
 
+/// What the server has said about our identity, kept across reconnects.
+#[derive(Default)]
+struct Known {
+    /// The last identity the server accepted (`Identified`).
+    accepted: Option<Identity>,
+    /// An identity the server refused: not sent again, and not used for `Hello` while the
+    /// sim still reports it, so a reconnect keeps the old flight.
+    refused: Option<Identity>,
+    /// Identities sent (`Hello`, `AircraftChanged`) that the server has not answered yet.
+    pending: std::collections::VecDeque<Identity>,
+}
+
+/// Tells the server about the current identity when it differs from `sent` and was not
+/// refused.
+async fn announce(
+    ws: &mut Ws,
+    identity: &mut watch::Receiver<Option<Identity>>,
+    sent: &mut Identity,
+    known: &mut Known,
+) -> bool {
+    let Some(now) = identity.borrow_and_update().clone() else {
+        return true;
+    };
+    if now.same_flight(sent) || known.refused.as_ref().is_some_and(|r| now.same_flight(r)) {
+        return true;
+    }
+    let msg = ClientMsg::AircraftChanged {
+        callsign: now.callsign.clone(),
+        aircraft_type: now.aircraft_type.clone(),
+        callsign_source: now.source,
+    };
+    known.pending.push_back(now.clone());
+    *sent = now;
+    send(ws, Outgoing::Msg(msg)).await
+}
+
 async fn session(
     mut ws: Ws,
     cfg: &mut ConnConfig,
+    mut sent: Identity,
+    identity: &mut watch::Receiver<Option<Identity>>,
     latest: &mut Latest,
     from_ui: &mut mpsc::Receiver<Outgoing>,
     to_ui: &mpsc::Sender<ServerEvent>,
 ) -> End {
     let hello = ClientMsg::Hello {
         protocol: PROTOCOL_VERSION,
-        callsign: cfg.callsign.clone(),
-        aircraft_type: cfg.aircraft_type.clone(),
+        callsign: sent.callsign.clone(),
+        aircraft_type: sent.aircraft_type.clone(),
+        callsign_source: sent.source,
     };
+    latest.known.pending.clear();
+    latest.known.pending.push_back(sent.clone());
     if !send(&mut ws, Outgoing::Msg(hello)).await {
         return End::Lost;
     }
@@ -198,6 +281,14 @@ async fn session(
                 }
                 latest.note(&m);
                 if !send(&mut ws, m).await {
+                    break End::Lost;
+                }
+            }
+            c = identity.changed() => {
+                if c.is_err() {
+                    break End::Exit;
+                }
+                if welcomed && !announce(&mut ws, identity, &mut sent, &mut latest.known).await {
                     break End::Lost;
                 }
             }
@@ -224,6 +315,30 @@ async fn session(
                     }
                     Some(Ok(_)) => continue,
                 };
+                match &event {
+                    ServerEvent::Msg(ServerMsg::Identified { callsign, aircraft_type, callsign_source }) => {
+                        let id = Identity {
+                            callsign: callsign.clone(),
+                            aircraft_type: aircraft_type.clone(),
+                            source: *callsign_source,
+                        };
+                        latest.known.pending.pop_front();
+                        if latest.known.pending.is_empty() {
+                            sent = id.clone();
+                        }
+                        latest.known.accepted = Some(id);
+                        latest.known.refused = None;
+                    }
+                    ServerEvent::Msg(ServerMsg::AircraftChangeRefused { .. }) => {
+                        latest.known.refused = latest.known.pending.pop_front();
+                        if latest.known.pending.is_empty()
+                            && let Some(a) = &latest.known.accepted
+                        {
+                            sent = a.clone();
+                        }
+                    }
+                    _ => {}
+                }
                 if let ServerEvent::Msg(ServerMsg::Welcome { .. }) = event {
                     welcomed = true;
                     cfg.backoff.reset();
@@ -231,6 +346,10 @@ async fn session(
                         if !send(&mut ws, Outgoing::Msg(m)).await {
                             return End::Lost;
                         }
+                    }
+                    // The identity may have changed while the server was still welcoming us.
+                    if !announce(&mut ws, identity, &mut sent, &mut latest.known).await {
+                        return End::Lost;
                     }
                     if to_ui.send(ServerEvent::Connected).await.is_err() {
                         return End::Exit;

@@ -6259,6 +6259,38 @@ mod handover {
         assert!(!s.handed_in);
     }
 
+    #[test]
+    fn remove_pilot_then_register_starts_fresh() {
+        let mut e = engine();
+        departed(&mut e, "Testville", true);
+        assert!(!e.strip(&cs()).unwrap().issued.is_empty());
+        assert!(e.remove_pilot(&cs()));
+        e.register_pilot(PilotProfile {
+            callsign: cs(),
+            aircraft_type: "B738".into(),
+        });
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.phase, FlightPhase::Parked);
+        assert!(s.plan.is_none());
+        assert!(s.issued.is_empty());
+        assert!(s.squawk.is_none());
+        assert_eq!(e.export_flight(&cs()).unwrap().aircraft_type, "B738");
+    }
+
+    #[test]
+    fn remove_pilot_drops_snapshot_entry() {
+        let mut e = engine();
+        departed(&mut e, "Testville", true);
+        assert!(
+            serde_json::to_string(&e.snapshot())
+                .unwrap()
+                .contains("SPTST")
+        );
+        assert!(e.remove_pilot(&cs()));
+        let json = serde_json::to_string(&e.snapshot()).unwrap();
+        assert!(!json.contains("SPTST"), "{json}");
+    }
+
     /// An IFR flight bound for ZZZZ handed in from the station it departed: its first call
     /// on Approach is answered as a flight handed over, with the arrival continuation.
     #[test]

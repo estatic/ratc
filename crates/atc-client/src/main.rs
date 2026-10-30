@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
+use atc_client::aircraft::{Identity, IdentityTracker, UNKNOWN_TYPE};
 use atc_client::app::{App, Input, spawn_links};
 use atc_client::config::ClientConfig;
 use atc_client::connection::{Backoff, ConnConfig};
@@ -17,7 +18,8 @@ use atc_client::overlay::{DEFAULT_ADDR, Overlay};
 use atc_client::ptt::{PttInput, parse_key, spawn_joystick, spawn_keyboard};
 use atc_client::record::TrackWriter;
 use atc_client::{XpConfig, audio};
-use tokio::sync::mpsc;
+use atc_proto::CallsignSource;
+use tokio::sync::{mpsc, watch};
 
 const USAGE: &str = "usage: atc-client [--config <file>] [--text] [--record <track.csv>]";
 
@@ -145,9 +147,9 @@ fn spawn_stdin(inputs: mpsc::Sender<Input>) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
+    init_logging(!args.text);
     let cfg = ClientConfig::load(&args.config)?;
     let ptt_key = parse_key(&cfg.ptt.key)?;
-    init_logging(!args.text);
 
     let xplane = cfg
         .xplane
@@ -157,8 +159,6 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("xplane address {:?} resolves to nothing", cfg.xplane))?;
     let conn = ConnConfig {
         url: cfg.server.clone(),
-        callsign: cfg.callsign.clone(),
-        aircraft_type: cfg.aircraft_type.clone(),
         backoff: Backoff::default(),
     };
     let overlay = overlay(cfg.overlay.as_deref().unwrap_or(DEFAULT_ADDR)).map(Arc::new);
@@ -171,12 +171,20 @@ async fn main() -> anyhow::Result<()> {
             }
         })
     };
+    // Text mode with a config callsign connects at once (type ZZZZ until X-Plane reports
+    // one); otherwise the connection waits for the aircraft from X-Plane.
+    let initial = match (&cfg.callsign, args.text) {
+        (Some(callsign), true) => Some(Identity {
+            callsign: callsign.clone(),
+            aircraft_type: UNKNOWN_TYPE.into(),
+            source: CallsignSource::Config,
+        }),
+        _ => None,
+    };
+    let (identity_tx, identity_rx) = watch::channel(initial);
+    let tracker = IdentityTracker::new(cfg.callsign.clone(), identity_tx);
     let (inputs, inputs_rx) = mpsc::channel(1024);
-    let to_conn = spawn_links(
-        conn,
-        XpConfig::new(xplane, cfg.field_elev_ft),
-        inputs.clone(),
-    );
+    let to_conn = spawn_links(conn, identity_rx, XpConfig::new(xplane), inputs.clone());
 
     let recorder = match &args.record {
         Some(path) => {
@@ -189,14 +197,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     if args.text {
-        let mut app =
-            App::new(to_conn, printer(overlay.clone(), false)).with_plugin(plugin(&overlay));
+        let mut app = App::new(to_conn, printer(overlay.clone(), false))
+            .with_plugin(plugin(&overlay))
+            .with_identity(tracker, cfg.xplane.clone());
         if let Some(r) = recorder {
             app = app.with_recorder(r);
         }
         println!(
-            "{} text mode: type a transmission and press Enter (sent on the transmit radio); Ctrl-D quits",
-            cfg.callsign
+            "text mode: type a transmission and press Enter (sent on the transmit radio); Ctrl-D quits"
         );
         spawn_stdin(inputs);
         app.run(inputs_rx).await;
@@ -216,6 +224,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = App::new(to_conn, printer(overlay.clone(), true))
         .with_plugin(plugin(&overlay))
+        .with_identity(tracker, cfg.xplane.clone())
         .with_playback(playback);
     if let Some(r) = recorder {
         app = app.with_recorder(r);
@@ -226,8 +235,8 @@ async fn main() -> anyhow::Result<()> {
         .map(|b| format!(", hold joystick button {b}"))
         .unwrap_or_default();
     print!(
-        "{} voice mode: press {:?} to start and again to stop transmitting{joystick}; q, Esc or Ctrl-C quits\r\n",
-        cfg.callsign, cfg.ptt.key
+        "voice mode: press {:?} to start and again to stop transmitting{joystick}; q, Esc or Ctrl-C quits\r\n",
+        cfg.ptt.key
     );
     app.run(inputs_rx).await;
     Ok(())

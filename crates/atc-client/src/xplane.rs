@@ -1,5 +1,9 @@
 //! Read-only X-Plane 11 reader over the UDP RREF protocol.
-use crate::datarefs::{ALL, SLOT_COUNT, Slot};
+use crate::aircraft::SimAircraft;
+use crate::datarefs::{
+    AIRCRAFT_ICAO, AIRCRAFT_TAIL, ALL, SLOT_COUNT, SUBSCRIPTION_COUNT, Slot, StrDataref,
+    subscriptions,
+};
 use atc_proto::{CloudLayer, TelemetryFrame, WeatherFrame};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -86,6 +90,8 @@ impl SimClock {
 #[derive(Debug, Clone)]
 pub struct XPlaneState {
     values: [Option<f32>; SLOT_COUNT],
+    /// The string dataref bytes, indexed by RREF index minus `SLOT_COUNT`.
+    bytes: [Option<f32>; SUBSCRIPTION_COUNT - SLOT_COUNT],
     clock: SimClock,
     t: f64,
 }
@@ -94,6 +100,7 @@ impl Default for XPlaneState {
     fn default() -> Self {
         Self {
             values: [None; SLOT_COUNT],
+            bytes: [None; SUBSCRIPTION_COUNT - SLOT_COUNT],
             clock: SimClock::default(),
             t: 0.0,
         }
@@ -103,8 +110,13 @@ impl Default for XPlaneState {
 impl XPlaneState {
     pub fn apply(&mut self, values: &[(i32, f32)]) {
         for &(idx, v) in values {
-            if let Some(slot) = usize::try_from(idx).ok().filter(|&i| i < SLOT_COUNT) {
-                self.values[slot] = Some(v);
+            let Ok(i) = usize::try_from(idx) else {
+                continue;
+            };
+            if i < SLOT_COUNT {
+                self.values[i] = Some(v);
+            } else if let Some(b) = self.bytes.get_mut(i - SLOT_COUNT) {
+                *b = Some(v);
             }
         }
         if let (Some(rt), Some(p)) = (self.get(Slot::RunningTime), self.get(Slot::Paused)) {
@@ -137,6 +149,38 @@ impl XPlaneState {
         Some((tx, listen))
     }
 
+    /// The aircraft type and tail number as the sim reports them. Each string runs to its
+    /// first NUL (or the first byte not received yet), keeps printable ASCII only and is trimmed;
+    /// empty means unknown.
+    pub fn aircraft(&self) -> SimAircraft {
+        let text = |d: StrDataref| {
+            let start = d.first_index - SLOT_COUNT;
+            let s: String = self.bytes[start..start + d.len]
+                .iter()
+                .map_while(|b| b.map(|v| v.round() as i64).filter(|&v| v != 0))
+                .filter_map(|v| {
+                    u8::try_from(v)
+                        .ok()
+                        .filter(|b| b.is_ascii_graphic() || *b == b' ')
+                })
+                .map(char::from)
+                .collect();
+            Some(s.trim().to_string()).filter(|s| !s.is_empty())
+        };
+        SimAircraft {
+            icao: text(AIRCRAFT_ICAO),
+            tail: text(AIRCRAFT_TAIL),
+        }
+    }
+
+    /// X-Plane has answered for both string datarefs (their first byte, even a NUL), so
+    /// [`XPlaneState::aircraft`] is a reading, however empty, and not "nothing yet".
+    pub fn aircraft_received(&self) -> bool {
+        [AIRCRAFT_ICAO, AIRCRAFT_TAIL]
+            .iter()
+            .all(|d| self.bytes[d.first_index - SLOT_COUNT].is_some())
+    }
+
     /// `None` until every telemetry dataref but the transponder has been received.
     pub fn telemetry(&self) -> Option<TelemetryFrame> {
         let g = |s| self.get(s);
@@ -163,7 +207,7 @@ impl XPlaneState {
 
     /// `None` until wind, visibility, temperature, dew point and pressure have arrived.
     /// Clouds are best-effort: layers without data are skipped.
-    pub fn weather(&self, field_elev_ft: f64) -> Option<WeatherFrame> {
+    pub fn weather(&self) -> Option<WeatherFrame> {
         let g = |s| self.get(s);
         let clouds = [
             (Slot::CloudCov0, Slot::CloudBase0),
@@ -177,10 +221,9 @@ impl XPlaneState {
             if base_msl_m <= 0.0 {
                 return None;
             }
-            let agl = (base_msl_m * M_TO_FT - field_elev_ft).max(0.0);
             Some(CloudLayer {
                 cover: cover.to_string(),
-                base_ft_agl: agl.round() as u32,
+                base_ft_msl: (base_msl_m * M_TO_FT).round() as u32,
             })
         })
         .collect();
@@ -214,13 +257,14 @@ fn cloud_cover(coverage: f64) -> Option<&'static str> {
 pub enum XpUpdate {
     Telemetry(TelemetryFrame),
     Weather(WeatherFrame),
+    /// The aircraft type or tail number changed (also: first read). Not debounced.
+    Aircraft(SimAircraft),
 }
 
 #[derive(Debug, Clone)]
 pub struct XpConfig {
     /// X-Plane host and RREF port (default port 49000).
     pub xplane_addr: SocketAddr,
-    pub field_elev_ft: f64,
     /// Local address to receive replies on; X-Plane answers to the sender's port.
     pub local_bind: SocketAddr,
     /// Resend all subscriptions after this long without a packet (X-Plane restarted).
@@ -228,10 +272,9 @@ pub struct XpConfig {
 }
 
 impl XpConfig {
-    pub fn new(xplane_addr: SocketAddr, field_elev_ft: f64) -> Self {
+    pub fn new(xplane_addr: SocketAddr) -> Self {
         Self {
             xplane_addr,
-            field_elev_ft,
             local_bind: ([0, 0, 0, 0], 0).into(),
             silence_timeout: Duration::from_secs(5),
         }
@@ -239,9 +282,9 @@ impl XpConfig {
 }
 
 async fn subscribe(sock: &UdpSocket, addr: SocketAddr, on: bool) -> std::io::Result<()> {
-    for (slot, name, hz) in ALL {
+    for (index, name, hz) in subscriptions() {
         let freq = if on { hz } else { 0 };
-        sock.send_to(&encode_rref_request(freq, slot as i32, name), addr)
+        sock.send_to(&encode_rref_request(freq, index, &name), addr)
             .await?;
     }
     Ok(())
@@ -263,16 +306,30 @@ struct Unsubscribe {
 
 impl Drop for Unsubscribe {
     fn drop(&mut self) {
-        for (slot, name, _) in ALL {
+        for (index, name, _) in subscriptions() {
             let _ = self
                 .sock
-                .try_send_to(&encode_rref_request(0, slot as i32, name), self.addr);
+                .try_send_to(&encode_rref_request(0, index, &name), self.addr);
         }
     }
 }
 
 /// Pause after a socket error so a persistent failure does not spin.
 const ERROR_PAUSE: Duration = Duration::from_millis(200);
+
+/// The aircraft reading to forward: the first one once X-Plane has answered (empty or not),
+/// then every change.
+fn aircraft_update(state: &XPlaneState, last: &mut Option<SimAircraft>) -> Option<SimAircraft> {
+    if !state.aircraft_received() {
+        return None;
+    }
+    let aircraft = state.aircraft();
+    if last.as_ref() == Some(&aircraft) {
+        return None;
+    }
+    *last = Some(aircraft.clone());
+    Some(aircraft)
+}
 
 /// Subscribes (read-only) and forwards telemetry at the subscription rate and weather every
 /// 5 s until the receiver is dropped or the task is cancelled. Only binding the local socket
@@ -288,6 +345,7 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
     let mut state = XPlaneState::default();
     let mut buf = [0u8; 2048];
     let mut last_weather: Option<Instant> = None;
+    let mut last_aircraft: Option<SimAircraft> = None;
     loop {
         let recv = tokio::time::timeout(cfg.silence_timeout, sock.recv_from(&mut buf));
         let n = tokio::select! {
@@ -324,8 +382,13 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
         {
             return Ok(());
         }
+        if let Some(aircraft) = aircraft_update(&state, &mut last_aircraft)
+            && tx.send(XpUpdate::Aircraft(aircraft)).await.is_err()
+        {
+            return Ok(());
+        }
         if last_weather.is_none_or(|t| t.elapsed() >= WEATHER_PERIOD)
-            && let Some(w) = state.weather(cfg.field_elev_ft)
+            && let Some(w) = state.weather()
         {
             last_weather = Some(Instant::now());
             if tx.send(XpUpdate::Weather(w)).await.is_err() {
@@ -346,6 +409,62 @@ mod tests {
             p.extend(v.to_le_bytes());
         }
         p
+    }
+
+    /// RREF values for a string dataref: one byte per slot, NUL-terminated.
+    fn str_bytes(d: StrDataref, text: &str) -> Vec<(i32, f32)> {
+        text.bytes()
+            .chain(std::iter::once(0))
+            .enumerate()
+            .map(|(i, b)| ((d.first_index + i) as i32, f32::from(b)))
+            .collect()
+    }
+
+    #[test]
+    fn decodes_type_and_tail() {
+        let mut s = XPlaneState::default();
+        s.apply(&str_bytes(AIRCRAFT_ICAO, "C172"));
+        s.apply(&str_bytes(AIRCRAFT_TAIL, "SP-ABC"));
+        let a = s.aircraft();
+        assert_eq!(a.icao.as_deref(), Some("C172"));
+        assert_eq!(a.tail.as_deref(), Some("SP-ABC"));
+        // Bytes after the NUL are ignored, and a shorter value replaces a longer one.
+        s.apply(&[(AIRCRAFT_ICAO.first_index as i32 + 5, f32::from(b'X'))]);
+        s.apply(&str_bytes(AIRCRAFT_ICAO, "B738"));
+        assert_eq!(s.aircraft().icao.as_deref(), Some("B738"));
+    }
+
+    #[test]
+    fn empty_strings_are_none() {
+        let mut s = XPlaneState::default();
+        assert_eq!(s.aircraft(), SimAircraft::default());
+        s.apply(&str_bytes(AIRCRAFT_ICAO, ""));
+        s.apply(&str_bytes(AIRCRAFT_TAIL, "  "));
+        assert_eq!(s.aircraft(), SimAircraft::default());
+    }
+
+    #[test]
+    fn empty_aircraft_is_still_a_reading() {
+        let mut s = XPlaneState::default();
+        let mut last = None;
+        // Nothing received yet: nothing to forward.
+        assert_eq!(aircraft_update(&s, &mut last), None);
+        // X-Plane answered with all-NUL strings: the empty reading is forwarded once.
+        s.apply(&str_bytes(AIRCRAFT_ICAO, ""));
+        assert_eq!(
+            aircraft_update(&s, &mut last),
+            None,
+            "tail not received yet"
+        );
+        s.apply(&str_bytes(AIRCRAFT_TAIL, ""));
+        assert_eq!(aircraft_update(&s, &mut last), Some(SimAircraft::default()));
+        assert_eq!(aircraft_update(&s, &mut last), None);
+        // A later change is forwarded as before.
+        s.apply(&str_bytes(AIRCRAFT_ICAO, "C172"));
+        assert_eq!(
+            aircraft_update(&s, &mut last).and_then(|a| a.icao),
+            Some("C172".into())
+        );
     }
 
     fn full_state() -> Vec<(i32, f32)> {
@@ -404,9 +523,9 @@ mod tests {
         s.apply(&all[17..19]);
         let f = s.telemetry().unwrap();
         assert_eq!((f.utc_s, f.day_of_year), (Some(43_200.0), Some(200)));
-        assert!(s.weather(791.0).is_none());
+        assert!(s.weather().is_none());
         s.apply(&all[19..]);
-        let w = s.weather(791.0).unwrap();
+        let w = s.weather().unwrap();
         assert_eq!(
             (w.wind_dir_deg, w.wind_speed_kt, w.visibility_m),
             (270, 8, 9999)
@@ -415,7 +534,7 @@ mod tests {
             w.clouds,
             vec![CloudLayer {
                 cover: "sct".into(),
-                base_ft_agl: 2490
+                base_ft_msl: 3281
             }]
         );
     }
@@ -458,7 +577,7 @@ mod tests {
     fn qnh_from_inhg() {
         let mut s = XPlaneState::default();
         s.apply(&full_state());
-        assert_eq!(s.weather(0.0).unwrap().qnh_hpa, 1013);
+        assert_eq!(s.weather().unwrap().qnh_hpa, 1013);
     }
 
     #[test]
@@ -475,7 +594,7 @@ mod tests {
         let mut v = full_state();
         v[Slot::CloudBase0 as usize].1 = 0.0;
         s.apply(&v);
-        assert!(s.weather(0.0).unwrap().clouds.is_empty());
+        assert!(s.weather().unwrap().clouds.is_empty());
     }
 
     #[test]

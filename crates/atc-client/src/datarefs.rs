@@ -179,6 +179,54 @@ pub const ALL: [(Slot, &str, i32); SLOT_COUNT] = [
     ),
 ];
 
+/// A string dataref (a byte array), read one byte per RREF slot as `name[i]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StrDataref {
+    pub name: &'static str,
+    /// How many bytes are read; real values are far shorter than the dataref's 40.
+    pub len: usize,
+    /// RREF index of byte 0; byte `i` is at `first_index + i`.
+    pub first_index: usize,
+}
+
+pub const ICAO_LEN: usize = 8;
+pub const TAIL_LEN: usize = 12;
+
+/// Aircraft type, e.g. `C172`. Its RREF indices follow the numeric slots.
+pub const AIRCRAFT_ICAO: StrDataref = StrDataref {
+    name: "sim/aircraft/view/acf_ICAO",
+    len: ICAO_LEN,
+    first_index: SLOT_COUNT,
+};
+/// Tail number, e.g. `SP-ABC`.
+pub const AIRCRAFT_TAIL: StrDataref = StrDataref {
+    name: "sim/aircraft/view/acf_tailnum",
+    len: TAIL_LEN,
+    first_index: SLOT_COUNT + ICAO_LEN,
+};
+pub const STRINGS: [StrDataref; 2] = [AIRCRAFT_ICAO, AIRCRAFT_TAIL];
+
+/// Numeric slots plus every string byte: the number of subscriptions.
+pub const SUBSCRIPTION_COUNT: usize = SLOT_COUNT + ICAO_LEN + TAIL_LEN;
+
+/// Every subscription as (RREF index, dataref name, frequency Hz): the numeric table `ALL`
+/// first, then the string bytes at 1 Hz.
+pub fn subscriptions() -> impl Iterator<Item = (i32, String, i32)> {
+    let numeric = ALL
+        .into_iter()
+        .map(|(slot, name, hz)| (slot as i32, name.to_string(), hz));
+    let bytes = STRINGS.into_iter().flat_map(|d| {
+        (0..d.len).map(move |i| {
+            (
+                (d.first_index + i) as i32,
+                format!("{}[{i}]", d.name),
+                WEATHER_HZ,
+            )
+        })
+    });
+    numeric.chain(bytes)
+}
+
 pub const TELEMETRY_HZ: i32 = 5;
 pub const WEATHER_HZ: i32 = 1;
 

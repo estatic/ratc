@@ -34,6 +34,11 @@ pub(crate) enum Job {
         text: String,
         t: f64,
     },
+    /// The pilot switched aircraft: later jobs are the new callsign's.
+    Rename {
+        from: Callsign,
+        to: String,
+    },
 }
 
 /// Processes a client's transmissions one after another, so the engine hears them (and the
@@ -41,12 +46,23 @@ pub(crate) enum Job {
 pub(crate) async fn worker(
     server: Arc<Server>,
     id: ClientId,
-    callsign: String,
+    mut callsign: String,
     mut jobs: mpsc::UnboundedReceiver<Job>,
 ) {
-    let cs = Callsign::new(&callsign);
+    let mut cs = Callsign::new(&callsign);
     while let Some(job) = jobs.recv().await {
         match job {
+            Job::Rename { from, to } => {
+                // Jobs queued before the change have run: drop what they re-created under
+                // the old callsign. Not for the same callsign (that is the new flight), nor
+                // once another client has joined under the old one (that flight is theirs).
+                let taken = server.state.hub.lock().unwrap().client(&from.0).is_some();
+                if from.0 != to && !taken {
+                    server.end_flight(id, &from);
+                }
+                cs = Callsign::new(&to);
+                callsign = to;
+            }
             Job::Voice { freq_khz, pcm, t } => {
                 voice(&server, id, &callsign, freq_khz, pcm, t).await
             }

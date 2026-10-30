@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use atc_core::strip::PilotProfile;
 use atc_phraseology::Callsign;
-use atc_proto::{AudioFrame, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame, WeatherFrame};
+use atc_proto::{
+    AudioFrame, CallsignSource, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame,
+    WeatherFrame,
+};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -95,11 +98,13 @@ async fn handshake(
             Ok(_) => {}
         }
     };
-    let (callsign, aircraft_type) = match serde_json::from_str::<ClientMsg>(&first) {
+    let (callsign, aircraft_type, callsign_source) = match serde_json::from_str::<ClientMsg>(&first)
+    {
         Ok(ClientMsg::Hello {
             protocol,
             callsign,
             aircraft_type,
+            callsign_source,
         }) => {
             if protocol != PROTOCOL_VERSION {
                 return reject(
@@ -107,7 +112,7 @@ async fn handshake(
                     format!("unsupported protocol {protocol}, server speaks {PROTOCOL_VERSION}"),
                 );
             }
-            (callsign.trim().to_string(), aircraft_type)
+            (callsign.trim().to_string(), aircraft_type, callsign_source)
         }
         Ok(_) => return reject(&tx, "expected hello".into()),
         Err(e) => return reject(&tx, format!("bad message: {e}")),
@@ -120,16 +125,33 @@ async fn handshake(
     if let Err(e) = server.state.hub.lock().unwrap().join(id, cs.0.clone()) {
         return reject(&tx, format!("{e}: {callsign}"));
     }
-    server.state.network.register_pilot(PilotProfile {
+    // A reconnect with another aircraft type (changed while offline) is a new flight; the
+    // same type continues the stored one.
+    let new_type = server
+        .state
+        .network
+        .pilot_type(&cs)
+        .is_some_and(|t| t != aircraft_type);
+    let profile = PilotProfile {
         callsign: cs.clone(),
-        aircraft_type,
-    });
+        aircraft_type: aircraft_type.clone(),
+    };
     server.weather_source.lock().unwrap().get_or_insert(id);
     let _ = tx.send(Out::Msg(ServerMsg::Welcome {
         protocol: PROTOCOL_VERSION,
         session: id.to_string(),
     }));
+    let _ = tx.send(Out::Msg(ServerMsg::Identified {
+        callsign: cs.0.clone(),
+        aircraft_type,
+        callsign_source,
+    }));
     server.add_client(id, tx.clone());
+    // After add_client, so the old flight's follow-me cancel reaches this client.
+    if new_type {
+        server.end_flight(id, &cs);
+    }
+    server.state.network.register_pilot(profile);
     let (jobs, rx) = mpsc::unbounded_channel();
     tokio::spawn(pipeline::worker(server.clone(), id, callsign.clone(), rx));
     tracing::info!(id, %callsign, "client joined");
@@ -175,6 +197,11 @@ impl Session {
                 }
                 self.on_telemetry(f)
             }
+            ClientMsg::AircraftChanged {
+                callsign,
+                aircraft_type,
+                callsign_source,
+            } => self.on_aircraft_changed(callsign, aircraft_type, callsign_source),
             ClientMsg::Weather(w) => self.on_weather(w),
             ClientMsg::PttStart { freq_khz } => self.on_ptt_start(canonical(freq_khz)),
             ClientMsg::PttEnd => self.on_ptt_end(),
@@ -186,6 +213,57 @@ impl Session {
                 });
             }
         }
+    }
+
+    /// The pilot switched aircraft: a brand-new flight, even under the same callsign. A
+    /// callsign that is empty or flown by someone else is refused and nothing changes.
+    fn on_aircraft_changed(
+        &mut self,
+        callsign: String,
+        aircraft_type: String,
+        callsign_source: CallsignSource,
+    ) {
+        let cs = Callsign::new(callsign.trim());
+        let refuse = |reason: String| {
+            tracing::info!(id = self.id, %reason, "aircraft change refused");
+            let _ = self
+                .tx
+                .send(Out::Msg(ServerMsg::AircraftChangeRefused { reason }));
+        };
+        if cs.0.is_empty() {
+            return refuse(format!("invalid callsign {callsign:?}"));
+        }
+        let renamed = self
+            .server
+            .state
+            .hub
+            .lock()
+            .unwrap()
+            .rename(self.id, cs.0.clone());
+        if let Err(e) = renamed {
+            return refuse(format!("{e}: {}", cs.0));
+        }
+        // As on a disconnect, but the client stays: hub membership and weather role are kept.
+        self.server.state.hub.lock().unwrap().ptt_end(self.id);
+        self.end_relay();
+        self.server.end_flight(self.id, &self.cs);
+        let network = &self.server.state.network;
+        network.register_pilot(PilotProfile {
+            callsign: cs.clone(),
+            aircraft_type: aircraft_type.clone(),
+        });
+        tracing::info!(id = self.id, from = %self.callsign, to = %cs.0, %aircraft_type, "aircraft changed");
+        let from = std::mem::replace(&mut self.cs, cs.clone());
+        self.callsign = cs.0.clone();
+        let _ = self.jobs.send(Job::Rename {
+            from,
+            to: cs.0.clone(),
+        });
+        let _ = self.tx.send(Out::Msg(ServerMsg::Identified {
+            callsign: cs.0,
+            aircraft_type,
+            callsign_source,
+        }));
     }
 
     /// Tunes the hub to every frequency heard (also while paused); a radio newly tuned to
@@ -225,7 +303,7 @@ impl Session {
             }
             *source = Some(self.id);
         }
-        for khz in server.state.network.on_weather(convert::weather(&w)) {
+        for khz in server.state.network.on_weather(&w) {
             tokio::spawn(atis::send(server.clone(), khz, server.listeners(khz)));
         }
     }

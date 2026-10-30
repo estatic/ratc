@@ -372,6 +372,12 @@ impl EnrouteUnit {
         });
     }
 
+    /// Forgets flight `cs` altogether, in service or released (the flight ended). `true`:
+    /// the unit knew it.
+    pub fn remove(&mut self, cs: &Callsign) -> bool {
+        self.flights.remove(cs).is_some()
+    }
+
     /// Forgets flight `cs` if the unit released it (someone else took it).
     pub fn forget_released(&mut self, cs: &Callsign) {
         if self.flights.get(cs).is_some_and(EnrouteFlight::released) {

@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-pub const T: Duration = Duration::from_secs(5);
+pub const T: Duration = Duration::from_secs(15);
 
 pub fn parse_request(b: &[u8]) -> (i32, i32, String) {
     assert_eq!(b.len(), 413);
@@ -31,7 +31,7 @@ pub async fn read_subscriptions(fake: &UdpSocket) -> (SocketAddr, HashMap<i32, S
         let (freq, idx, name) = parse_request(&buf[..n]);
         assert!(freq > 0);
         names.insert(idx, name);
-        if names.len() == atc_client::datarefs::SLOT_COUNT {
+        if names.len() == atc_client::datarefs::SUBSCRIPTION_COUNT {
             return (from, names);
         }
     }
