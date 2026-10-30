@@ -215,7 +215,8 @@ fn fly(e: &mut AtcEngine, samples: Vec<AircraftState>, pilot: Pilot) -> (Log, Ve
         let out = e.on_telemetry(s);
         record(&out, &mut log, &mut texts);
         // The pilot reads back every controller-initiated clearance at once.
-        for o in &out {
+        // A reminder to read back is no clearance; the pilot just stays as it is.
+        for o in out.iter().filter(|o| !is_reminder(std::slice::from_ref(o))) {
             let silent = say(e, o.freq_khz, &readback(&o.message.items, CS_ABBR));
             assert!(silent.is_empty(), "readback of {:?}: {silent:?}", o.message);
         }
@@ -997,7 +998,7 @@ fn misheard_takeoff_readback_does_not_lock_session() {
     let (log, _) = fly(&mut e, track(), pilot);
     let tower: Vec<&Vec<AtcItem>> = log
         .iter()
-        .filter(|(r, _)| *r == Role::Tower)
+        .filter(|(r, i)| *r == Role::Tower && !matches!(i[..], [AtcItem::ReadBack(_)]))
         .map(|(_, i)| i)
         .collect();
     assert!(matches!(tower[0][0], AtcItem::ClearedTakeoff { .. }));
@@ -3801,8 +3802,10 @@ mod approach_departure {
     fn departure_to_airport_with_adjacent_tower() {
         let mut e = engine();
         let mut f = departed(&mut e, "Testville", true);
-        // Tower sends the IFR departure to Approach after lift-off.
-        let tower = std::mem::take(&mut f.heard);
+        // Tower sends the IFR departure to Approach after lift-off (and, as this pilot
+        // reads back later, reminds of the missing readback).
+        let mut tower = std::mem::take(&mut f.heard);
+        tower.retain(|o| !is_reminder(std::slice::from_ref(o)));
         assert_eq!(tower.len(), 1, "{tower:?}");
         assert_eq!(tower[0].freq_khz, TWR);
         assert_eq!(
@@ -6514,4 +6517,128 @@ mod handover {
         f.fly_to(&mut e, FARLAND, CLIMB, &never);
         assert!(f.heard.is_empty(), "{:?}", f.heard);
     }
+}
+
+// Readback reminders: a missing readback is reminded of once, after 10 s of sim time or
+// at once when the aircraft moves with a taxi readback pending.
+
+/// SP-ABC, 300 m from stand 20 and creeping (2 kt) at sim time 0, asks for taxi to the stand
+/// (the clearance is given at sim time `t`); its readback is pending.
+fn abc_taxi_clearance_at(t: f64) -> (AtcEngine, Vec<AtcItem>) {
+    let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 2.0);
+    let out = e.on_transmission(
+        GROUND,
+        &format!("Krakow Ground, {ABC}, request taxi to stand two zero"),
+        Lang::En,
+        SimTime(t),
+    );
+    let clearance = items(&out);
+    assert!(
+        matches!(&clearance[..], [AtcItem::Taxi { .. }]),
+        "{clearance:?}"
+    );
+    (e, clearance)
+}
+
+/// SP-ABC's telemetry at sim time `t` and speed `gs_kt`, where `abc_near_stand_20` put it.
+fn abc_at(e: &mut AtcEngine, t: f64, gs_kt: f64) -> Vec<AtcOutput> {
+    let (ap, _) = epkk();
+    let stand = ap.stands.iter().find(|s| s.name == "20").unwrap().pos;
+    let pos = atc_geo::destination(stand, 167.7, 300.0);
+    e.on_telemetry(AircraftState {
+        callsign: Callsign::new("SPABC"),
+        heading_deg: 347.7,
+        ..ground_sample(t, pos.lat, pos.lon, gs_kt)
+    })
+}
+
+fn is_reminder(out: &[AtcOutput]) -> bool {
+    matches!(&items(out)[..], [AtcItem::ReadBack(_)]) && out[0].text.contains("read back")
+}
+
+#[test]
+fn silent_pilot_is_reminded_after_10s() {
+    let (mut e, _) = abc_taxi_clearance_at(100.0);
+    assert!(abc_at(&mut e, 105.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, 109.9, 2.0).is_empty());
+    let out = abc_at(&mut e, 110.0, 2.0);
+    assert!(is_reminder(&out), "{out:?}");
+    assert_eq!(out[0].message.from, "Kraków Ground");
+    assert!(
+        out[0].text.starts_with("Sierra Bravo Charlie, read back"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn moving_without_taxi_readback_is_reminded_at_once() {
+    let (mut e, _) = abc_taxi_clearance_at(100.0);
+    assert!(abc_at(&mut e, 101.0, 2.0).is_empty());
+    let out = abc_at(&mut e, 102.0, 6.0);
+    assert!(is_reminder(&out), "{out:?}");
+}
+
+#[test]
+fn reminder_only_once() {
+    let (mut e, _) = abc_taxi_clearance_at(100.0);
+    assert!(is_reminder(&abc_at(&mut e, 110.0, 2.0)));
+    assert!(abc_at(&mut e, 111.0, 6.0).is_empty());
+    assert!(abc_at(&mut e, 130.0, 6.0).is_empty());
+}
+
+#[test]
+fn readback_before_10s_cancels_reminder() {
+    let (mut e, clearance) = abc_taxi_clearance_at(100.0);
+    assert!(abc_at(&mut e, 105.0, 2.0).is_empty());
+    let out = e.on_transmission(
+        GROUND,
+        &readback(&clearance, "Sierra Bravo Charlie"),
+        Lang::En,
+        SimTime(109.9),
+    );
+    assert!(out.is_empty(), "{out:?}");
+    assert!(abc_at(&mut e, 115.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, 116.0, 6.0).is_empty());
+}
+
+#[test]
+fn new_clearance_rearms_reminder() {
+    let (mut e, clearance) = abc_taxi_clearance_at(100.0);
+    assert!(is_reminder(&abc_at(&mut e, 110.0, 2.0)));
+    let back = readback(&clearance, "Sierra Bravo Charlie");
+    assert!(
+        e.on_transmission(GROUND, &back, Lang::En, SimTime(112.0))
+            .is_empty()
+    );
+    // A repeated request is a new clearance with a new readback to wait for.
+    let out = e.on_transmission(
+        GROUND,
+        &format!("Krakow Ground, {ABC}, request taxi to stand two zero"),
+        Lang::En,
+        SimTime(120.0),
+    );
+    assert!(!out.is_empty());
+    assert!(abc_at(&mut e, 125.0, 2.0).is_empty());
+    assert!(is_reminder(&abc_at(&mut e, 130.0, 2.0)));
+}
+
+#[test]
+fn old_snapshot_without_reminder_fields_restores() {
+    let (mut e, _) = abc_taxi_clearance_at(100.0);
+    let mut json = serde_json::to_value(e.snapshot()).unwrap();
+    for strip in json["strips"].as_array_mut().unwrap() {
+        let strip = strip.as_object_mut().unwrap();
+        assert!(strip.remove("readback_due_s").is_some());
+        assert!(strip.remove("reminded").is_some());
+    }
+    e.restore(serde_json::from_value(json).unwrap()).unwrap();
+    let strip = e.strip(&Callsign::new("SPABC")).unwrap();
+    assert_eq!((strip.readback_due_s, strip.reminded), (None, false));
+}
+
+#[test]
+fn engine_without_pending_readback_does_not_remind() {
+    let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 2.0);
+    assert!(abc_at(&mut e, 50.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, 60.0, 6.0).is_empty());
 }

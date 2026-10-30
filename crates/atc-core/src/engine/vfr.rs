@@ -292,7 +292,7 @@ impl AtcEngine {
             strip.handed_off_khz = Some(unit.khz);
             strip.handoff_acked = false;
         }
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 

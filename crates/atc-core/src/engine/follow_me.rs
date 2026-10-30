@@ -129,7 +129,7 @@ impl AtcEngine {
             },
         });
         let items = on_the_way();
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -145,7 +145,7 @@ impl AtcEngine {
             return Vec::new();
         };
         let items = follow_items(target);
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         self.transmit(i, Role::Ground, items)
     }
 

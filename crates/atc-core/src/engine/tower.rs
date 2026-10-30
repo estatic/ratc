@@ -139,7 +139,7 @@ impl AtcEngine {
         self.strips[i].transponder_check = !check.is_empty();
         if !check.is_empty() {
             self.strips[i].departure_sent = true;
-            self.strips[i].expect_readback(&check, self.cfg.strictness);
+            self.strips[i].expect_readback(&check, self.cfg.strictness, self.now);
             return check;
         }
         let Some(wind) = self.wind() else {
@@ -165,7 +165,7 @@ impl AtcEngine {
             }
             Err(_) => vec![AtcItem::HoldPosition],
         };
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -215,7 +215,7 @@ impl AtcEngine {
             }
             Err(_) => vec![AtcItem::GoAround],
         };
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         // An IFR arrival sent around goes back to Approach.
         if arrival && items == [AtcItem::GoAround] {
             self.set_missed_approach(i);

@@ -352,7 +352,7 @@ impl AtcEngine {
         let strip = &mut self.strips[i];
         strip.plan = Some(plan);
         strip.identified = true;
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -408,7 +408,7 @@ impl AtcEngine {
             plan.direct = None;
             items.push(AtcItem::Roger);
         }
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -444,7 +444,7 @@ impl AtcEngine {
         strip.missed_approach = false;
         strip.identified = true;
         let items = self.vector_items(i, true);
-        self.strips[i].expect_readback(&items, self.cfg.strictness);
+        self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -580,7 +580,7 @@ impl AtcEngine {
         if items.is_empty() {
             return Vec::new();
         }
-        self.strips[i].expect_readback(&items, self.cfg.strictness);
+        self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
         self.transmit(i, Role::Approach, items)
     }
 
@@ -922,7 +922,7 @@ impl AtcEngine {
         if climb && let Some(p) = strip.plan.as_mut() {
             p.cleared_ft = p.cruise_ft;
         }
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -967,7 +967,7 @@ impl AtcEngine {
             established_check: false,
         });
         strip.identified = true;
-        strip.expect_readback(&items, self.cfg.strictness);
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
         items
     }
 
@@ -1004,7 +1004,7 @@ impl AtcEngine {
             if let Some(p) = strip.plan.as_mut() {
                 p.cleared_ft = level_ft;
             }
-            strip.expect_readback(&items, self.cfg.strictness);
+            strip.expect_readback(&items, self.cfg.strictness, self.now);
             return self.transmit(i, Role::Approach, items);
         }
         if let Some((unit, items)) = self.hand_off(&plan, s.pos) {
@@ -1016,7 +1016,7 @@ impl AtcEngine {
                 AtcItem::Contact { khz, .. } => Some(*khz),
                 _ => None,
             });
-            strip.expect_readback(&items, self.cfg.strictness);
+            strip.expect_readback(&items, self.cfg.strictness, self.now);
             return self.transmit(i, Role::Approach, items);
         }
         if plan.direct.is_none()
@@ -1027,7 +1027,7 @@ impl AtcEngine {
             if let Some(p) = strip.plan.as_mut() {
                 p.direct = Some(fix);
             }
-            strip.expect_readback(&items, self.cfg.strictness);
+            strip.expect_readback(&items, self.cfg.strictness, self.now);
             return self.transmit(i, Role::Approach, items);
         }
         Vec::new()
