@@ -283,18 +283,38 @@ the end of the taxi is hard. Ground helps like this:
   aircraft's nose, 90° sectors);
 - a second request for help after the same taxi clearance, or "request follow-me" / "follow me"
   / "request marshaller": `hold position, follow-me car is on the way` (read back "holding
-  position"); 12 s of simulator time later: `follow the follow-me car` (answer "wilco" or
-  "follow the follow-me"; no strict readback);
+  position"); 12 s of simulator time later: `follow the follow-me car to stand three five` or
+  `… to holding point runway two five` (answer "wilco" or "follow the follow-me"; no strict
+  readback). A route shorter than 150 m (to the stand point itself) gets no car: Ground gives
+  the plain taxi instruction instead;
 - "on stand" at the stand (aircraft stopped, at most 25 m from the assigned stand): `good day`
   (to a wish: `thank you, you too`); not at the stand: where it is, in the same words.
 
 The car (the crew car of the X-Plane 11 library, `lib/airport/vehicles/servicing/crew_car.obj`)
-appears right away about 40 m ahead of the aircraft on the route and drives along the taxiways
-to the stand, staying 30–50 m ahead: it waits while the aircraft is stopped or more than 80 m
-behind, never reverses, drives at most 15 knots and turns smoothly. At the end it pulls 12 m to
-the right and disappears 20 s after the aircraft arrives. On a taxi to the holding point the car
-stops 20 m before it; from there Ground hands over to Tower as usual. A new taxi clearance
-recalls the car.
+appears right away about 40 m ahead of the aircraft on the route and drives along the taxiways,
+staying 30–50 m ahead: it waits while the aircraft is stopped or more than 80 m behind, never
+reverses, drives at most 15 knots and takes the corners on 25 m arcs, its front wheels steering.
+It does not drive onto the stand: its route ends at the last taxiway node, where the way leaves
+the taxi network for the stand. There it pulls aside on a forward S-curve, 12 m to the side and
+16 m on, away from the stand (to the left when the stand is on the right, else to the right),
+and waits; the rest of the way onto the stand is yours. On a taxi to the holding point the
+route ends 40 m before the hold and the car pulls 12 m to the right, so it waits about 24 m
+short of it; from there Ground hands over to Tower as usual. It disappears 20 s after the
+aircraft reaches the end of its route (at the latest 2 minutes after parking). If the aircraft
+is already there when the car would lead, Ground sends the car away: to a stand it gives the
+plain taxi instruction, at a holding point it says nothing. A new taxi clearance recalls the
+car.
+
+The car carries a FOLLOW ME sign on its roof, a flashing beacon (1 Hz) and turn signals
+(1.5 Hz), lit from 40 m before each corner sharper than 30° and while pulling aside. The roof
+object ships with the plugin (`Resources/plugins/atc-overlay/objects/`); without it the car
+comes without the sign (one line in X-Plane's `Log.txt`).
+
+Readback reminders: when a clearance that needs a readback (taxi, hold position, a frequency,
+…) is not read back within 10 s of simulator time after the controller finished speaking, the
+position that gave it says `read back taxi route` / `read back hold position` / … once. An
+aircraft that was standing and starts to move (over 3 kt) with a taxi readback pending is
+reminded at once.
 
 The car is drawn by the same `atc-overlay` plugin (the client forwards the commands on the same
 UDP 48010). After an update **reinstall the plugin** (`tools/install-xplane-plugin.sh`) and

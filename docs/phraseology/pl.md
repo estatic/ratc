@@ -46,7 +46,7 @@ Urgent instructions (runway incursion, take-off or landing without clearance, al
 | `HoldPosition` | `stój` | 4.5 |
 | `GoAround` | `przejdź na drugi krąg` | 4.8 |
 | `Negative` | `nieprawidłowo` | Appendix 1 |
-| `ReadBack(items)` | `powtórz ` + items joined by " i ": Runway `pas`, HoldShort `instrukcję oczekiwania przed pasem`, Route `drogę kołowania`, Kind `zezwolenie`, Altitude `wysokość`, Heading `kurs`, Frequency `częstotliwość`, Qnh `QNH`, Squawk `skłok` | 2.6 (POWTÓRZ) |
+| `ReadBack(items)` | `powtórz ` + items joined by " i ": Runway `pas`, HoldShort `instrukcję oczekiwania przed pasem`, Route `drogę kołowania`, Kind `zezwolenie` (HoldPosition `instrukcję stój`), Altitude `wysokość`, Heading `kurs`, Frequency `częstotliwość`, Qnh `QNH`, Squawk `skłok` | 2.6 (POWTÓRZ) |
 | `SayAgainCallsign` | `wołający Kraków Wieża, powtórz znak wywoławczy` (no callsign prefix) | 2.8.1.5 |
 | `SayAgain` / `Roger` / `Standby` | `powtórz` / `przyjąłem` / `czekaj` | 2.6 |
 | `SayIntentions` / `SayStand` / `PassYourMessage` | `podaj zamiary` / `podaj stanowisko` / `nadawaj` | project wording |
@@ -54,7 +54,7 @@ Urgent instructions (runway incursion, take-off or landing without clearance, al
 | ATIS initial contact (IFR airports) | `w sprawie zezwolenia łączność z Delivery <freq>` / `w sprawie uruchomienia łączność z Ground <freq>`, before `przy pierwszym kontakcie ...` | project wording |
 | `Vacate { via }` | `zwolnij pas` (+ ` drogą X`) | 4.9 |
 | `Unable(r)` | `nie mogę, ` + reason (one Polish phrase per `UnableReason`, e.g. NoRoute `brak drogi kołowania`) | 2.6 (NIE MOGĘ) |
-| `FollowMeOnTheWay` / `FollowTheFollowMe` | `samochód follow me jest w drodze` / `kołuj za samochodem follow me` | project wording |
+| `FollowMeOnTheWay` / `FollowTheFollowMe` | `samochód follow me jest w drodze` / `kołuj za samochodem follow me do stanowiska <stand>` or `… do punktu oczekiwania drogi startowej <R>` | project wording |
 | `StandPosition` | `stanowisko dwa zero jest sto dwadzieścia metrów` + Ahead `przed tobą`, Right `po twojej prawej`, Behind `za tobą`, Left `po twojej lewej` | project wording |
 | `TakenOffWithoutClearance` / `LandedWithoutClearance` | `wystartowałeś bez zezwolenia` / `wylądowałeś bez zezwolenia` | project wording |
 | `Courtesy` | Hello/GoodMorning/GoodAfternoon `dzień dobry`, GoodEvening `dobry wieczór`, GoodDay `do widzenia`, HaveANiceFlight `miłego lotu`, ThankYouYouToo `dziękuję, wzajemnie` | project wording |
@@ -112,6 +112,8 @@ The parser rewrites Polish pilot words to canonical English tokens; English word
 | `na stanowisku` | `on stand` |
 | `zgubiłem się`, `zgubiłam się`, `proszę o pomoc`, `nie mogę znaleźć` | `request progressive taxi` |
 | `proszę o follow me`, `follow me` | `request follow me` |
+| `samochód follow me`, `samochodem follow me`, `za samochodem follow me` | `follow me car`, `the follow me car`, `follow the follow me car` (readbacks: "czekam, samochód follow me jest w drodze" and "kołuję za samochodem follow me do stanowiska …" ask for nothing) |
+| `jest w drodze`, `w drodze` | `is on the way`, `on the way` |
 | `stoję`, `stój`, `czekam` (only when no word follows) | `holding position` |
 | `przetnij`, `przecinam`, `przecinamy`, `przetnę` | `cross` |
 | `zajmij`, `zajmuję`, `zajmujemy` | `line up`; `i czekaj`, `i czekam` → `and wait` |
