@@ -31,12 +31,41 @@ cargo build --release -p atc-server -p atc-client
 Binaries: `target/release/atc-server`, `target/release/atc-client`. Release matters: Whisper is
 much slower in a debug build.
 
+### Windows
+
+`tools\setup-windows.ps1`, run once from an elevated PowerShell in the repository root,
+installs the prerequisites with winget and builds everything:
+
+| Prerequisite | Why |
+|---|---|
+| Rust (rustup, `stable-x86_64-pc-windows-msvc`) | the compiler |
+| Visual Studio 2022 Build Tools, C++ workload | MSVC linker, CMake (put on PATH via `vswhere`) |
+| LLVM | libclang for `whisper-rs-sys` (its pre-generated bindings lack the Vulkan functions) |
+| Vulkan SDK | whisper.cpp's Vulkan backend (headers, `glslc`, `vulkan-1.lib`) |
+
+It also sets `LongPathsEnabled`: whisper.cpp's Vulkan shader generator builds deep under
+`target\` and MSBuild fails on paths over 260 characters. Keep the checkout short (`C:\vatc`).
+Re-running the script skips what is installed and only builds (`-NoBuild` skips that too).
+
+The C runtime is linked statically (`.cargo/config.toml`), so the executables run on a plain
+Windows without the Visual C++ Redistributable, and nothing at run time needs administrator
+rights. Windows Firewall may ask about the server on first start if `listen` is not
+`127.0.0.1`; on one computer cancelling is fine. The plugin links `XPLM_64.dll` at load time
+(`raw-dylib`), so no X-Plane SDK is needed to build it.
+
+Without a Vulkan driver (a VM without 3D acceleration, for example) Whisper runs on the CPU:
+`ggml-large-v3-turbo-q5_0.bin` then takes seconds per transmission; `ggml-small.en-q5_1.bin`
+(English only) is the faster choice.
+
 ## 2. Models
 
 ```
 tools/fetch-whisper.sh   # models/whisper/: ggml-large-v3-turbo-q5_0.bin (~574 MB) and ggml-small.en-q5_1.bin (~181 MB)
 tools/fetch-piper.sh     # models/piper/: the Piper binary and the voices: Ground, Tower, ATIS, Delivery, Approach, Radar (English) and Polish
 ```
+
+On Windows: `tools\fetch-whisper.ps1` and `tools\fetch-piper.ps1` (same files; Piper's
+Windows build, `piper.exe`), and `tools\fetch-gateway-apt.ps1 [ICAO]`.
 
 The scripts are idempotent (a second run skips what is already there). `models/` is
 git-ignored. Which voice speaks for which station: `tools/MODELS.md`; speech rate

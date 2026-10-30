@@ -33,11 +33,10 @@ controller all run locally. The internet is needed only to download the speech m
 | | |
 |---|---|
 | Simulator | X-Plane 11 (11.10 or later for the follow-me car) |
-| Operating system | Linux (Arch Linux, x86-64) |
+| Operating system | Linux (Arch Linux, x86-64); Windows 11 x86-64 (built and started in a VM) |
 
-Windows and macOS are not tested. Release builds are made for Linux (x86-64) and macOS (Apple
-Silicon, Whisper on Metal), but the speech-model scripts, the Piper binary and the X-Plane plugin
-are Linux-only for now.
+macOS is not tested. Release builds are made for Linux (x86-64), Windows (x86-64) and macOS
+(Apple Silicon, Whisper on Metal; no X-Plane plugin and Linux-only speech-model scripts there).
 
 ## How it works
 
@@ -112,6 +111,34 @@ tools/fetch-piper.sh
 cargo build --release -p atc-server -p atc-client
 ```
 
+### Windows
+
+In an **elevated** PowerShell (administrator rights are needed only to install the build
+tools; running the programs never needs them), from a short folder such as `C:\vatc`:
+
+```powershell
+git clone https://github.com/estatic/ratc.git C:\vatc   # or unpack the source zip there
+cd C:\vatc
+powershell -ExecutionPolicy Bypass -File tools\setup-windows.ps1
+```
+
+`setup-windows.ps1` installs with winget what is missing — Git, Rust, Visual Studio 2022 Build
+Tools (C++), LLVM and the Vulkan SDK — enables long paths, and builds the server, client and
+plugin (`target\release\atc-server.exe`, `atc-client.exe`, `atc_overlay.dll`). Then, as a
+normal user:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\fetch-whisper.ps1
+powershell -ExecutionPolicy Bypass -File tools\fetch-piper.ps1
+powershell -ExecutionPolicy Bypass -File tools\install-xplane-plugin.ps1 "D:\X-Plane 11"
+```
+
+The executables need no Visual C++ Redistributable; Whisper needs a graphics driver with
+Vulkan (without one it runs on the CPU, slowly — use a small model, see RUNNING.md). The same
+`config\server.toml` works on both systems: `models/piper/piper/piper` means `piper.exe` on
+Windows. The release zip for Windows has everything built: unpack it anywhere and run the
+fetch scripts.
+
 ### X-Plane plugin (optional, recommended)
 
 ```bash
@@ -119,7 +146,9 @@ tools/install-xplane-plugin.sh                       # Steam's default X-Plane 1
 tools/install-xplane-plugin.sh "/path/to/X-Plane 11" # any other install
 ```
 
-It builds the plugin and installs it as `Resources/plugins/atc-overlay/64/lin.xpl`. Restart
+It builds the plugin and installs it as `Resources/plugins/atc-overlay/64/lin.xpl` (on Windows
+`tools\install-xplane-plugin.ps1` installs `win.xpl`; X-Plane in `Program Files` needs an
+elevated PowerShell for that copy). Restart
 X-Plane afterwards. The window can be moved and resized; bind the command
 `atc/overlay/toggle` to a key or button to show or hide it. Reinstall the plugin after
 updating the project.
