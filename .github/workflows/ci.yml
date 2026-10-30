@@ -1,4 +1,5 @@
-# Source checks on every pull request and every push to main: format, lints, tests (Linux).
+# Source checks on every pull request and every push to main: format, lints, tests (Linux);
+# build and tests on Windows.
 name: CI
 
 on:
@@ -44,3 +45,35 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+  windows:
+    name: build, test (Windows)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # As in build.yml: Vulkan SDK for whisper-rs; LLVM and CMake come with the image; long
+      # paths and a short target dir for whisper.cpp's Vulkan shader generator.
+      - name: Vulkan SDK, long paths
+        shell: pwsh
+        run: |
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' LongPathsEnabled 1
+          $v = '1.4.363.0'
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe" -OutFile vulkansdk.exe
+          Start-Process -Wait -FilePath .\vulkansdk.exe -ArgumentList '--root', "C:\VulkanSDK\$v", '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          "VULKAN_SDK=C:\VulkanSDK\$v" >> $env:GITHUB_ENV
+          "C:\VulkanSDK\$v\Bin" >> $env:GITHUB_PATH
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          "CARGO_TARGET_DIR=C:/t" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Tests
+        run: cargo test --workspace --no-fail-fast

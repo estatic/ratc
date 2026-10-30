@@ -124,6 +124,9 @@ struct CreateWindow {
 type FlightLoop = extern "C" fn(c_float, c_float, c_int, *mut c_void) -> c_float;
 type CommandHandler = extern "C" fn(CommandRef, c_int, *mut c_void) -> c_int;
 
+// Linux resolves these against X-Plane when it loads the plugin; on Windows the DLL imports
+// them from X-Plane's XPLM_64.dll, described here so no SDK import library is needed.
+#[cfg_attr(windows, link(name = "XPLM_64", kind = "raw-dylib"))]
 unsafe extern "C" {
     fn XPLMDebugString(s: *const c_char);
     fn XPLMCreateWindowEx(params: *mut CreateWindow) -> WindowId;
