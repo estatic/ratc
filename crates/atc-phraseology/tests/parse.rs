@@ -489,6 +489,8 @@ fn request_follow_me_still_parsed() {
         "Sierra Bravo Charlie, request follow me car",
         "Sierra Bravo Charlie, request taxi to stand with follow me car",
         "Sierra Bravo Charlie, request follow me on the way to stand five",
+        "Sierra Bravo Charlie, need follow me on the way to stand five",
+        "Sierra Bravo Charlie, can I get follow me on the way to stand five",
     ] {
         assert_eq!(known(t).intent, PilotIntent::RequestFollowMe, "{t}");
     }

@@ -233,6 +233,9 @@ fn polish_follow_me_requests_still_parsed() {
         "Kraków Ground, Sierra Bravo Charlie, proszę o follow me",
         "Kraków Ground, Sierra Bravo Charlie, proszę o samochód follow me",
         "Sierra Bravo Charlie, prośba o follow me do stanowiska trzy pięć",
+        "Sierra Bravo Charlie, proszę o kołowanie za samochodem follow me",
+        "Sierra Bravo Charlie, proszę o kołowanie z samochodem follow me",
+        "Sierra Bravo Charlie, prośba o kołowanie do stanowiska z samochodem follow me",
         "Sierra Bravo Charlie, proszę o follow me, zgubiłem się",
     ] {
         assert_eq!(pl(text).intent, PilotIntent::RequestFollowMe, "{text}");
