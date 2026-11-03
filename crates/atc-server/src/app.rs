@@ -275,6 +275,20 @@ pub(crate) type Tx = mpsc::UnboundedSender<Out>;
 /// Words a controller speaks per second: the airtime of a transmission without audio.
 const WORDS_PER_S: f64 = 2.5;
 
+/// The length of `pcm`; `None` when it has no usable sample rate.
+fn audio_airtime(pcm: &Pcm) -> Option<Duration> {
+    if pcm.sample_rate == 0 {
+        return None;
+    }
+    Duration::try_from_secs_f64(pcm.samples.len() as f64 / f64::from(pcm.sample_rate)).ok()
+}
+
+/// How long `text` takes to say, from its word count.
+fn words_airtime(text: &str) -> Duration {
+    let words = text.split_whitespace().count() as f64;
+    Duration::try_from_secs_f64(words / WORDS_PER_S).unwrap_or(Duration::ZERO)
+}
+
 /// A controller transmission's synthesized speech: its utterance id and audio (`None` when
 /// TTS failed or the frequency has no voice, so the text goes alone).
 pub(crate) struct Speech {
@@ -359,8 +373,9 @@ impl Server {
         }
     }
 
-    /// Replies to a pilot transmission: on air before every other queued item (after
-    /// earlier replies), in batch order.
+    /// Replies to a pilot transmission, in batch order: on air after earlier replies and
+    /// after items already queued for the same aircraft (generated before its transmission
+    /// was handled, e.g. a deviation call the reply refers to), before everything else.
     pub(crate) fn enqueue_front(self: &Arc<Self>, outputs: Vec<AtcOutput>) {
         self.enqueue(outputs, true);
     }
@@ -384,7 +399,11 @@ impl Server {
                     speech: None,
                 };
                 if reply {
-                    let at = q.iter().take_while(|e| e.reply).count();
+                    let to = &item.out.message.to;
+                    let at = q
+                        .iter()
+                        .rposition(|e| e.reply || (to.is_some() && e.out.message.to == *to))
+                        .map_or(0, |i| i + 1);
                     q.insert(at, item);
                 } else {
                     q.push_back(item);
@@ -480,14 +499,11 @@ impl Server {
             return OnAir::Dropped;
         }
         let speech = item.speech.expect("checked above");
-        let airtime = match &speech.pcm {
-            Some(pcm) => {
-                Duration::from_secs_f64(pcm.samples.len() as f64 / f64::from(pcm.sample_rate))
-            }
-            None => Duration::from_secs_f64(
-                item.out.text.split_whitespace().count() as f64 / WORDS_PER_S,
-            ),
-        };
+        let airtime = speech
+            .pcm
+            .as_ref()
+            .and_then(audio_airtime)
+            .unwrap_or_else(|| words_airtime(&item.out.text));
         floor.atc_start(freq_khz, now, airtime, &self.state.radio);
         network.set_frequency_busy(freq_khz, true);
         OnAir::Speak {
@@ -678,6 +694,25 @@ async fn ws_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airtime_from_audio_or_words() {
+        let pcm = |sample_rate, n| Pcm {
+            sample_rate,
+            samples: vec![0; n],
+        };
+        assert_eq!(
+            audio_airtime(&pcm(22_050, 44_100)),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(audio_airtime(&pcm(0, 100)), None);
+        assert_eq!(audio_airtime(&pcm(16_000, 0)), Some(Duration::ZERO));
+        assert_eq!(
+            words_airtime("one two three four five"),
+            Duration::from_secs(2)
+        );
+        assert_eq!(words_airtime(""), Duration::ZERO);
+    }
     use atc_navdata::procedures::parse_procedures;
 
     #[test]

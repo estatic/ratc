@@ -44,6 +44,9 @@ struct Session {
     /// Sim time of the latest unpaused telemetry.
     last_t: f64,
     ptt: Option<Ptt>,
+    /// A press was refused: every further `PttStart` is too until a `PttEnd` (holding PTT
+    /// does not start a transmission when the frequency clears).
+    press_refused: bool,
 }
 
 pub(crate) async fn run(server: Arc<Server>, socket: WebSocket) {
@@ -166,6 +169,7 @@ async fn handshake(
         tuned: Vec::new(),
         last_t: 0.0,
         ptt: None,
+        press_refused: false,
     })
 }
 
@@ -331,7 +335,11 @@ impl Session {
     /// a repeated start on the held frequency keeps the current transmission.
     fn on_ptt_start(&mut self, freq_khz: u32) {
         let pressed = self.ptt.is_none();
-        if pressed && self.server.pilot_press(freq_khz, self.id) == PttOutcome::Blocked {
+        if pressed
+            && (self.press_refused
+                || self.server.pilot_press(freq_khz, self.id) == PttOutcome::Blocked)
+        {
+            self.press_refused = true;
             return self.blocked(freq_khz);
         }
         let (outcome, listeners) = {
@@ -342,6 +350,7 @@ impl Session {
             PttOutcome::Blocked => {
                 if pressed {
                     self.server.pilot_done(freq_khz, self.id);
+                    self.press_refused = true;
                 }
                 self.blocked(freq_khz);
             }
@@ -385,6 +394,7 @@ impl Session {
 
     /// The frequency stays the pilot's until the transmission is handled.
     fn on_ptt_end(&mut self) {
+        self.press_refused = false;
         self.server.state.hub.lock().unwrap().ptt_end(self.id);
         let Some(ptt) = self.end_relay() else {
             return;

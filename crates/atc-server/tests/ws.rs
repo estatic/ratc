@@ -1188,8 +1188,10 @@ async fn atc_waits_for_pilot_transmission() {
     assert!(is_deviation(&first_atc_text(&got)), "{got:?}");
 }
 
+/// A call to the same aircraft queued before its transmission was handled goes first: the
+/// reply may refer to it ("read back hold position").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn reply_goes_before_queued_telemetry_output() {
+async fn queued_call_to_the_same_aircraft_goes_before_its_reply() {
     let srv = start_radio(vec![transcript("Kraków Ground, SP-ABC, radio check", 0.95)]).await;
     let mut c = Client::hello(&srv.url, "SP-ABC").await;
     c.weather_and_parked(GROUND).await;
@@ -1202,8 +1204,61 @@ async fn reply_goes_before_queued_telemetry_output() {
     got.extend(c.recv_until(is_atc_text).await);
     let texts = atc_texts(&got);
     assert_eq!(texts.len(), 2, "{got:?}");
-    assert!(!is_deviation(&texts[0].1), "{texts:?}");
+    assert!(is_deviation(&texts[0].1), "{texts:?}");
+    assert!(!is_deviation(&texts[1].1), "{texts:?}");
+}
+
+/// A reply goes before a call to another aircraft queued while the pilot talked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reply_goes_before_queued_call_to_another_aircraft() {
+    let srv = start_radio(vec![transcript(TAXI_REQUEST, 0.95)]).await;
+    let mut a = Client::hello(&srv.url, "SP-ABC").await;
+    let mut b = Client::hello(&srv.url, "SP-XYZ").await;
+    a.weather_and_parked(GROUND).await;
+    b.send(ClientMsg::Telemetry(parked(GROUND))).await;
+    srv.wait_listeners(GROUND, 2).await;
+    a.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    a.send_audio(0, vec![100; 320]).await;
+    b.recv_until(|m| matches!(m, In::Msg(ServerMsg::RelayStart { .. })))
+        .await;
+    roll_without_clearance(&mut b, 11.0).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    a.send(ClientMsg::PttEnd).await;
+    let mut got = b.recv_until(is_atc_text).await;
+    got.extend(b.recv_until(is_atc_text).await);
+    let texts = atc_texts(&got);
+    assert_eq!(texts.len(), 2, "{got:?}");
+    assert!(texts[0].1.contains("taxi to holding point"), "{texts:?}");
     assert!(is_deviation(&texts[1].1), "{texts:?}");
+}
+
+/// A refused press stays refused while PTT is held, even once the frequency clears; only
+/// a new press after the release is granted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_ptt_does_not_start_when_frequency_clears() {
+    let srv = start_radio(vec![transcript("", 0.9)]).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    let got = c.recv_until(is_taxi_text).await;
+    c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    c.recv_until(is_blocked).await;
+    // Ground's clearance is over; the same press (no PttEnd) is still refused.
+    c.recv_for(airtime(&first_atc_text(&got))).await;
+    c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    c.send_audio(0, vec![100; 320]).await;
+    let again = c.recv_until(is_blocked).await;
+    assert_eq!(
+        again.last(),
+        Some(&In::Msg(ServerMsg::FrequencyBlocked { freq_khz: GROUND }))
+    );
+    assert!(srv.stt.prompts.lock().unwrap().is_empty());
+    // Released and pressed again: granted and transcribed.
+    c.send(ClientMsg::PttEnd).await;
+    ptt(&mut c, GROUND).await;
+    let after = c.recv_until(is_transcript).await;
+    assert!(!after.iter().any(is_blocked), "{after:?}");
+    assert_eq!(srv.stt.prompts.lock().unwrap().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
