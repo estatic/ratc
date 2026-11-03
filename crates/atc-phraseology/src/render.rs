@@ -304,6 +304,7 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             });
         }
         AtcItem::Roger => out.push("roger".into()),
+        AtcItem::UseCallsign => out.push("use your callsign in every transmission".into()),
         AtcItem::SayAgain => out.push("say again".into()),
         AtcItem::SayFlightRules => out.push("say flight rules".into()),
         AtcItem::NoFlightPlan => out.push("no flight plan".into()),
@@ -550,5 +551,19 @@ mod tests {
         assert_eq!(metres_words(300), "three hundred");
         assert_eq!(metres_words(1050), "one thousand fifty");
         assert_eq!(metres_words(2310), "two thousand three hundred ten");
+    }
+
+    #[test]
+    fn use_callsign_after_the_callsign() {
+        let msg = AtcMessage {
+            to: Some(Callsign::new("NSP")),
+            from: "Kraków Ground".into(),
+            items: vec![AtcItem::UseCallsign],
+            lang: Lang::En,
+        };
+        assert_eq!(
+            render_en(&msg, true),
+            "November Sierra Papa, use your callsign in every transmission"
+        );
     }
 }

@@ -255,6 +255,11 @@ pub struct Strip {
     #[serde(default)]
     pub handoff_acked: bool,
     // Every field above that belongs to one flight is reset by `Strip::end_flight`.
+    /// Transmissions taken for this aircraft without its callsign (the one aircraft in the
+    /// exchange); from the third one the answer reminds the pilot to use it. Kept for the
+    /// strip's lifetime and carried with a hand-over: it is the pilot's habit.
+    #[serde(default)]
+    pub callsign_misses: u32,
 }
 
 impl Strip {
@@ -308,6 +313,7 @@ impl Strip {
             handed_off_khz: None,
             handed_in: false,
             handoff_acked: false,
+            callsign_misses: 0,
         }
     }
 

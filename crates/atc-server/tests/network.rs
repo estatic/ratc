@@ -299,6 +299,7 @@ fn ifr_to_testville(c: &Callsign) -> FlightHandover {
         squawk: Some(4601),
         cleared_ft: Some(2000),
         rules: Some(FlightRules::Ifr),
+        callsign_misses: 0,
     }
 }
 

@@ -239,6 +239,9 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             });
         }
         AtcItem::Roger => out.push("przyjąłem".into()),
+        AtcItem::UseCallsign => {
+            out.push("używaj znaku wywoławczego w każdej korespondencji".into())
+        }
         AtcItem::SayAgain => out.push("powtórz".into()),
         AtcItem::SayFlightRules => out.push("podaj przepisy lotu".into()),
         AtcItem::NoFlightPlan => out.push("brak planu lotu".into()),
@@ -375,4 +378,19 @@ fn genitive(name: &str) -> String {
         return format!("{name}a");
     }
     name.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn use_callsign_in_polish() {
+        let mut out = Vec::new();
+        item_parts(&AtcItem::UseCallsign, &mut out);
+        assert_eq!(
+            out,
+            vec!["używaj znaku wywoławczego w każdej korespondencji"]
+        );
+    }
 }

@@ -1354,12 +1354,14 @@ fn interrupted_readback_is_joined() {
     assert!(e.strip(&cs).unwrap().pending_readback.is_none());
 }
 
-/// Fragments too old are not joined.
+/// Fragments too old are not joined. (A second aircraft on Ground, so the transmission is
+/// not taken for the one in the exchange either.)
 #[test]
 fn old_fragment_is_not_joined() {
     let mut e = engine();
     let first = track().into_iter().next().unwrap();
     assert!(e.on_telemetry(first).is_empty());
+    taxi_cleared_as(&mut e, "SPTSU", "Sierra Papa Tango Sierra Uniform");
     say(
         &mut e,
         GROUND,
@@ -1601,6 +1603,107 @@ fn say_again_without_callsign_two_aircraft() {
     let out = say(&mut e, GROUND, "Say again, Sierra Sierra Uniform");
     assert_eq!(out[0].message.to, Some(Callsign::new("SPTSU")));
     assert!(items(&out).iter().any(is_taxi_to_holding_point), "{out:?}");
+}
+
+/// `text` without the callsign it ends with.
+fn without_callsign(text: &str, cs: &str) -> String {
+    text.strip_suffix(&format!(", {cs}"))
+        .expect(text)
+        .to_string()
+}
+
+/// A readback without a callsign from the one aircraft in the exchange is taken for it and
+/// answered "<callsign>, roger".
+#[test]
+fn readback_without_callsign_is_accepted_with_roger() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    let out = say(&mut e, GROUND, &text);
+    assert_eq!(items(&out), vec![AtcItem::Roger]);
+    assert_eq!(out[0].message.to, Some(Callsign::new("SPTST")));
+    let cs = Callsign::new("SPTST");
+    let strip = e.strip(&cs).unwrap();
+    assert!(strip.pending_readback.is_none());
+    assert_eq!(strip.callsign_misses, 1);
+    // The readback is closed: the same words again are not asked for again.
+    let again = items(&say(&mut e, GROUND, &text));
+    assert!(
+        !again.iter().any(|i| matches!(i, AtcItem::ReadBack(_))),
+        "{again:?}"
+    );
+}
+
+/// From the third transmission without a callsign the answer ends with the reminder, in
+/// the same transmission.
+#[test]
+fn third_call_without_callsign_adds_use_callsign() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    for (n, call) in [text.as_str(), "roger"].into_iter().enumerate() {
+        let out = say(&mut e, GROUND, call);
+        assert!(!items(&out).contains(&AtcItem::UseCallsign), "{n}: {out:?}");
+    }
+    let out = say(&mut e, GROUND, "roger");
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].message.items.last(), Some(&AtcItem::UseCallsign));
+    assert!(
+        out[0]
+            .text
+            .ends_with("use your callsign in every transmission"),
+        "{}",
+        out[0].text
+    );
+    assert_eq!(e.strip(&Callsign::new("SPTST")).unwrap().callsign_misses, 3);
+}
+
+/// With two aircraft worked on the frequency a transmission without a callsign is not
+/// taken for either.
+#[test]
+fn callsign_less_call_with_two_aircraft_says_again_callsign() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    taxi_cleared_as(&mut e, "SPTSU", "Sierra Papa Tango Sierra Uniform");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    let out = say(&mut e, GROUND, &text);
+    assert!(
+        matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+        "{out:?}"
+    );
+    for cs in ["SPTST", "SPTSU"] {
+        assert_eq!(e.strip(&Callsign::new(cs)).unwrap().callsign_misses, 0);
+    }
+}
+
+/// The callsign-miss count travels with the flight; data without it reads as none.
+#[test]
+fn callsign_misses_survive_handover() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    for call in [text.as_str(), "roger", "roger"] {
+        say(&mut e, GROUND, call);
+    }
+    let cs = Callsign::new("SPTST");
+    let strip = e.strip(&cs).unwrap().clone();
+    assert_eq!(strip.callsign_misses, 3);
+    let h = e.export_flight(&cs).expect("exported");
+    assert_eq!(h.callsign_misses, 3);
+    let json = serde_json::to_value(&h).unwrap();
+    let h: atc_core::handover::FlightHandover = serde_json::from_value(json.clone()).unwrap();
+    let mut other = engine();
+    other.import_flight(h);
+    assert_eq!(other.strip(&cs).unwrap().callsign_misses, 3);
+    // Older data without the field.
+    let mut old = json;
+    old.as_object_mut().unwrap().remove("callsign_misses");
+    let h: atc_core::handover::FlightHandover = serde_json::from_value(old).unwrap();
+    assert_eq!(h.callsign_misses, 0);
+    let mut old = serde_json::to_value(&strip).unwrap();
+    old.as_object_mut().unwrap().remove("callsign_misses");
+    let s: atc_core::strip::Strip = serde_json::from_value(old).unwrap();
+    assert_eq!(s.callsign_misses, 0);
 }
 
 /// A pilot unsure of the way gets the route again from where it is, to read back.
@@ -2232,20 +2335,21 @@ fn language_switches_back_to_english() {
 fn misdetected_short_phrase_keeps_language() {
     let mut e = engine_in(LanguageMode::Auto);
     say_in(&mut e, GROUND, PL_TAXI, Lang::Pl);
-    say_in(&mut e, GROUND, "roger", Lang::En);
+    // Without a callsign it is taken for SP-ABC, the one aircraft in the exchange.
+    let out = say_in(&mut e, GROUND, "roger", Lang::En);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
     let out = say_in(&mut e, GROUND, &format!("{PL_CS_ABBR}, roger"), Lang::En);
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert!(out[0].text.contains("powtórz"), "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
-    // Not understood in either language: answered in the session language.
-    let out = say_in(
-        &mut e,
-        GROUND,
-        &format!("{PL_CS_ABBR}, blah blah"),
-        Lang::En,
-    );
+    // Not understood in either language: answered in the session language (the first
+    // time it closes the readback, asked for twice already).
+    let blah = format!("{PL_CS_ABBR}, blah blah");
+    assert!(say_in(&mut e, GROUND, &blah, Lang::En).is_empty());
+    let out = say_in(&mut e, GROUND, &blah, Lang::En);
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
@@ -6466,6 +6570,7 @@ mod handover {
             plan: Some(plan),
             squawk: Some(4601),
             rules: Some(FlightRules::Ifr),
+            callsign_misses: 0,
         }
     }
 

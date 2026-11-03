@@ -6,7 +6,9 @@
 //! altitudes all come from navdata or procedures.
 //!
 //! Per transmission: unknown frequency -> silence (Approach also answers on its alternate
-//! frequencies, on the one called); callsign not heard or not registered ->
+//! frequencies, on the one called); callsign not heard or not registered -> taken for the
+//! one aircraft in the exchange when there is one (`only_addressed`; what would
+//! go unanswered gets "roger", from the 3rd time with `UseCallsign`), otherwise
 //! `SayAgainCallsign`; a pending readback is checked first (correct -> silent unless the pilot
 //! also made a request; a request while it is still open -> `ReadBack(pending)`, no new
 //! clearance; otherwise the correction, at most twice, then the readback is accepted;
@@ -87,6 +89,9 @@ const MAX_READBACK_REQUESTS: u8 = 2;
 /// An unanswered transmission is joined with the next one on its frequency within this
 /// many seconds: the pilot broke it off and finished it.
 const FRAGMENT_S: f64 = 30.0;
+/// From this transmission taken for an aircraft without its callsign on, the answer reminds
+/// the pilot to use it.
+const CALLSIGN_REMINDER_AT: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EngineConfig {
@@ -339,6 +344,7 @@ impl AtcEngine {
                 }
             }),
             squawk: strip.squawk,
+            callsign_misses: strip.callsign_misses,
             plan,
         };
         self.remove_pilot(cs);
@@ -373,6 +379,7 @@ impl AtcEngine {
         strip.owner = if ifr { Role::Approach } else { Role::Tower };
         strip.plan = plan;
         strip.squawk = h.squawk;
+        strip.callsign_misses = h.callsign_misses;
         strip.handed_in = true;
     }
 
@@ -581,10 +588,73 @@ impl AtcEngine {
             ((msg, Some(i), l), _) => (text.to_string(), msg, i, l),
             (_, Some(((jmsg, Some(ji), jl), j))) => (j, jmsg, ji, jl),
             _ => {
+                if let Some(i) = self.only_addressed(role) {
+                    return self.inferred(role, freq_khz, text, lang, i, t);
+                }
                 self.fragment = Some((role, text.to_string(), t.0));
                 return self.say_again_callsign(role, freq_khz, self.unknown_lang(lang));
             }
         };
+        self.answer(role, freq_khz, &text, msg, i, heard_lang, t)
+    }
+
+    /// A transmission naming no aircraft, taken for aircraft `i`, the one in the exchange
+    /// ([`AtcEngine::only_addressed`]); counted on its strip. It is answered as if it named
+    /// it: what would go unanswered (a correct readback, an acknowledgement) gets
+    /// "<callsign>, roger", so the pilot hears who it was taken for, and from the third such
+    /// transmission the answer ends with "use your callsign in every transmission".
+    fn inferred(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        lang: Lang,
+        i: usize,
+        t: SimTime,
+    ) -> Vec<AtcOutput> {
+        let (msg, _, heard_lang) = self.hear_as(text, lang, Some(i));
+        self.strips[i].callsign_misses += 1;
+        let mut out = self.answer(role, freq_khz, text, msg, i, heard_lang, t);
+        // Approach does not talk to an aircraft with a radio failure.
+        let silenced = role == Role::Approach && self.strips[i].radio_failure;
+        if out.is_empty() && !silenced {
+            out = self.transmit(i, role, vec![AtcItem::Roger]);
+        }
+        if self.strips[i].callsign_misses >= CALLSIGN_REMINDER_AT {
+            self.remind_callsign(i, role, &mut out);
+        }
+        out
+    }
+
+    /// Appends "use your callsign in every transmission" to the last of `out` (sent from
+    /// `role` to aircraft `i`), re-rendered with the callsign in the same form, and keeps it
+    /// as what was last said to the aircraft.
+    fn remind_callsign(&mut self, i: usize, role: Role, out: &mut [AtcOutput]) {
+        let Some(last) = out.last_mut() else {
+            return;
+        };
+        let full = render(&last.message, true) == last.text;
+        last.message.items.push(AtcItem::UseCallsign);
+        last.text = render(&last.message, full);
+        let cs = self.strips[i].callsign.clone();
+        self.strips[i].issued.push(AtcItem::UseCallsign);
+        self.last_told.insert(cs.clone(), last.text.clone());
+        self.last_sent.insert((cs, role), last.clone());
+    }
+
+    /// Pilot transmission `text` (heard as `msg` in `heard_lang`) of aircraft `i` on
+    /// `freq_khz`, answered by `role` at sim time `t`.
+    #[allow(clippy::too_many_arguments)]
+    fn answer(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        msg: PilotMessage,
+        i: usize,
+        heard_lang: Lang,
+        t: SimTime,
+    ) -> Vec<AtcOutput> {
         if understood(&msg) {
             self.understood_in(i, heard_lang);
             // The pilot has answered after its hand-off (read back, or acknowledged where no
@@ -593,7 +663,6 @@ impl AtcEngine {
                 self.strips[i].handoff_acked = true;
             }
         }
-        let text = text.as_str();
         if let Some(to) = self.called_elsewhere(role, &msg) {
             let mut items: Vec<AtcItem> = self
                 .position(role)
@@ -766,21 +835,25 @@ impl AtcEngine {
     /// to; otherwise "say again your callsign" (in `lang`, see [`AtcEngine::unknown_lang`]).
     /// Nothing said to it yet: "pass your message".
     fn repeat(&mut self, role: Role, khz: u32, i: Option<usize>, lang: Lang) -> Vec<AtcOutput> {
-        let i = i.or_else(|| {
-            let mut on_freq = (0..self.strips.len()).filter(|&k| {
-                let s = &self.strips[k];
-                s.owner == role && self.tracks.contains_key(&s.callsign)
-            });
-            let only = on_freq.next().filter(|_| on_freq.next().is_none())?;
-            (self.last_addressed.get(&role) == Some(&self.strips[only].callsign)).then_some(only)
-        });
-        let Some(i) = i else {
+        let Some(i) = i.or_else(|| self.only_addressed(role)) else {
             return self.say_again_callsign(role, khz, self.unknown_lang(lang));
         };
         match self.last_sent.get(&(self.strips[i].callsign.clone(), role)) {
             Some(last) => vec![last.clone()],
             None => self.transmit(i, role, vec![AtcItem::PassYourMessage]),
         }
+    }
+
+    /// The aircraft a transmission without a callsign to `role` comes from: the only one
+    /// `role` works on its frequency (owned, with surveillance), when it is also the one
+    /// `role` last spoke to. `None`: no such aircraft, or more than one candidate.
+    fn only_addressed(&self, role: Role) -> Option<usize> {
+        let mut on_freq = (0..self.strips.len()).filter(|&k| {
+            let s = &self.strips[k];
+            s.owner == role && self.tracks.contains_key(&s.callsign)
+        });
+        let only = on_freq.next().filter(|_| on_freq.next().is_none())?;
+        (self.last_addressed.get(&role) == Some(&self.strips[only].callsign)).then_some(only)
     }
 
     /// A greeting is returned once per station, in front of the reply.
@@ -808,11 +881,23 @@ impl AtcEngine {
     /// phrase misdetected as the other language does not switch the exchange. An English
     /// aircraft switches to Polish only when the Polish words changed what was understood.
     fn hear(&self, text: &str, lang: Lang) -> (PilotMessage, Option<usize>, Lang) {
+        self.hear_as(text, lang, None)
+    }
+
+    /// [`AtcEngine::hear`], a transmission naming no aircraft being taken for aircraft `of`
+    /// (when given): it is then heard against that aircraft's language.
+    fn hear_as(
+        &self,
+        text: &str,
+        lang: Lang,
+        of: Option<usize>,
+    ) -> (PilotMessage, Option<usize>, Lang) {
         let lang = match self.cfg.language {
             LanguageMode::Fixed(l) => l,
             LanguageMode::Auto => lang,
         };
         let (msg, i) = self.heard(text, lang);
+        let i = i.or(of);
         let Some(k) = i.filter(|_| self.cfg.language == LanguageMode::Auto) else {
             return (msg, i, lang);
         };
@@ -824,8 +909,8 @@ impl AtcEngine {
         // English transmission in a Polish session that is understood switches back.)
         if lang == Lang::Pl && session == Lang::En {
             let (emsg, ei) = self.heard(text, Lang::En);
-            if ei == Some(k) && same_understanding(&msg, &emsg) {
-                return (emsg, ei, Lang::En);
+            if ei.or(of) == Some(k) && same_understanding(&msg, &emsg) {
+                return (emsg, Some(k), Lang::En);
             }
         }
         if session == lang || (understood(&msg) && substantive(&msg)) {
@@ -834,8 +919,8 @@ impl AtcEngine {
         let (smsg, si) = self.heard(text, session);
         if understood(&msg) && !understood(&smsg) {
             (msg, i, lang)
-        } else if si == Some(k) {
-            (smsg, si, session)
+        } else if si.or(of) == Some(k) {
+            (smsg, Some(k), session)
         } else {
             (msg, i, session)
         }

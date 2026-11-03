@@ -19,4 +19,7 @@ pub struct FlightHandover {
     pub cleared_ft: Option<i32>,
     /// Flight rules of the plan.
     pub rules: Option<FlightRules>,
+    /// Transmissions without a callsign so far ([`crate::strip::Strip::callsign_misses`]).
+    #[serde(default)]
+    pub callsign_misses: u32,
 }
