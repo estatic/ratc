@@ -1107,3 +1107,197 @@ async fn hello_with_another_type_is_new_flight() {
     ));
     assert!(!has_strip(&srv, "SP-ABC"));
 }
+
+// Radio discipline: these servers run with real radio timing (`start_radio`), so the
+// controller's FakeTts audio (0.1 s per word) occupies the frequency for real.
+
+fn is_blocked(m: &In) -> bool {
+    matches!(m, In::Msg(ServerMsg::FrequencyBlocked { .. }))
+}
+
+/// The airtime of `text` from FakeTts, plus the floor's margin and some slack.
+fn airtime(text: &str) -> Duration {
+    Duration::from_millis(text.split_whitespace().count() as u64 * 100 + 300 + 500)
+}
+
+/// Unpaused frames in the middle of a take-off roll without a clearance: Ground calls a
+/// runway deviation.
+async fn roll_without_clearance(c: &mut Client, t0: f64) {
+    let (ap, procs) = epkk();
+    let track = circuit_track(&ap, &procs, "25", 1.0);
+    let roll = track
+        .iter()
+        .filter(|s| s.on_ground)
+        .max_by(|a, b| a.gs_kt.total_cmp(&b.gs_kt))
+        .expect("take-off roll");
+    for i in 0..3 {
+        let mut f = parked(GROUND);
+        f.t = t0 + i as f64;
+        f.lat = roll.pos.lat;
+        f.lon = roll.pos.lon;
+        f.heading_deg = roll.heading_deg;
+        f.gs_kt = roll.gs_kt;
+        f.ias_kt = roll.gs_kt;
+        c.send(ClientMsg::Telemetry(f)).await;
+    }
+}
+
+fn is_deviation(text: &str) -> bool {
+    text.contains("without clearance")
+}
+
+/// The first `AtcText` of `msgs` (the taxi clearance) as sent.
+fn first_atc_text(msgs: &[In]) -> String {
+    atc_texts(msgs).first().expect("an ATC text").1.clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ptt_while_atc_speaks_is_blocked_and_not_transcribed() {
+    let srv = start_radio(vec![transcript(TAXI_REQUEST, 0.95)]).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    let got = c.recv_until(is_taxi_text).await;
+    // Ground's clearance is on the air (about 2 s): the press is refused.
+    ptt(&mut c, GROUND).await;
+    let mut after = c.recv_until(is_blocked).await;
+    assert_eq!(
+        after.last(),
+        Some(&In::Msg(ServerMsg::FrequencyBlocked { freq_khz: GROUND }))
+    );
+    after.extend(c.recv_for(airtime(&first_atc_text(&got))).await);
+    assert!(!after.iter().any(is_transcript), "{after:?}");
+    assert!(srv.stt.prompts.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn atc_waits_for_pilot_transmission() {
+    let srv = start_radio(vec![transcript("", 0.9)]).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    c.send_audio(0, vec![100; 320]).await;
+    roll_without_clearance(&mut c, 11.0).await;
+    // The deviation call waits while the pilot holds the frequency.
+    let held = c.recv_for(Duration::from_secs(2)).await;
+    assert!(atc_texts(&held).is_empty(), "{held:?}");
+    c.send(ClientMsg::PttEnd).await;
+    let got = c.recv_until(is_atc_text).await;
+    let transcript_at = got.iter().position(is_transcript).expect("transcript");
+    assert!(transcript_at < got.len() - 1, "{got:?}");
+    assert!(is_deviation(&first_atc_text(&got)), "{got:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reply_goes_before_queued_telemetry_output() {
+    let srv = start_radio(vec![transcript("Kraków Ground, SP-ABC, radio check", 0.95)]).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    c.send_audio(0, vec![100; 320]).await;
+    roll_without_clearance(&mut c, 11.0).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    c.send(ClientMsg::PttEnd).await;
+    let mut got = c.recv_until(is_atc_text).await;
+    got.extend(c.recv_until(is_atc_text).await);
+    let texts = atc_texts(&got);
+    assert_eq!(texts.len(), 2, "{got:?}");
+    assert!(!is_deviation(&texts[0].1), "{texts:?}");
+    assert!(is_deviation(&texts[1].1), "{texts:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reminder_dropped_when_readback_arrives_first() {
+    let srv = start_radio(vec![]).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    let got = c.recv_until(is_taxi_text).await;
+    let clearance = first_atc_text(&got);
+    // Ground's clearance ends; the pilot starts reading it back before the 10 s are up.
+    c.recv_for(airtime(&clearance)).await;
+    let readback = clearance
+        .split_once(", ")
+        .map(|(_, rest)| format!("{rest}, Sierra Papa Alpha Bravo Charlie"))
+        .unwrap();
+    srv.stt
+        .reply
+        .lock()
+        .unwrap()
+        .push_back(Ok(transcript(&readback, 0.95)));
+    c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    c.send_audio(0, vec![100; 320]).await;
+    // Sim time passes the reminder's 10 s while the pilot is still talking.
+    for t in [30.0, 40.0] {
+        let mut f = parked(GROUND);
+        f.t = t;
+        c.send(ClientMsg::Telemetry(f)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.send(ClientMsg::PttEnd).await;
+    let mut after = c.recv_until(is_transcript).await;
+    for t in [50.0, 60.0, 70.0] {
+        let mut f = parked(GROUND);
+        f.t = t;
+        c.send(ClientMsg::Telemetry(f)).await;
+    }
+    after.extend(c.recv_for(Duration::from_secs(4)).await);
+    let texts = atc_texts(&after);
+    assert!(
+        !texts.iter().any(|(_, t)| t.contains("read back")),
+        "{texts:?}"
+    );
+    // The readback was taken: nothing left to remind of.
+    let cs = atc_phraseology::Callsign::new("SP-ABC");
+    let engine = srv.state.network.stations()[0].engine.lock().unwrap();
+    assert!(engine.strip(&cs).unwrap().pending_readback.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn typed_text_while_atc_speaks_is_blocked() {
+    let srv = start_radio(vec![]).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    say(&mut c, GROUND, TAXI_REQUEST).await;
+    let got = c.recv_until(is_taxi_text).await;
+    say(&mut c, GROUND, "Kraków Ground, SP-ABC, radio check").await;
+    let mut after = c.recv_until(is_blocked).await;
+    assert_eq!(
+        after.last(),
+        Some(&In::Msg(ServerMsg::FrequencyBlocked { freq_khz: GROUND }))
+    );
+    after.extend(c.recv_for(airtime(&first_atc_text(&got)) * 2).await);
+    assert!(atc_texts(&after).is_empty(), "{after:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_frees_floor() {
+    let srv = start_radio(vec![]).await;
+    let mut a = Client::hello(&srv.url, "SP-ABC").await;
+    let mut b = Client::hello(&srv.url, "SP-XYZ").await;
+    a.weather_and_parked(GROUND).await;
+    b.send(ClientMsg::Telemetry(parked(GROUND))).await;
+    srv.wait_listeners(GROUND, 2).await;
+    a.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    a.send_audio(0, vec![100; 320]).await;
+    b.recv_until(|m| matches!(m, In::Msg(ServerMsg::RelayStart { .. })))
+        .await;
+    // A's held PTT keeps B off the frequency.
+    say(
+        &mut b,
+        GROUND,
+        "Kraków Ground, SP-XYZ, information Alpha, request taxi",
+    )
+    .await;
+    b.recv_until(is_blocked).await;
+    drop(a);
+    srv.wait_listeners(GROUND, 1).await;
+    say(
+        &mut b,
+        GROUND,
+        "Kraków Ground, SP-XYZ, information Alpha, request taxi",
+    )
+    .await;
+    let got = b.recv_until(is_atc_text).await;
+    assert!(has_taxi(&got), "{got:?}");
+}

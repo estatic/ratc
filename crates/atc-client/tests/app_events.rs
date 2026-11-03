@@ -108,7 +108,9 @@ async fn ptt_flow_and_frequency_busy() {
     let printed = h.printed.lock().unwrap().clone();
     assert!(printed[0].contains("PTT ignored"), "{printed:?}");
     assert!(
-        printed.iter().any(|l| l == "frequency 118.105 busy"),
+        printed
+            .iter()
+            .any(|l| l == "[ptt] frequency 118.105 busy - wait, then press again"),
         "{printed:?}"
     );
 }

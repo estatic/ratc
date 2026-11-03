@@ -1,16 +1,18 @@
-//! Speech pipeline: pilot audio -> STT -> network -> text + TTS to the frequency's listeners.
+//! Speech pipeline: pilot audio -> STT -> network -> the frequency's speaker queue, and the
+//! speaker task that puts each queued controller transmission on the air (text + TTS to the
+//! frequency's listeners) when the floor lets it.
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use atc_core::engine::{AtcOutput, LanguageMode};
+use atc_core::engine::LanguageMode;
 use atc_core::state::SimTime;
 use atc_phraseology::{Callsign, Lang};
 use atc_proto::{AudioFrame, ServerMsg};
 use atc_voice::{Pcm, SpeechToText, TextToSpeech, Transcript, VoiceError, VoiceId, radio_effect};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
-use crate::app::{Out, Server};
+use crate::app::{OnAir, Out, Server, Speech};
 use crate::hub::ClientId;
 
 /// Client -> server pilot audio rate.
@@ -41,6 +43,20 @@ pub(crate) enum Job {
     },
 }
 
+/// Releases the client's floor for one transmission when dropped, so every exit of the
+/// voice and text paths (errors included) frees the frequency, after any reply was queued.
+struct PilotFloor<'a> {
+    server: &'a Server,
+    id: ClientId,
+    freq_khz: u32,
+}
+
+impl Drop for PilotFloor<'_> {
+    fn drop(&mut self) {
+        self.server.pilot_done(self.freq_khz, self.id);
+    }
+}
+
 /// Processes a client's transmissions one after another, so the engine hears them (and the
 /// client gets the replies) in the order they were made.
 pub(crate) async fn worker(
@@ -64,9 +80,19 @@ pub(crate) async fn worker(
                 callsign = to;
             }
             Job::Voice { freq_khz, pcm, t } => {
+                let _floor = PilotFloor {
+                    server: &server,
+                    id,
+                    freq_khz,
+                };
                 voice(&server, id, &callsign, freq_khz, pcm, t).await
             }
             Job::Text { freq_khz, text, t } => {
+                let _floor = PilotFloor {
+                    server: &server,
+                    id,
+                    freq_khz,
+                };
                 transmission(&server, &cs, freq_khz, &text, Lang::En, t, 0).await
             }
         }
@@ -118,8 +144,7 @@ async fn voice(
     if tr.confidence < MIN_CONFIDENCE {
         tracing::info!("transcript unclear: say again");
         // In the speaker's language: another pilot's language would not be understood.
-        let outputs = network.say_again(&cs, freq_khz, session);
-        emit_all(server, outputs).await;
+        server.enqueue_front(network.say_again(&cs, freq_khz, session));
         return;
     }
     let lang = transcript_lang(&tr.lang);
@@ -175,55 +200,75 @@ async fn transmission(
     let outputs = network.on_transmission(from, freq_khz, text, lang, SimTime(t));
     let orders = network.take_vehicle_orders();
     let engine_ms = start.elapsed().as_millis();
-    // The car is shown while Ground's "on the way" is still being synthesized.
+    // Not queued: the car is shown while Ground's "on the way" waits for its turn.
     server.send_vehicle_orders(orders);
-    let tts_ms = emit_all(server, outputs).await;
-    tracing::info!(freq_khz, stt_ms, engine_ms, tts_ms, "transmission");
+    server.enqueue_front(outputs);
+    tracing::info!(freq_khz, stt_ms, engine_ms, "transmission");
 }
 
-/// Emits each output in turn; returns the total TTS time in ms.
-pub(crate) async fn emit_all(server: &Arc<Server>, outputs: Vec<AtcOutput>) -> u128 {
-    let mut tts_ms = 0;
-    for o in outputs {
-        tts_ms += emit(server, o).await;
-    }
-    tts_ms
-}
-
-/// `AtcText` to every listener of the output's frequency, then its audio. A TTS failure
-/// leaves the text only. Returns the TTS time in ms.
-async fn emit(server: &Arc<Server>, out: AtcOutput) -> u128 {
-    let utterance = server.next_utterance();
-    server.remember_said(out.freq_khz, &out.text);
-    let listeners = server.listeners(out.freq_khz);
-    server.send(
-        &listeners,
-        Out::Msg(ServerMsg::AtcText {
-            station: out.station.clone(),
-            freq_khz: out.freq_khz,
-            text: out.text.clone(),
-            utterance,
-        }),
-    );
-    let Some(voice) = server.state.stations.voice_for(out.freq_khz) else {
-        return 0;
-    };
-    let start = Instant::now();
-    let lang = lang_code(out.message.lang);
-    let pcm = synthesize(server.state.tts.clone(), voice, lang, out.text, utterance).await;
-    let tts_ms = start.elapsed().as_millis();
-    if let Some(pcm) = pcm {
-        send_audio(
-            server,
+/// The controller's voice on `freq_khz`: takes the queue's front item, synthesizes it while
+/// the frequency may still be busy, waits until the floor lets the controller start, then
+/// sends `AtcText` and the audio to the frequency's listeners at that moment and holds the
+/// frequency for the audio's airtime. A reply queued meanwhile goes first (the synthesized
+/// item keeps its speech). Woken by `wake` on queue and floor changes.
+pub(crate) async fn speaker(server: Arc<Server>, freq_khz: u32, wake: Arc<Notify>) {
+    loop {
+        let Some(front) = server.queue_front(freq_khz) else {
+            wake.notified().await;
+            continue;
+        };
+        if let Some((text, lang)) = front.unsynthesized {
+            let utterance = server.next_utterance();
+            let pcm = match server.state.stations.voice_for(freq_khz) {
+                Some(voice) => {
+                    let tts = server.state.tts.clone();
+                    synthesize(tts, voice, lang_code(lang), text, utterance).await
+                }
+                None => None,
+            };
+            server.store_speech(freq_khz, front.seq, Speech { utterance, pcm });
+            continue;
+        }
+        if let Some(at) = server.atc_may_start(freq_khz) {
+            tokio::select! {
+                () = tokio::time::sleep_until(at.into()) => {}
+                () = wake.notified() => {}
+            }
+            continue;
+        }
+        let (out, speech, end) = match server.take_on_air(freq_khz, front.seq) {
+            OnAir::Speak { out, speech, end } => (out, speech, end),
+            OnAir::Dropped => {
+                tracing::info!(freq_khz, "readback reminder dropped: no longer due");
+                continue;
+            }
+            OnAir::Retry => continue,
+        };
+        server.remember_said(freq_khz, &out.text);
+        let listeners = server.listeners(freq_khz);
+        server.send(
             &listeners,
-            utterance,
-            &out.station,
-            out.freq_khz,
-            &pcm,
-            false,
+            Out::Msg(ServerMsg::AtcText {
+                station: out.station.clone(),
+                freq_khz,
+                text: out.text,
+                utterance: speech.utterance,
+            }),
         );
+        if let Some(pcm) = &speech.pcm {
+            send_audio(
+                &server,
+                &listeners,
+                speech.utterance,
+                &out.station,
+                freq_khz,
+                pcm,
+                false,
+            );
+        }
+        tokio::time::sleep_until(end.into()).await;
+        server.atc_done(freq_khz);
     }
-    tts_ms
 }
 
 /// TTS in `lang` plus the radio effect (seeded by the utterance) off the async runtime. Errors are
