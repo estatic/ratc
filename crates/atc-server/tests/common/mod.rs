@@ -16,6 +16,7 @@ use atc_proto::{
     WeatherFrame,
 };
 use atc_server::app::{AppState, OwnerPrompts, StationMap, SttPrompts, router};
+use atc_server::floor::RadioTiming;
 use atc_server::hub::Hub;
 use atc_server::network::Network;
 use atc_server::stations::LoadedStation;
@@ -196,6 +197,7 @@ pub async fn start_network_with(
         } else {
             OwnerPrompts::default()
         },
+        radio: RadioTiming::instant(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

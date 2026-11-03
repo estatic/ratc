@@ -4,6 +4,7 @@ pub mod app;
 mod atis;
 pub mod config;
 mod convert;
+pub mod floor;
 pub mod hub;
 pub mod layout;
 pub mod network;

@@ -25,6 +25,7 @@ use axum::routing::get;
 use tokio::sync::mpsc;
 
 use crate::atis::AtisCache;
+use crate::floor::{Floor, RadioTiming};
 use crate::hub::{ClientId, Hub};
 use crate::network::{Network, Owner};
 use crate::stations::LoadedStation;
@@ -40,6 +41,8 @@ pub struct AppState {
     pub stt_prompts: SttPrompts,
     /// Each station's and unit's own prompts, see [`OwnerPrompts`].
     pub owner_prompts: OwnerPrompts,
+    /// Gap, margin and airtime scale of the shared radio frequencies.
+    pub radio: RadioTiming,
 }
 
 /// The static Whisper prompt ([`atc_voice::initial_prompt`]) in each language.
@@ -279,10 +282,14 @@ pub(crate) struct Server {
     /// The controller's last words per frequency, appended to the STT prompt so a readback
     /// is heard against the clearance it repeats.
     last_said: Mutex<HashMap<u32, String>>,
+    /// Who may speak on each frequency.
+    #[expect(dead_code, reason = "wired into the sessions in the next task")]
+    pub(crate) floor: Mutex<Floor>,
 }
 
 impl Server {
     fn new(state: AppState) -> Self {
+        let floor = Mutex::new(Floor::new(state.radio.gap));
         Server {
             state,
             next_client: AtomicU64::new(1),
@@ -292,6 +299,7 @@ impl Server {
             weather_source: Mutex::new(None),
             atis: AtisCache::default(),
             last_said: Mutex::new(HashMap::new()),
+            floor,
         }
     }
 

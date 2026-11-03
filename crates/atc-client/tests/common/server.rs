@@ -9,6 +9,7 @@ use atc_core::testkit::circuit_track;
 use atc_navdata::parse_apt_dat;
 use atc_navdata::procedures::parse_procedures;
 use atc_server::app::{AppState, OwnerPrompts, StationMap, SttPrompts, router};
+use atc_server::floor::RadioTiming;
 use atc_server::hub::Hub;
 use atc_server::network::Network;
 use atc_server::stations::LoadedStation;
@@ -68,6 +69,7 @@ pub async fn start_on(listener: tokio::net::TcpListener) -> TestServer {
             pl: "Kraków, lotnisko".into(),
         },
         owner_prompts: OwnerPrompts::default(),
+        radio: RadioTiming::instant(),
     };
     let addr = listener.local_addr().unwrap();
     let app = router(state.clone());
