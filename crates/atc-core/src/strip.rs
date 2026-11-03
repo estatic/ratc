@@ -260,6 +260,11 @@ pub struct Strip {
     /// strip's lifetime and carried with a hand-over: it is the pilot's habit.
     #[serde(default)]
     pub callsign_misses: u32,
+    /// Transmissions attributed to this aircraft (named or taken for it), for the
+    /// revalidation of a readback reminder ([`crate::engine::Reminder`]): one heard since
+    /// the reminder was generated has been answered already. Not persisted.
+    #[serde(skip)]
+    pub heard: u64,
 }
 
 impl Strip {
@@ -314,6 +319,7 @@ impl Strip {
             handed_in: false,
             handoff_acked: false,
             callsign_misses: 0,
+            heard: 0,
         }
     }
 

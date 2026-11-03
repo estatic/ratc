@@ -5,7 +5,7 @@ mod common;
 
 use std::sync::Mutex;
 
-use atc_core::engine::AtcOutput;
+use atc_core::engine::{AtcOutput, Reminder};
 use atc_core::handover::FlightHandover;
 use atc_core::state::{AircraftState, SimTime};
 use atc_core::strip::{FlightPlan, PilotProfile};
@@ -164,6 +164,52 @@ fn missing_readback_is_reminded_by_the_issuing_station_only() {
     let other = net.stations()[ZZZY].engine.lock().unwrap();
     let strip = other.strip(&c).unwrap();
     assert!(strip.pending_readback.is_none() && strip.readback_due_s.is_none());
+}
+
+/// The busy frequency reaches the engine of the station working it: no reminder while the
+/// frequency is busy, then 10 s after it became free; revalidation is asked of the owner.
+#[test]
+fn frequency_busy_holds_the_owners_reminder() {
+    let net = network("", ZZZZ_EXTRA);
+    let c = join(&net, "SPTST");
+    net.on_telemetry(sample(&c, 0.0, at(10.0012), 100.0, 0.0, ZETA_GROUND));
+    let out = net.on_transmission(
+        &c,
+        ZETA_GROUND,
+        "Zeta Ground, SPTST, request taxi",
+        Lang::En,
+        SimTime(1.0),
+    );
+    assert!(!out.is_empty());
+    net.set_frequency_busy(ZETA_GROUND, true);
+    let out = net.on_telemetry(sample(&c, 60.0, at(10.0012), 100.0, 0.0, ZETA_GROUND));
+    assert!(out.is_empty(), "{out:?}");
+    net.set_frequency_busy(ZETA_GROUND, false);
+    let out = net.on_telemetry(sample(&c, 69.0, at(10.0012), 100.0, 0.0, ZETA_GROUND));
+    assert!(out.is_empty(), "{out:?}");
+    let out = net.on_telemetry(sample(&c, 70.0, at(10.0012), 100.0, 0.0, ZETA_GROUND));
+    assert_eq!(stations(&out), ["Zeta Ground"], "{out:?}");
+    let r = out[0].reminder.clone().expect("a tagged reminder");
+    assert_eq!(
+        r,
+        Reminder {
+            callsign: c.clone(),
+            heard: 1
+        }
+    );
+    assert!(net.reminder_still_due(&r));
+    net.reminder_dropped(&r);
+    let zeta = net.stations()[ZZZZ].engine.lock().unwrap();
+    let strip = zeta.strip(&c).unwrap();
+    assert!(!strip.reminded && strip.readback_due_s == Some(70.0));
+    drop(zeta);
+    // Nobody owns an unknown flight: nothing is due for it.
+    let unknown = Reminder {
+        callsign: cs("SPXXX"),
+        heard: 0,
+    };
+    assert!(!net.reminder_still_due(&unknown));
+    net.reminder_dropped(&unknown);
 }
 
 #[test]

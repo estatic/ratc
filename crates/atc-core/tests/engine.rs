@@ -3,8 +3,8 @@
 
 use atc_core::atis::Weather;
 use atc_core::engine::{
-    AtcEngine, AtcOutput, EngineConfig, FOLLOW_ME_READY_S, LanguageMode, SNAPSHOT_VERSION,
-    SnapshotMismatch, VehicleCommand, VehicleOrder,
+    AtcEngine, AtcOutput, EngineConfig, FOLLOW_ME_READY_S, LanguageMode, Reminder,
+    SNAPSHOT_VERSION, SnapshotMismatch, VehicleCommand, VehicleOrder,
 };
 use atc_core::phase::FlightPhase;
 use atc_core::readback::{Strictness, required_readback};
@@ -7127,4 +7127,137 @@ fn contact_ground_without_readback_never_reminds_after_the_call() {
         let out = e.on_telemetry(at(t));
         assert!(out.iter().all(|o| o.freq_khz != TOWER), "{out:?}");
     }
+}
+
+// Radio discipline: the readback reminder waits for a free frequency and is revalidated
+// before it goes on the air.
+
+/// SP-ABC's reminder at `t` (asserted), as tagged on its output.
+fn abc_reminder_at(e: &mut AtcEngine, t: f64) -> Reminder {
+    let out = abc_at(e, t, 2.0);
+    assert!(is_reminder(&out), "{out:?}");
+    out[0].reminder.clone().expect("a reminder is tagged")
+}
+
+#[test]
+fn reminder_waits_while_frequency_busy() {
+    let (mut e, _, due) = abc_taxi_clearance_at(0.0);
+    assert!(due < 15.0);
+    e.set_frequency_busy(GROUND, true);
+    assert!(abc_at(&mut e, 25.0, 2.0).is_empty());
+    // Free at 25: the 10 s wait counts from then.
+    e.set_frequency_busy(GROUND, false);
+    assert!(abc_at(&mut e, 30.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, 34.9, 2.0).is_empty());
+    assert!(is_reminder(&abc_at(&mut e, 35.0, 2.0)));
+}
+
+#[test]
+fn moving_trigger_waits_for_free_frequency() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    e.set_frequency_busy(GROUND, true);
+    assert!(abc_at(&mut e, due + 1.0, 6.0).is_empty());
+    assert!(abc_at(&mut e, due + 20.0, 6.0).is_empty());
+    e.set_frequency_busy(GROUND, false);
+    assert!(is_reminder(&abc_at(&mut e, due + 21.0, 6.0)));
+}
+
+#[test]
+fn busy_other_frequency_does_not_hold_the_reminder() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    e.set_frequency_busy(TOWER, true);
+    assert!(is_reminder(&abc_at(&mut e, due + 10.0, 2.0)));
+}
+
+#[test]
+fn reminder_output_is_tagged() {
+    let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 2.0);
+    let out = e.on_transmission(
+        GROUND,
+        &format!("Krakow Ground, {ABC}, request taxi to stand two zero"),
+        Lang::En,
+        SimTime(100.0),
+    );
+    assert!(
+        !out.is_empty() && out.iter().all(|o| o.reminder.is_none()),
+        "{out:?}"
+    );
+    let due = 100.0 + (out[0].text.split_whitespace().count() as f64 / 2.5).ceil();
+    let cs = Callsign::new("SPABC");
+    assert_eq!(e.strip(&cs).unwrap().heard, 1);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    assert_eq!(
+        r,
+        Reminder {
+            callsign: cs.clone(),
+            heard: 1
+        }
+    );
+    // A repeat of the reminder ("say again") is no reminder.
+    let out = e.on_transmission(
+        GROUND,
+        &format!("{ABC}, say again"),
+        Lang::En,
+        SimTime(due + 12.0),
+    );
+    assert!(is_reminder(&out), "{out:?}");
+    assert_eq!(out[0].reminder, None);
+    assert_eq!(e.strip(&cs).unwrap().heard, 2);
+}
+
+#[test]
+fn reminder_not_due_after_readback() {
+    let (mut e, clearance, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    assert!(e.reminder_still_due(&r));
+    let back = readback(&clearance, "Sierra Bravo Charlie");
+    e.on_transmission(GROUND, &back, Lang::En, SimTime(due + 11.0));
+    assert!(!e.reminder_still_due(&r));
+}
+
+#[test]
+fn reminder_not_due_after_any_transmission() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.on_transmission(
+        GROUND,
+        &format!("{ABC}, say again"),
+        Lang::En,
+        SimTime(due + 11.0),
+    );
+    let strip = e.strip(&Callsign::new("SPABC")).unwrap();
+    assert!(strip.pending_readback.is_some());
+    assert!(!e.reminder_still_due(&r));
+    // Taken for SP-ABC without its callsign: attributed to it all the same.
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.on_transmission(GROUND, "say again", Lang::En, SimTime(due + 11.0));
+    assert!(!e.reminder_still_due(&r));
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.on_transmission(GROUND, "standby", Lang::En, SimTime(due + 11.0));
+    assert!(!e.reminder_still_due(&r));
+}
+
+#[test]
+fn dropped_reminder_rearms_once() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.reminder_dropped(&r);
+    // Moving does not bring it back early either.
+    assert!(abc_at(&mut e, due + 11.0, 6.0).is_empty());
+    assert!(abc_at(&mut e, due + 19.9, 2.0).is_empty());
+    assert!(e.reminder_still_due(&r));
+    let again = abc_reminder_at(&mut e, due + 20.0);
+    assert_eq!(again, r);
+    assert!(abc_at(&mut e, due + 31.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, due + 60.0, 6.0).is_empty());
+    // Dropped and read back meanwhile: it does not come again.
+    let (mut e, clearance, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.reminder_dropped(&r);
+    let back = readback(&clearance, "Sierra Bravo Charlie");
+    e.on_transmission(GROUND, &back, Lang::En, SimTime(due + 12.0));
+    assert!(abc_at(&mut e, due + 25.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, due + 40.0, 6.0).is_empty());
 }
