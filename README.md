@@ -8,6 +8,12 @@
 
 A voice air traffic controller for X-Plane that runs entirely on your own computer.
 
+## Demo
+
+[![Virtual ATC demo on YouTube](https://img.youtube.com/vi/O2vYShmJb38/hqdefault.jpg)](https://youtu.be/O2vYShmJb38)
+
+Watch on YouTube: <https://youtu.be/O2vYShmJb38>
+
 ## Why
 
 To practise flying with a controller when you cannot, or do not want to, use a real one in the
