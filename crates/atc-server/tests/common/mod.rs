@@ -16,6 +16,7 @@ use atc_proto::{
     WeatherFrame,
 };
 use atc_server::app::{AppState, OwnerPrompts, StationMap, SttPrompts, router};
+use atc_server::floor::RadioTiming;
 use atc_server::hub::Hub;
 use atc_server::network::Network;
 use atc_server::stations::LoadedStation;
@@ -118,20 +119,40 @@ async fn start_with_destinations(
     language: LanguageMode,
     destinations: Vec<Destination>,
 ) -> TestServer {
+    let network = Network::new(vec![epkk_station(language, destinations)]);
+    start_network_timed(network, stt, tts, false, RadioTiming::instant()).await
+}
+
+/// Like [`start`] with real radio timing ([`RadioTiming::default`]): the controller's
+/// audio occupies the frequency (0.1 s per word from [`FakeTts`]), a gap follows each
+/// transmission and a pilot is held off while the controller talks.
+pub async fn start_radio(stt: Vec<Transcript>) -> TestServer {
+    let station = epkk_station(LanguageMode::Fixed(atc_phraseology::Lang::En), vec![]);
+    start_network_timed(
+        Network::new(vec![station]),
+        stt,
+        Arc::new(FakeTts::default()),
+        false,
+        RadioTiming::default(),
+    )
+    .await
+}
+
+/// The EPKK station from the repository data, its engine in `language`.
+fn epkk_station(language: LanguageMode, destinations: Vec<Destination>) -> LoadedStation {
     let (ap, procs) = epkk();
     let cfg = EngineConfig {
         language,
         ..EngineConfig::new(Strictness::Standard)
     };
     let engine = AtcEngine::new(ap.clone(), procs.clone(), cfg).with_destinations(destinations);
-    let station = LoadedStation {
+    LoadedStation {
         id: "EPKK".into(),
         dir: PROCS.into(),
         procs,
         airport: ap,
         engine: Mutex::new(engine),
-    };
-    start_network(vec![station], stt, tts).await
+    }
 }
 
 /// The synthetic station `id` of `tests/fixtures/stations` with `extra` TOML appended to its
@@ -173,6 +194,17 @@ pub async fn start_network_with(
     tts: Arc<dyn TextToSpeech>,
     per_owner: bool,
 ) -> TestServer {
+    start_network_timed(network, stt, tts, per_owner, RadioTiming::instant()).await
+}
+
+/// Like [`start_network_with`] with the radio timing `radio`.
+pub async fn start_network_timed(
+    network: Network,
+    stt: Vec<Transcript>,
+    tts: Arc<dyn TextToSpeech>,
+    per_owner: bool,
+    radio: RadioTiming,
+) -> TestServer {
     let stations = StationMap::union(network.stations().iter().map(|s| &s.procs));
     let fake_stt = Arc::new(FakeStt::default());
     fake_stt
@@ -196,6 +228,7 @@ pub async fn start_network_with(
         } else {
             OwnerPrompts::default()
         },
+        radio,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -284,6 +317,29 @@ impl Client {
                 Some(Ok(Message::Text(t))) => return In::Msg(serde_json::from_str(&t).unwrap()),
                 Some(Ok(Message::Binary(b))) => return In::Audio(AudioFrame::decode(&b).unwrap()),
                 Some(Ok(_)) => {}
+            }
+        }
+    }
+
+    /// Everything received within `window` (no timeout failure): for asserting that
+    /// something does not arrive.
+    pub async fn recv_for(&mut self, window: Duration) -> Vec<In> {
+        let mut got = Vec::new();
+        let deadline = tokio::time::Instant::now() + window;
+        loop {
+            match tokio::time::timeout_at(deadline, self.ws.next()).await {
+                Err(_) => return got,
+                Ok(None | Some(Err(_)) | Some(Ok(Message::Close(_)))) => {
+                    got.push(In::Closed);
+                    return got;
+                }
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    got.push(In::Msg(serde_json::from_str(&t).unwrap()))
+                }
+                Ok(Some(Ok(Message::Binary(b)))) => {
+                    got.push(In::Audio(AudioFrame::decode(&b).unwrap()))
+                }
+                Ok(Some(Ok(_))) => {}
             }
         }
     }

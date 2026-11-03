@@ -340,10 +340,15 @@ object ships with the plugin (`Resources/plugins/atc-overlay/objects/`); without
 comes without the sign (one line in X-Plane's `Log.txt`).
 
 Readback reminders: when a clearance that needs a readback (taxi, hold position, a frequency,
-…) is not read back within 10 s of simulator time after the controller finished speaking, the
+…) is not read back within 10 s after the frequency became free, the
 position that gave it says `read back taxi route` / `read back hold position` / … once. An
 aircraft that was standing and starts to move (over 3 kt) with a taxi readback pending is
 reminded at once.
+
+The reminder is never sent while you are transmitting. A
+readback or call without a callsign is accepted when only one aircraft is in the exchange (a
+correct readback is answered `<callsign>, roger`); from the 3rd such call in a flight the
+controller adds `use your callsign in every transmission`.
 
 The car is drawn by the same `atc-overlay` plugin (the client forwards the commands on the same
 UDP 48010). After an update **reinstall the plugin** (`tools/install-xplane-plugin.sh`) and
@@ -435,6 +440,13 @@ PTT (section `[ptt]`):
   `BTN_TRIGGER`: button 0 is the trigger, 1, 2, ... the next buttons. If you are not sure which
   number a button has, run with `RUST_LOG=debug`: the client logs `joystick button N pressed`;
 - quit: `q`, `Esc` or `Ctrl-C`.
+
+One speaker per frequency: whoever starts talking first holds it. While the controller (or
+another pilot) is transmitting, pressing PTT or sending typed text is refused and the client
+prints `[ptt] frequency <freq> busy - wait, then press again`; that transmission is not heard.
+Release PTT and press again once the frequency is free (holding the key does nothing). From the
+moment you press PTT the frequency is yours: the controller waits until you release and your
+transmission has been processed, then answers, with about 1 s between transmissions.
 
 ### Text mode (debugging)
 

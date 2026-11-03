@@ -50,6 +50,7 @@ Urgent instructions (runway incursion, take-off or landing without clearance, al
 | `SayAgainCallsign` | `wołający Kraków Wieża, powtórz znak wywoławczy` (no callsign prefix) | 2.8.1.5 |
 | `SayAgain` / `Roger` / `Standby` | `powtórz` / `przyjąłem` / `czekaj` | 2.6 |
 | `SayIntentions` / `SayStand` / `PassYourMessage` | `podaj zamiary` / `podaj stanowisko` / `nadawaj` | project wording |
+| `UseCallsign` | `używaj znaku wywoławczego w każdej korespondencji` | project wording |
 | `AtisCurrent(c)` | `aktualna informacja Bravo` | project wording |
 | ATIS initial contact (IFR airports) | `w sprawie zezwolenia łączność z Delivery <freq>` / `w sprawie uruchomienia łączność z Ground <freq>`, before `przy pierwszym kontakcie ...` | project wording |
 | `Vacate { via }` | `zwolnij pas` (+ ` drogą X`) | 4.9 |

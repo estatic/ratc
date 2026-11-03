@@ -17,6 +17,7 @@ use atc_core::engine::EngineConfig;
 use atc_core::readback::Strictness;
 use atc_navdata::enroute::{EnrouteUnitDef, load_enroute};
 use atc_server::config::{ServerConfig, StrictnessSetting, check_models, load_config};
+use atc_server::floor::RadioTiming;
 use atc_server::hub::Hub;
 use atc_server::network::Network;
 use atc_server::stations::load_stations;
@@ -164,6 +165,7 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
         stations,
         stt_prompts,
         owner_prompts,
+        radio: RadioTiming::default(),
     };
     Ok(state)
 }

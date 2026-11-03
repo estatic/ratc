@@ -3,8 +3,8 @@
 
 use atc_core::atis::Weather;
 use atc_core::engine::{
-    AtcEngine, AtcOutput, EngineConfig, FOLLOW_ME_READY_S, LanguageMode, SNAPSHOT_VERSION,
-    SnapshotMismatch, VehicleCommand, VehicleOrder,
+    AtcEngine, AtcOutput, EngineConfig, FOLLOW_ME_READY_S, LanguageMode, Reminder,
+    SNAPSHOT_VERSION, SnapshotMismatch, VehicleCommand, VehicleOrder,
 };
 use atc_core::phase::FlightPhase;
 use atc_core::readback::{Strictness, required_readback};
@@ -1354,12 +1354,14 @@ fn interrupted_readback_is_joined() {
     assert!(e.strip(&cs).unwrap().pending_readback.is_none());
 }
 
-/// Fragments too old are not joined.
+/// Fragments too old are not joined. (A second aircraft on Ground, so the transmission is
+/// not taken for the one in the exchange either.)
 #[test]
 fn old_fragment_is_not_joined() {
     let mut e = engine();
     let first = track().into_iter().next().unwrap();
     assert!(e.on_telemetry(first).is_empty());
+    taxi_cleared_as(&mut e, "SPTSU", "Sierra Papa Tango Sierra Uniform");
     say(
         &mut e,
         GROUND,
@@ -1601,6 +1603,107 @@ fn say_again_without_callsign_two_aircraft() {
     let out = say(&mut e, GROUND, "Say again, Sierra Sierra Uniform");
     assert_eq!(out[0].message.to, Some(Callsign::new("SPTSU")));
     assert!(items(&out).iter().any(is_taxi_to_holding_point), "{out:?}");
+}
+
+/// `text` without the callsign it ends with.
+fn without_callsign(text: &str, cs: &str) -> String {
+    text.strip_suffix(&format!(", {cs}"))
+        .expect(text)
+        .to_string()
+}
+
+/// A readback without a callsign from the one aircraft in the exchange is taken for it and
+/// answered "<callsign>, roger".
+#[test]
+fn readback_without_callsign_is_accepted_with_roger() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    let out = say(&mut e, GROUND, &text);
+    assert_eq!(items(&out), vec![AtcItem::Roger]);
+    assert_eq!(out[0].message.to, Some(Callsign::new("SPTST")));
+    let cs = Callsign::new("SPTST");
+    let strip = e.strip(&cs).unwrap();
+    assert!(strip.pending_readback.is_none());
+    assert_eq!(strip.callsign_misses, 1);
+    // The readback is closed: the same words again are not asked for again.
+    let again = items(&say(&mut e, GROUND, &text));
+    assert!(
+        !again.iter().any(|i| matches!(i, AtcItem::ReadBack(_))),
+        "{again:?}"
+    );
+}
+
+/// From the third transmission without a callsign the answer ends with the reminder, in
+/// the same transmission.
+#[test]
+fn third_call_without_callsign_adds_use_callsign() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    for (n, call) in [text.as_str(), "roger"].into_iter().enumerate() {
+        let out = say(&mut e, GROUND, call);
+        assert!(!items(&out).contains(&AtcItem::UseCallsign), "{n}: {out:?}");
+    }
+    let out = say(&mut e, GROUND, "roger");
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].message.items.last(), Some(&AtcItem::UseCallsign));
+    assert!(
+        out[0]
+            .text
+            .ends_with("use your callsign in every transmission"),
+        "{}",
+        out[0].text
+    );
+    assert_eq!(e.strip(&Callsign::new("SPTST")).unwrap().callsign_misses, 3);
+}
+
+/// With two aircraft worked on the frequency a transmission without a callsign is not
+/// taken for either.
+#[test]
+fn callsign_less_call_with_two_aircraft_says_again_callsign() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    taxi_cleared_as(&mut e, "SPTSU", "Sierra Papa Tango Sierra Uniform");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    let out = say(&mut e, GROUND, &text);
+    assert!(
+        matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+        "{out:?}"
+    );
+    for cs in ["SPTST", "SPTSU"] {
+        assert_eq!(e.strip(&Callsign::new(cs)).unwrap().callsign_misses, 0);
+    }
+}
+
+/// The callsign-miss count travels with the flight; data without it reads as none.
+#[test]
+fn callsign_misses_survive_handover() {
+    let mut e = engine();
+    let clearance = taxi_cleared(&mut e, "Alpha");
+    let text = without_callsign(&readback(&clearance, CS), CS);
+    for call in [text.as_str(), "roger", "roger"] {
+        say(&mut e, GROUND, call);
+    }
+    let cs = Callsign::new("SPTST");
+    let strip = e.strip(&cs).unwrap().clone();
+    assert_eq!(strip.callsign_misses, 3);
+    let h = e.export_flight(&cs).expect("exported");
+    assert_eq!(h.callsign_misses, 3);
+    let json = serde_json::to_value(&h).unwrap();
+    let h: atc_core::handover::FlightHandover = serde_json::from_value(json.clone()).unwrap();
+    let mut other = engine();
+    other.import_flight(h);
+    assert_eq!(other.strip(&cs).unwrap().callsign_misses, 3);
+    // Older data without the field.
+    let mut old = json;
+    old.as_object_mut().unwrap().remove("callsign_misses");
+    let h: atc_core::handover::FlightHandover = serde_json::from_value(old).unwrap();
+    assert_eq!(h.callsign_misses, 0);
+    let mut old = serde_json::to_value(&strip).unwrap();
+    old.as_object_mut().unwrap().remove("callsign_misses");
+    let s: atc_core::strip::Strip = serde_json::from_value(old).unwrap();
+    assert_eq!(s.callsign_misses, 0);
 }
 
 /// A pilot unsure of the way gets the route again from where it is, to read back.
@@ -2232,20 +2335,21 @@ fn language_switches_back_to_english() {
 fn misdetected_short_phrase_keeps_language() {
     let mut e = engine_in(LanguageMode::Auto);
     say_in(&mut e, GROUND, PL_TAXI, Lang::Pl);
-    say_in(&mut e, GROUND, "roger", Lang::En);
+    // Without a callsign it is taken for SP-ABC, the one aircraft in the exchange.
+    let out = say_in(&mut e, GROUND, "roger", Lang::En);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
     let out = say_in(&mut e, GROUND, &format!("{PL_CS_ABBR}, roger"), Lang::En);
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert!(out[0].text.contains("powtórz"), "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
-    // Not understood in either language: answered in the session language.
-    let out = say_in(
-        &mut e,
-        GROUND,
-        &format!("{PL_CS_ABBR}, blah blah"),
-        Lang::En,
-    );
+    // Not understood in either language: answered in the session language (the first
+    // time it closes the readback, asked for twice already).
+    let blah = format!("{PL_CS_ABBR}, blah blah");
+    assert!(say_in(&mut e, GROUND, &blah, Lang::En).is_empty());
+    let out = say_in(&mut e, GROUND, &blah, Lang::En);
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
@@ -6466,6 +6570,7 @@ mod handover {
             plan: Some(plan),
             squawk: Some(4601),
             rules: Some(FlightRules::Ifr),
+            callsign_misses: 0,
         }
     }
 
@@ -7022,4 +7127,137 @@ fn contact_ground_without_readback_never_reminds_after_the_call() {
         let out = e.on_telemetry(at(t));
         assert!(out.iter().all(|o| o.freq_khz != TOWER), "{out:?}");
     }
+}
+
+// Radio discipline: the readback reminder waits for a free frequency and is revalidated
+// before it goes on the air.
+
+/// SP-ABC's reminder at `t` (asserted), as tagged on its output.
+fn abc_reminder_at(e: &mut AtcEngine, t: f64) -> Reminder {
+    let out = abc_at(e, t, 2.0);
+    assert!(is_reminder(&out), "{out:?}");
+    out[0].reminder.clone().expect("a reminder is tagged")
+}
+
+#[test]
+fn reminder_waits_while_frequency_busy() {
+    let (mut e, _, due) = abc_taxi_clearance_at(0.0);
+    assert!(due < 15.0);
+    e.set_frequency_busy(GROUND, true);
+    assert!(abc_at(&mut e, 25.0, 2.0).is_empty());
+    // Free at 25: the 10 s wait counts from then.
+    e.set_frequency_busy(GROUND, false);
+    assert!(abc_at(&mut e, 30.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, 34.9, 2.0).is_empty());
+    assert!(is_reminder(&abc_at(&mut e, 35.0, 2.0)));
+}
+
+#[test]
+fn moving_trigger_waits_for_free_frequency() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    e.set_frequency_busy(GROUND, true);
+    assert!(abc_at(&mut e, due + 1.0, 6.0).is_empty());
+    assert!(abc_at(&mut e, due + 20.0, 6.0).is_empty());
+    e.set_frequency_busy(GROUND, false);
+    assert!(is_reminder(&abc_at(&mut e, due + 21.0, 6.0)));
+}
+
+#[test]
+fn busy_other_frequency_does_not_hold_the_reminder() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    e.set_frequency_busy(TOWER, true);
+    assert!(is_reminder(&abc_at(&mut e, due + 10.0, 2.0)));
+}
+
+#[test]
+fn reminder_output_is_tagged() {
+    let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 2.0);
+    let out = e.on_transmission(
+        GROUND,
+        &format!("Krakow Ground, {ABC}, request taxi to stand two zero"),
+        Lang::En,
+        SimTime(100.0),
+    );
+    assert!(
+        !out.is_empty() && out.iter().all(|o| o.reminder.is_none()),
+        "{out:?}"
+    );
+    let due = 100.0 + (out[0].text.split_whitespace().count() as f64 / 2.5).ceil();
+    let cs = Callsign::new("SPABC");
+    assert_eq!(e.strip(&cs).unwrap().heard, 1);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    assert_eq!(
+        r,
+        Reminder {
+            callsign: cs.clone(),
+            heard: 1
+        }
+    );
+    // A repeat of the reminder ("say again") is no reminder.
+    let out = e.on_transmission(
+        GROUND,
+        &format!("{ABC}, say again"),
+        Lang::En,
+        SimTime(due + 12.0),
+    );
+    assert!(is_reminder(&out), "{out:?}");
+    assert_eq!(out[0].reminder, None);
+    assert_eq!(e.strip(&cs).unwrap().heard, 2);
+}
+
+#[test]
+fn reminder_not_due_after_readback() {
+    let (mut e, clearance, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    assert!(e.reminder_still_due(&r));
+    let back = readback(&clearance, "Sierra Bravo Charlie");
+    e.on_transmission(GROUND, &back, Lang::En, SimTime(due + 11.0));
+    assert!(!e.reminder_still_due(&r));
+}
+
+#[test]
+fn reminder_not_due_after_any_transmission() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.on_transmission(
+        GROUND,
+        &format!("{ABC}, say again"),
+        Lang::En,
+        SimTime(due + 11.0),
+    );
+    let strip = e.strip(&Callsign::new("SPABC")).unwrap();
+    assert!(strip.pending_readback.is_some());
+    assert!(!e.reminder_still_due(&r));
+    // Taken for SP-ABC without its callsign: attributed to it all the same.
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.on_transmission(GROUND, "say again", Lang::En, SimTime(due + 11.0));
+    assert!(!e.reminder_still_due(&r));
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.on_transmission(GROUND, "standby", Lang::En, SimTime(due + 11.0));
+    assert!(!e.reminder_still_due(&r));
+}
+
+#[test]
+fn dropped_reminder_rearms_once() {
+    let (mut e, _, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.reminder_dropped(&r);
+    // Moving does not bring it back early either.
+    assert!(abc_at(&mut e, due + 11.0, 6.0).is_empty());
+    assert!(abc_at(&mut e, due + 19.9, 2.0).is_empty());
+    assert!(e.reminder_still_due(&r));
+    let again = abc_reminder_at(&mut e, due + 20.0);
+    assert_eq!(again, r);
+    assert!(abc_at(&mut e, due + 31.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, due + 60.0, 6.0).is_empty());
+    // Dropped and read back meanwhile: it does not come again.
+    let (mut e, clearance, due) = abc_taxi_clearance_at(100.0);
+    let r = abc_reminder_at(&mut e, due + 10.0);
+    e.reminder_dropped(&r);
+    let back = readback(&clearance, "Sierra Bravo Charlie");
+    e.on_transmission(GROUND, &back, Lang::En, SimTime(due + 12.0));
+    assert!(abc_at(&mut e, due + 25.0, 2.0).is_empty());
+    assert!(abc_at(&mut e, due + 40.0, 6.0).is_empty());
 }

@@ -247,6 +247,7 @@ impl EnrouteUnit {
                 squawk: None,
                 cleared_ft: None,
                 rules: None,
+                callsign_misses: 0,
             })
         });
         f.lang = lang;
@@ -447,6 +448,7 @@ mod tests {
             squawk: Some(7000),
             cleared_ft,
             rules: None,
+            callsign_misses: 0,
         }
     }
 

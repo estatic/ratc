@@ -6,7 +6,9 @@
 //! altitudes all come from navdata or procedures.
 //!
 //! Per transmission: unknown frequency -> silence (Approach also answers on its alternate
-//! frequencies, on the one called); callsign not heard or not registered ->
+//! frequencies, on the one called); callsign not heard or not registered -> taken for the
+//! one aircraft in the exchange when there is one (`only_addressed`; what would
+//! go unanswered gets "roger", from the 3rd time with `UseCallsign`), otherwise
 //! `SayAgainCallsign`; a pending readback is checked first (correct -> silent unless the pilot
 //! also made a request; a request while it is still open -> `ReadBack(pending)`, no new
 //! clearance; otherwise the correction, at most twice, then the readback is accepted;
@@ -87,6 +89,9 @@ const MAX_READBACK_REQUESTS: u8 = 2;
 /// An unanswered transmission is joined with the next one on its frequency within this
 /// many seconds: the pilot broke it off and finished it.
 const FRAGMENT_S: f64 = 30.0;
+/// From this transmission taken for an aircraft without its callsign on, the answer reminds
+/// the pilot to use it.
+const CALLSIGN_REMINDER_AT: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EngineConfig {
@@ -128,6 +133,18 @@ pub struct AtcOutput {
     pub message: AtcMessage,
     /// Rendered words for TTS.
     pub text: String,
+    /// `Some` only on a readback reminder: it is revalidated before it goes on the air
+    /// ([`AtcEngine::reminder_still_due`]).
+    #[serde(default)]
+    pub reminder: Option<Reminder>,
+}
+
+/// A generated readback reminder, as the engine knew the aircraft then: `heard` is
+/// [`Strip::heard`] at that moment.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Reminder {
+    pub callsign: Callsign,
+    pub heard: u64,
 }
 
 /// The flight is over: [`Strip::end_flight`], keeping the contact of the station working
@@ -191,6 +208,9 @@ pub struct AtcEngine {
     clock: (Option<f64>, Option<u16>),
     /// Sim time (s) of the latest telemetry sample or pilot transmission.
     now: f64,
+    /// Frequencies the server reports busy (someone is transmitting or a transmission is
+    /// queued): no readback reminder falls due on them ([`AtcEngine::set_frequency_busy`]).
+    busy: HashSet<u32>,
 }
 
 /// Words a controller speaks per second, to estimate how long a clearance takes to say.
@@ -199,8 +219,15 @@ const WORDS_PER_S: f64 = 2.5;
 /// A reminder to read back, once per clearance: 10 s of sim time after it was spoken, or at
 /// once when the aircraft, standing when the clearance was issued, moves (over 3 kt) with a
 /// taxi readback pending. Spoken by the position that gave the clearance; `None` when no
-/// readback is pending. A sim clock that went back re-arms the wait.
-fn readback_reminder(strip: &mut Strip, t: f64, gs_kt: f64) -> Option<(Role, Vec<AtcItem>)> {
+/// readback is pending. A sim clock that went back re-arms the wait. Nothing falls due while
+/// the reminding position's frequency is `busy`; it becoming free restarts the 10 s
+/// ([`AtcEngine::set_frequency_busy`]).
+fn readback_reminder(
+    strip: &mut Strip,
+    t: f64,
+    gs_kt: f64,
+    busy: bool,
+) -> Option<(Role, Vec<AtcItem>)> {
     const REMIND_AFTER_S: f64 = 10.0;
     const MOVING_KT: f64 = 3.0;
     let role = strip.readback_role?;
@@ -214,6 +241,9 @@ fn readback_reminder(strip: &mut Strip, t: f64, gs_kt: f64) -> Option<(Role, Vec
         .pending_readback
         .as_ref()
         .filter(|_| !strip.reminded)?;
+    if busy {
+        return None;
+    }
     let taxiing = strip
         .pending_items
         .iter()
@@ -273,6 +303,7 @@ impl AtcEngine {
             vocab,
             clock: (None, None),
             now: 0.0,
+            busy: HashSet::new(),
         }
     }
 
@@ -339,6 +370,7 @@ impl AtcEngine {
                 }
             }),
             squawk: strip.squawk,
+            callsign_misses: strip.callsign_misses,
             plan,
         };
         self.remove_pilot(cs);
@@ -373,6 +405,7 @@ impl AtcEngine {
         strip.owner = if ifr { Role::Approach } else { Role::Tower };
         strip.plan = plan;
         strip.squawk = h.squawk;
+        strip.callsign_misses = h.callsign_misses;
         strip.handed_in = true;
     }
 
@@ -461,6 +494,78 @@ impl AtcEngine {
         self.strip_index(cs).map(|i| &self.strips[i])
     }
 
+    /// The server's floor on `freq_khz` (a canonical frequency, matched by channel): `busy`
+    /// while a transmission is on air or a pilot holds (or is being processed on) it. No readback reminder
+    /// falls due on a busy frequency; when it becomes free, every readback pending there
+    /// waits 10 s from now again (the "aircraft started moving" trigger at the next sample).
+    pub fn set_frequency_busy(&mut self, freq_khz: u32, busy: bool) {
+        if busy {
+            self.busy.insert(freq_khz);
+            return;
+        }
+        let before = self.busy.len();
+        self.busy.retain(|&k| !atc_proto::same_channel(k, freq_khz));
+        if self.busy.len() == before {
+            return;
+        }
+        let now = self.now;
+        for i in 0..self.strips.len() {
+            if self.strips[i].pending_readback.is_none()
+                || !self
+                    .readback_khz(i)
+                    .is_some_and(|k| atc_proto::same_channel(k, freq_khz))
+            {
+                continue;
+            }
+            let strip = &mut self.strips[i];
+            if let Some(due) = strip.readback_due_s {
+                strip.readback_due_s = Some(due.max(now));
+                strip.readback_issued_s = now;
+            }
+        }
+    }
+
+    /// Whether readback reminder `r` should still go on the air: its readback is pending and
+    /// the aircraft has not transmitted since it was generated (that transmission has been
+    /// answered, e.g. with the correction).
+    pub fn reminder_still_due(&self, r: &Reminder) -> bool {
+        self.strip(&r.callsign)
+            .is_some_and(|s| s.pending_readback.is_some() && s.heard == r.heard)
+    }
+
+    /// Readback reminder `r` was not spoken (dropped at revalidation): it re-arms, due 10 s
+    /// from now at most once more, if the readback is still pending then. The "aircraft
+    /// started moving" trigger has had its turn and does not bring it back early.
+    pub fn reminder_dropped(&mut self, r: &Reminder) {
+        let now = self.now;
+        let Some(strip) = self.strip_index(&r.callsign).map(|i| &mut self.strips[i]) else {
+            return;
+        };
+        if strip.pending_readback.is_none() {
+            return;
+        }
+        strip.reminded = false;
+        strip.readback_due_s = Some(now);
+        strip.readback_moving = true;
+    }
+
+    /// The frequency aircraft `i`'s pending readback is reminded on: the issuing position's,
+    /// Approach's being the one the aircraft last called it on. `None`: nothing issued yet.
+    fn readback_khz(&self, i: usize) -> Option<u32> {
+        let strip = &self.strips[i];
+        let role = strip.readback_role?;
+        match strip.approach_khz {
+            Some(khz) if role == Role::Approach => Some(khz),
+            _ => self.position(role).map(|p| p.khz),
+        }
+    }
+
+    /// The frequency aircraft `i`'s readback is reminded on is busy.
+    fn readback_busy(&self, i: usize) -> bool {
+        self.readback_khz(i)
+            .is_some_and(|khz| self.busy.iter().any(|&b| atc_proto::same_channel(b, khz)))
+    }
+
     pub fn on_telemetry(&mut self, s: AircraftState) -> Vec<AtcOutput> {
         self.now = s.t.0;
         // A sample without time (old client, replay) keeps the last known time.
@@ -487,6 +592,7 @@ impl AtcEngine {
             self.tracks.insert(s.callsign.clone(), sv);
         }
         let clearance = self.ifr_clearance(i);
+        let busy = self.readback_busy(i);
         let circuit = self.strips[i].plan.is_none() && self.strips[i].vfr.is_none();
         let sv = self.tracks.get_mut(&s.callsign).expect("tracked above");
         // An aircraft with a flight plan, or entering or leaving via points: no circuit legs.
@@ -518,7 +624,7 @@ impl AtcEngine {
         if strip.pending_readback.is_some() && strip.pending_expired() {
             strip.readback_complete();
         }
-        let reminder = readback_reminder(strip, s.t.0, s.gs_kt);
+        let reminder = readback_reminder(strip, s.t.0, s.gs_kt, busy);
         strip.radio_failure = s.xpdr_code == Some(approach::RADIO_FAILURE_SQUAWK);
         let deviations = sv.monitor.update(&s, phase, &strip.permissions);
         let (pos, gs_kt, t, vs_fpm) = (s.pos, s.gs_kt, s.t.0, s.vs_fpm);
@@ -527,7 +633,19 @@ impl AtcEngine {
 
         let mut out = self.deviation_replies(i, deviations);
         if let Some((role, items)) = reminder {
-            out.extend(self.transmit(i, role, items));
+            // Tagged after `transmit`: what is kept for "say again" is no reminder.
+            let tag = Reminder {
+                callsign: self.strips[i].callsign.clone(),
+                heard: self.strips[i].heard,
+            };
+            out.extend(
+                self.transmit(i, role, items)
+                    .into_iter()
+                    .map(|o| AtcOutput {
+                        reminder: Some(tag.clone()),
+                        ..o
+                    }),
+            );
         }
         out.extend(self.crossing_update(i, pos));
         out.extend(self.follow_me_update(i, t));
@@ -581,10 +699,78 @@ impl AtcEngine {
             ((msg, Some(i), l), _) => (text.to_string(), msg, i, l),
             (_, Some(((jmsg, Some(ji), jl), j))) => (j, jmsg, ji, jl),
             _ => {
+                if let Some(i) = self.only_addressed(role) {
+                    return self.inferred(role, freq_khz, text, lang, i, t);
+                }
                 self.fragment = Some((role, text.to_string(), t.0));
                 return self.say_again_callsign(role, freq_khz, self.unknown_lang(lang));
             }
         };
+        self.answer(role, freq_khz, &text, msg, i, heard_lang, t)
+    }
+
+    /// A transmission naming no aircraft, taken for aircraft `i`, the one in the exchange
+    /// ([`AtcEngine::only_addressed`]); counted on its strip. It is answered as if it named
+    /// it: what would go unanswered (a correct readback, an acknowledgement) gets
+    /// "<callsign>, roger", so the pilot hears who it was taken for, and from the third such
+    /// transmission the answer ends with "use your callsign in every transmission".
+    fn inferred(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        lang: Lang,
+        i: usize,
+        t: SimTime,
+    ) -> Vec<AtcOutput> {
+        let (msg, _, heard_lang) = self.hear_as(text, lang, Some(i));
+        self.strips[i].callsign_misses += 1;
+        let mut out = self.answer(role, freq_khz, text, msg, i, heard_lang, t);
+        // Approach does not talk to an aircraft with a radio failure.
+        let silenced = role == Role::Approach && self.strips[i].radio_failure;
+        if out.is_empty() && !silenced {
+            out = self.transmit(i, role, vec![AtcItem::Roger]);
+        }
+        if self.strips[i].callsign_misses >= CALLSIGN_REMINDER_AT {
+            self.remind_callsign(i, role, &mut out);
+        }
+        out
+    }
+
+    /// Appends "use your callsign in every transmission" to the last of `out` (sent from
+    /// `role` to aircraft `i`), re-rendered with the callsign in the same form, and keeps it
+    /// as what was last said to the aircraft.
+    fn remind_callsign(&mut self, i: usize, role: Role, out: &mut [AtcOutput]) {
+        let cs = self.strips[i].callsign.clone();
+        let Some(last) = out
+            .iter_mut()
+            .rev()
+            .find(|o| o.message.to.as_ref() == Some(&cs))
+        else {
+            return;
+        };
+        let full = render(&last.message, true) == last.text;
+        last.message.items.push(AtcItem::UseCallsign);
+        last.text = render(&last.message, full);
+        self.strips[i].issued.push(AtcItem::UseCallsign);
+        self.last_told.insert(cs.clone(), last.text.clone());
+        self.last_sent.insert((cs, role), last.clone());
+    }
+
+    /// Pilot transmission `text` (heard as `msg` in `heard_lang`) of aircraft `i` on
+    /// `freq_khz`, answered by `role` at sim time `t`.
+    #[allow(clippy::too_many_arguments)]
+    fn answer(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        msg: PilotMessage,
+        i: usize,
+        heard_lang: Lang,
+        t: SimTime,
+    ) -> Vec<AtcOutput> {
+        self.strips[i].heard += 1;
         if understood(&msg) {
             self.understood_in(i, heard_lang);
             // The pilot has answered after its hand-off (read back, or acknowledged where no
@@ -593,7 +779,6 @@ impl AtcEngine {
                 self.strips[i].handoff_acked = true;
             }
         }
-        let text = text.as_str();
         if let Some(to) = self.called_elsewhere(role, &msg) {
             let mut items: Vec<AtcItem> = self
                 .position(role)
@@ -766,21 +951,26 @@ impl AtcEngine {
     /// to; otherwise "say again your callsign" (in `lang`, see [`AtcEngine::unknown_lang`]).
     /// Nothing said to it yet: "pass your message".
     fn repeat(&mut self, role: Role, khz: u32, i: Option<usize>, lang: Lang) -> Vec<AtcOutput> {
-        let i = i.or_else(|| {
-            let mut on_freq = (0..self.strips.len()).filter(|&k| {
-                let s = &self.strips[k];
-                s.owner == role && self.tracks.contains_key(&s.callsign)
-            });
-            let only = on_freq.next().filter(|_| on_freq.next().is_none())?;
-            (self.last_addressed.get(&role) == Some(&self.strips[only].callsign)).then_some(only)
-        });
-        let Some(i) = i else {
+        let Some(i) = i.or_else(|| self.only_addressed(role)) else {
             return self.say_again_callsign(role, khz, self.unknown_lang(lang));
         };
+        self.strips[i].heard += 1;
         match self.last_sent.get(&(self.strips[i].callsign.clone(), role)) {
             Some(last) => vec![last.clone()],
             None => self.transmit(i, role, vec![AtcItem::PassYourMessage]),
         }
+    }
+
+    /// The aircraft a transmission without a callsign to `role` comes from: the only one
+    /// `role` works on its frequency (owned, with surveillance), when it is also the one
+    /// `role` last spoke to. `None`: no such aircraft, or more than one candidate.
+    fn only_addressed(&self, role: Role) -> Option<usize> {
+        let mut on_freq = (0..self.strips.len()).filter(|&k| {
+            let s = &self.strips[k];
+            s.owner == role && self.tracks.contains_key(&s.callsign)
+        });
+        let only = on_freq.next().filter(|_| on_freq.next().is_none())?;
+        (self.last_addressed.get(&role) == Some(&self.strips[only].callsign)).then_some(only)
     }
 
     /// A greeting is returned once per station, in front of the reply.
@@ -808,11 +998,23 @@ impl AtcEngine {
     /// phrase misdetected as the other language does not switch the exchange. An English
     /// aircraft switches to Polish only when the Polish words changed what was understood.
     fn hear(&self, text: &str, lang: Lang) -> (PilotMessage, Option<usize>, Lang) {
+        self.hear_as(text, lang, None)
+    }
+
+    /// [`AtcEngine::hear`], a transmission naming no aircraft being taken for aircraft `of`
+    /// (when given): it is then heard against that aircraft's language.
+    fn hear_as(
+        &self,
+        text: &str,
+        lang: Lang,
+        of: Option<usize>,
+    ) -> (PilotMessage, Option<usize>, Lang) {
         let lang = match self.cfg.language {
             LanguageMode::Fixed(l) => l,
             LanguageMode::Auto => lang,
         };
         let (msg, i) = self.heard(text, lang);
+        let i = i.or(of);
         let Some(k) = i.filter(|_| self.cfg.language == LanguageMode::Auto) else {
             return (msg, i, lang);
         };
@@ -824,8 +1026,8 @@ impl AtcEngine {
         // English transmission in a Polish session that is understood switches back.)
         if lang == Lang::Pl && session == Lang::En {
             let (emsg, ei) = self.heard(text, Lang::En);
-            if ei == Some(k) && same_understanding(&msg, &emsg) {
-                return (emsg, ei, Lang::En);
+            if ei.or(of) == Some(k) && same_understanding(&msg, &emsg) {
+                return (emsg, Some(k), Lang::En);
             }
         }
         if session == lang || (understood(&msg) && substantive(&msg)) {
@@ -834,8 +1036,8 @@ impl AtcEngine {
         let (smsg, si) = self.heard(text, session);
         if understood(&msg) && !understood(&smsg) {
             (msg, i, lang)
-        } else if si == Some(k) {
-            (smsg, si, session)
+        } else if si.or(of) == Some(k) {
+            (smsg, Some(k), session)
         } else {
             (msg, i, session)
         }
@@ -946,6 +1148,7 @@ impl AtcEngine {
             station: pos.callsign.clone(),
             message,
             text,
+            reminder: None,
         }]
     }
 
@@ -1238,6 +1441,7 @@ impl AtcEngine {
             station,
             message,
             text,
+            reminder: None,
         };
         self.last_sent.insert((cs.clone(), role), out.clone());
         self.last_addressed.insert(role, cs);
@@ -1264,6 +1468,7 @@ impl AtcEngine {
             station: pos.callsign.clone(),
             message,
             text,
+            reminder: None,
         }]
     }
 

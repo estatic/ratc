@@ -31,7 +31,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 
-use atc_core::engine::{AtcEngine, AtcOutput, EngineSnapshot, LanguageMode, VehicleOrder};
+use atc_core::engine::{
+    AtcEngine, AtcOutput, EngineSnapshot, LanguageMode, Reminder, VehicleOrder,
+};
 use atc_core::enroute::{EnrouteEvent, EnrouteUnit, HandOff, UnitFlightState, unit_covers};
 use atc_core::state::{AircraftState, SimTime};
 use atc_core::strip::{PilotProfile, Role};
@@ -398,6 +400,35 @@ impl Network {
                 }
             }
             None => Vec::new(),
+        }
+    }
+
+    /// The floor on `freq_khz` to every station's engine (en-route units have no readback
+    /// reminders): no readback reminder falls due on a busy frequency
+    /// ([`AtcEngine::set_frequency_busy`]).
+    pub fn set_frequency_busy(&self, freq_khz: u32, busy: bool) {
+        for st in &self.stations {
+            st.engine.lock().unwrap().set_frequency_busy(freq_khz, busy);
+        }
+    }
+
+    /// [`AtcEngine::reminder_still_due`] of the station owning the flight; `false` for a
+    /// flight no station owns.
+    pub fn reminder_still_due(&self, r: &Reminder) -> bool {
+        match self.owner(&r.callsign) {
+            Some(Owner::Station(i)) => self.stations[i]
+                .engine
+                .lock()
+                .unwrap()
+                .reminder_still_due(r),
+            _ => false,
+        }
+    }
+
+    /// [`AtcEngine::reminder_dropped`] on the station owning the flight.
+    pub fn reminder_dropped(&self, r: &Reminder) {
+        if let Some(Owner::Station(i)) = self.owner(&r.callsign) {
+            self.stations[i].engine.lock().unwrap().reminder_dropped(r);
         }
     }
 
@@ -901,6 +932,7 @@ impl Network {
             station: def.callsign.clone(),
             message,
             text,
+            reminder: None,
         }]
     }
 }

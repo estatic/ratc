@@ -400,7 +400,11 @@ impl App {
                 if let Some(tx) = &mut self.tx {
                     tx.blocked = true;
                 }
-                self.say(&format!("frequency {} busy", fmt_khz(*freq_khz)));
+                // A refused press or typed message: nothing was sent.
+                self.say(&format!(
+                    "[ptt] frequency {} busy - wait, then press again",
+                    fmt_khz(*freq_khz)
+                ));
             }
             ServerMsg::Identified {
                 callsign,

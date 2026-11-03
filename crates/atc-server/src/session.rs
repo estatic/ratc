@@ -2,7 +2,8 @@
 //!
 //! Each session is one task reading the socket, plus a writer task fed by an unbounded
 //! channel (so emits from other sessions never block) and a transmission worker
-//! ([`pipeline::worker`]) that runs STT/engine/TTS in order.
+//! ([`pipeline::worker`]) that runs STT and the engine in order. Controller speech goes
+//! through the per-frequency speaker queues; PTT and typed text respect the radio floor.
 
 use std::sync::Arc;
 
@@ -43,6 +44,9 @@ struct Session {
     /// Sim time of the latest unpaused telemetry.
     last_t: f64,
     ptt: Option<Ptt>,
+    /// A press was refused: every further `PttStart` is too until a `PttEnd` (holding PTT
+    /// does not start a transmission when the frequency clears).
+    press_refused: bool,
 }
 
 pub(crate) async fn run(server: Arc<Server>, socket: WebSocket) {
@@ -165,6 +169,7 @@ async fn handshake(
         tuned: Vec::new(),
         last_t: 0.0,
         ptt: None,
+        press_refused: false,
     })
 }
 
@@ -206,11 +211,7 @@ impl Session {
             ClientMsg::PttStart { freq_khz } => self.on_ptt_start(canonical(freq_khz)),
             ClientMsg::PttEnd => self.on_ptt_end(),
             ClientMsg::TextTransmission { freq_khz, text } => {
-                let _ = self.jobs.send(Job::Text {
-                    freq_khz: canonical(freq_khz),
-                    text,
-                    t: self.last_t,
-                });
+                self.on_text(canonical(freq_khz), text)
             }
         }
     }
@@ -245,7 +246,9 @@ impl Session {
         }
         // As on a disconnect, but the client stays: hub membership and weather role are kept.
         self.server.state.hub.lock().unwrap().ptt_end(self.id);
-        self.end_relay();
+        if let Some(ptt) = self.end_relay() {
+            self.server.pilot_done(ptt.freq_khz, self.id);
+        }
         self.server.end_flight(self.id, &self.cs);
         let network = &self.server.state.network;
         network.register_pilot(PilotProfile {
@@ -286,10 +289,7 @@ impl Session {
         let outputs = network.on_telemetry(convert::aircraft_state(&self.cs, &f));
         let orders = network.take_vehicle_orders();
         server.send_vehicle_orders(orders);
-        if !outputs.is_empty() {
-            let server = server.clone();
-            tokio::spawn(async move { pipeline::emit_all(&server, outputs).await });
-        }
+        server.enqueue_back(outputs);
     }
 
     /// Only the weather source's reports are used (by every station); a new ATIS letter goes
@@ -308,16 +308,51 @@ impl Session {
         }
     }
 
+    fn blocked(&self, freq_khz: u32) {
+        let _ = self
+            .tx
+            .send(Out::Msg(ServerMsg::FrequencyBlocked { freq_khz }));
+    }
+
+    /// Typed text is a transmission too: refused while the frequency is busy, and the
+    /// frequency is the pilot's while it is processed.
+    fn on_text(&mut self, freq_khz: u32, text: String) {
+        if self.server.pilot_press(freq_khz, self.id) == PttOutcome::Blocked {
+            return self.blocked(freq_khz);
+        }
+        self.server.pilot_release(freq_khz, self.id);
+        let job = Job::Text {
+            freq_khz,
+            text,
+            t: self.last_t,
+        };
+        if self.jobs.send(job).is_err() {
+            self.server.pilot_done(freq_khz, self.id);
+        }
+    }
+
+    /// The floor first (the controller or another pilot on the air), then the hub's lock;
+    /// a repeated start on the held frequency keeps the current transmission.
     fn on_ptt_start(&mut self, freq_khz: u32) {
+        let pressed = self.ptt.is_none();
+        if pressed
+            && (self.press_refused
+                || self.server.pilot_press(freq_khz, self.id) == PttOutcome::Blocked)
+        {
+            self.press_refused = true;
+            return self.blocked(freq_khz);
+        }
         let (outcome, listeners) = {
             let mut hub = self.server.state.hub.lock().unwrap();
             (hub.ptt_start(self.id, freq_khz), hub.listeners(freq_khz))
         };
         match outcome {
             PttOutcome::Blocked => {
-                let _ = self
-                    .tx
-                    .send(Out::Msg(ServerMsg::FrequencyBlocked { freq_khz }));
+                if pressed {
+                    self.server.pilot_done(freq_khz, self.id);
+                    self.press_refused = true;
+                }
+                self.blocked(freq_khz);
             }
             // Repeated start on the held frequency: keep the current transmission.
             PttOutcome::Granted if self.ptt.is_some() => {}
@@ -357,16 +392,23 @@ impl Session {
         self.server.send(&targets, Out::Audio(f));
     }
 
+    /// The frequency stays the pilot's until the transmission is handled.
     fn on_ptt_end(&mut self) {
+        self.press_refused = false;
         self.server.state.hub.lock().unwrap().ptt_end(self.id);
         let Some(ptt) = self.end_relay() else {
             return;
         };
-        let _ = self.jobs.send(Job::Voice {
-            freq_khz: ptt.freq_khz,
+        let freq_khz = ptt.freq_khz;
+        self.server.pilot_release(freq_khz, self.id);
+        let job = Job::Voice {
+            freq_khz,
             pcm: ptt.pcm,
             t: self.last_t,
-        });
+        };
+        if self.jobs.send(job).is_err() {
+            self.server.pilot_done(freq_khz, self.id);
+        }
     }
 
     /// Takes the PTT and sends `RelayEnd` to its relay listeners.
@@ -381,9 +423,10 @@ impl Session {
         Some(ptt)
     }
 
-    /// Disconnect: releases the PTT lock (an unfinished transmission is discarded) and the
-    /// weather source. The engines keep the pilot's strip.
+    /// Disconnect: releases the floor, the PTT lock (an unfinished transmission is
+    /// discarded) and the weather source. The engines keep the pilot's strip.
     fn leave(mut self) {
+        self.server.floor_leave(self.id);
         self.server.state.hub.lock().unwrap().leave(self.id);
         self.end_relay();
         self.server.remove_client(self.id);

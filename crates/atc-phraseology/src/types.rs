@@ -404,6 +404,8 @@ pub enum AtcItem {
     },
     Unable(UnableReason),
     Roger,
+    /// "Use your callsign in every transmission": the pilot keeps calling without it.
+    UseCallsign,
     SayAgain,
     /// "Say flight rules": the request named neither IFR nor VFR.
     SayFlightRules,

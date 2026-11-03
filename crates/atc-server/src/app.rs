@@ -2,30 +2,33 @@
 //!
 //! Locking: the network's engines, `hub` and the internal maps are `std::sync::Mutex`es, locked only for
 //! short synchronous sections and never held across an `.await` (STT/TTS run in
-//! `spawn_blocking` with no lock held).
+//! `spawn_blocking` with no lock held). Where they nest, the order is `floor`, then the
+//! pilot jobs or the speaker queues, then the network's engines.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use atc_core::engine::VehicleOrder;
+use atc_core::engine::{AtcOutput, VehicleOrder};
 use atc_geo::LatLon;
 use atc_navdata::enroute::EnrouteUnitDef;
 use atc_navdata::model::FreqKind;
 use atc_navdata::procedures::Procedures;
 use atc_phraseology::{Callsign, Lang, station_name};
 use atc_proto::{AudioFrame, ServerMsg};
-use atc_voice::{SpeechToText, TextToSpeech, VoiceId, initial_prompt};
+use atc_voice::{Pcm, SpeechToText, TextToSpeech, VoiceId, initial_prompt};
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 use crate::atis::AtisCache;
-use crate::hub::{ClientId, Hub};
+use crate::floor::{Floor, RadioTiming};
+use crate::hub::{ClientId, Hub, PttOutcome};
 use crate::network::{Network, Owner};
 use crate::stations::LoadedStation;
 
@@ -40,6 +43,8 @@ pub struct AppState {
     pub stt_prompts: SttPrompts,
     /// Each station's and unit's own prompts, see [`OwnerPrompts`].
     pub owner_prompts: OwnerPrompts,
+    /// Gap, margin and airtime scale of the shared radio frequencies.
+    pub radio: RadioTiming,
 }
 
 /// The static Whisper prompt ([`atc_voice::initial_prompt`]) in each language.
@@ -267,6 +272,62 @@ pub(crate) enum Out {
 /// Unbounded so that emitting to other clients never blocks the sender.
 pub(crate) type Tx = mpsc::UnboundedSender<Out>;
 
+/// Words a controller speaks per second: the airtime of a transmission without audio.
+const WORDS_PER_S: f64 = 2.5;
+
+/// The length of `pcm`; `None` when it has no usable sample rate.
+fn audio_airtime(pcm: &Pcm) -> Option<Duration> {
+    if pcm.sample_rate == 0 {
+        return None;
+    }
+    Duration::try_from_secs_f64(pcm.samples.len() as f64 / f64::from(pcm.sample_rate)).ok()
+}
+
+/// How long `text` takes to say, from its word count.
+fn words_airtime(text: &str) -> Duration {
+    let words = text.split_whitespace().count() as f64;
+    Duration::try_from_secs_f64(words / WORDS_PER_S).unwrap_or(Duration::ZERO)
+}
+
+/// A controller transmission's synthesized speech: its utterance id and audio (`None` when
+/// TTS failed or the frequency has no voice, so the text goes alone).
+pub(crate) struct Speech {
+    pub(crate) utterance: u32,
+    pub(crate) pcm: Option<Pcm>,
+}
+
+/// A controller transmission waiting for its turn on its frequency.
+struct Queued {
+    /// Identifies the item while the speaker synthesizes it outside the lock.
+    seq: u64,
+    /// A reply to a pilot transmission: ahead of every other item.
+    reply: bool,
+    out: AtcOutput,
+    /// Synthesized ahead of its turn.
+    speech: Option<Speech>,
+}
+
+/// The front of a frequency's queue, as the speaker sees it.
+pub(crate) struct Front {
+    pub(crate) seq: u64,
+    /// The text and language still to synthesize; `None` once synthesized.
+    pub(crate) unsynthesized: Option<(String, atc_phraseology::Lang)>,
+}
+
+/// What [`Server::take_on_air`] did with the front item.
+pub(crate) enum OnAir {
+    /// The item holds the frequency until `end`: send it now.
+    Speak {
+        out: Box<AtcOutput>,
+        speech: Speech,
+        end: Instant,
+    },
+    /// A readback reminder that no longer applies: skipped.
+    Dropped,
+    /// The floor or the queue front changed: look again.
+    Retry,
+}
+
 /// `AppState` plus runtime bookkeeping, shared by all sessions.
 pub(crate) struct Server {
     pub(crate) state: AppState,
@@ -279,10 +340,22 @@ pub(crate) struct Server {
     /// The controller's last words per frequency, appended to the STT prompt so a readback
     /// is heard against the clearance it repeats.
     last_said: Mutex<HashMap<u32, String>>,
+    /// Who may speak on each frequency.
+    pub(crate) floor: Mutex<Floor>,
+    /// Transmissions of each client per frequency granted and not yet handled: the pilot's
+    /// floor is released when the last is done (a re-key during processing is another one).
+    pilot_jobs: Mutex<HashMap<(u32, ClientId), u32>>,
+    /// Controller transmissions waiting per frequency, replies first.
+    queues: Mutex<HashMap<u32, VecDeque<Queued>>>,
+    next_queued: AtomicU64,
+    /// The wake-up of each frequency's speaker task (queue or floor changed); an entry
+    /// exists once the task runs.
+    speakers: Mutex<HashMap<u32, Arc<Notify>>>,
 }
 
 impl Server {
     fn new(state: AppState) -> Self {
+        let floor = Mutex::new(Floor::new(state.radio.gap));
         Server {
             state,
             next_client: AtomicU64::new(1),
@@ -292,6 +365,227 @@ impl Server {
             weather_source: Mutex::new(None),
             atis: AtisCache::default(),
             last_said: Mutex::new(HashMap::new()),
+            floor,
+            pilot_jobs: Mutex::new(HashMap::new()),
+            queues: Mutex::new(HashMap::new()),
+            next_queued: AtomicU64::new(0),
+            speakers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Replies to a pilot transmission, in batch order: on air after earlier replies and
+    /// after items already queued for the same aircraft (generated before its transmission
+    /// was handled, e.g. a deviation call the reply refers to), before everything else.
+    pub(crate) fn enqueue_front(self: &Arc<Self>, outputs: Vec<AtcOutput>) {
+        self.enqueue(outputs, true);
+    }
+
+    /// Controller transmissions of their own (telemetry): after everything queued.
+    pub(crate) fn enqueue_back(self: &Arc<Self>, outputs: Vec<AtcOutput>) {
+        self.enqueue(outputs, false);
+    }
+
+    fn enqueue(self: &Arc<Self>, outputs: Vec<AtcOutput>, reply: bool) {
+        let mut freqs = Vec::new();
+        {
+            let mut queues = self.queues.lock().unwrap();
+            for out in outputs {
+                let freq = out.freq_khz;
+                let q = queues.entry(freq).or_default();
+                let item = Queued {
+                    seq: self.next_queued.fetch_add(1, Ordering::Relaxed),
+                    reply,
+                    out,
+                    speech: None,
+                };
+                if reply {
+                    let to = &item.out.message.to;
+                    let at = q
+                        .iter()
+                        .rposition(|e| e.reply || (to.is_some() && e.out.message.to == *to))
+                        .map_or(0, |i| i + 1);
+                    q.insert(at, item);
+                } else {
+                    q.push_back(item);
+                }
+                if !freqs.contains(&freq) {
+                    freqs.push(freq);
+                }
+            }
+        }
+        for freq in freqs {
+            self.wake_speaker(freq);
+        }
+    }
+
+    /// Wakes the speaker of `freq`, starting it on first use.
+    fn wake_speaker(self: &Arc<Self>, freq_khz: u32) {
+        let mut speakers = self.speakers.lock().unwrap();
+        let wake = speakers.entry(freq_khz).or_insert_with(|| {
+            let wake = Arc::new(Notify::new());
+            tokio::spawn(crate::pipeline::speaker(
+                self.clone(),
+                freq_khz,
+                wake.clone(),
+            ));
+            wake
+        });
+        wake.notify_one();
+    }
+
+    /// The floor of `freq` changed: its speaker (if any) looks again.
+    fn floor_changed(&self, freq_khz: u32) {
+        if let Some(wake) = self.speakers.lock().unwrap().get(&freq_khz) {
+            wake.notify_one();
+        }
+    }
+
+    /// The front item of `freq`'s queue.
+    pub(crate) fn queue_front(&self, freq_khz: u32) -> Option<Front> {
+        let queues = self.queues.lock().unwrap();
+        let e = queues.get(&freq_khz)?.front()?;
+        Some(Front {
+            seq: e.seq,
+            unsynthesized: e
+                .speech
+                .is_none()
+                .then(|| (e.out.text.clone(), e.out.message.lang)),
+        })
+    }
+
+    /// Stores the speech of queued item `seq`.
+    pub(crate) fn store_speech(&self, freq_khz: u32, seq: u64, speech: Speech) {
+        let mut queues = self.queues.lock().unwrap();
+        if let Some(e) = queues
+            .get_mut(&freq_khz)
+            .and_then(|q| q.iter_mut().find(|e| e.seq == seq))
+        {
+            e.speech = Some(speech);
+        }
+    }
+
+    /// When the controller may start on `freq` (see [`Floor::atc_may_start`]).
+    pub(crate) fn atc_may_start(&self, freq_khz: u32) -> Option<Instant> {
+        self.floor
+            .lock()
+            .unwrap()
+            .atc_may_start(freq_khz, Instant::now())
+    }
+
+    /// Puts queued item `seq` on the air if the floor is free and it is still the
+    /// synthesized front item. A readback reminder that no longer applies is dropped
+    /// instead. On air the frequency is busy for the engines.
+    pub(crate) fn take_on_air(&self, freq_khz: u32, seq: u64) -> OnAir {
+        let mut floor = self.floor.lock().unwrap();
+        let now = Instant::now();
+        if floor.atc_may_start(freq_khz, now).is_some() {
+            return OnAir::Retry;
+        }
+        let item = {
+            let mut queues = self.queues.lock().unwrap();
+            let Some(q) = queues.get_mut(&freq_khz) else {
+                return OnAir::Retry;
+            };
+            match q.front() {
+                Some(e) if e.seq == seq && e.speech.is_some() => q.pop_front().unwrap(),
+                _ => return OnAir::Retry,
+            }
+        };
+        let network = &self.state.network;
+        if let Some(r) = &item.out.reminder
+            && !network.reminder_still_due(r)
+        {
+            network.reminder_dropped(r);
+            return OnAir::Dropped;
+        }
+        let speech = item.speech.expect("checked above");
+        let airtime = speech
+            .pcm
+            .as_ref()
+            .and_then(audio_airtime)
+            .unwrap_or_else(|| words_airtime(&item.out.text));
+        floor.atc_start(freq_khz, now, airtime, &self.state.radio);
+        network.set_frequency_busy(freq_khz, true);
+        OnAir::Speak {
+            end: floor.atc_end_at(freq_khz).unwrap_or(now),
+            out: Box::new(item.out),
+            speech,
+        }
+    }
+
+    /// The controller's transmission on `freq` has ended: free for the engines unless a
+    /// pilot keyed meanwhile.
+    pub(crate) fn atc_done(&self, freq_khz: u32) {
+        let floor = self.floor.lock().unwrap();
+        if !floor.is_busy(freq_khz, Instant::now()) {
+            self.state.network.set_frequency_busy(freq_khz, false);
+        }
+    }
+
+    /// Client `id` starts a transmission on `freq` (a PTT press or typed text). Granted, it
+    /// holds the floor until [`Server::pilot_done`] for it.
+    pub(crate) fn pilot_press(&self, freq_khz: u32, id: ClientId) -> PttOutcome {
+        let mut floor = self.floor.lock().unwrap();
+        let outcome = floor.pilot_press(freq_khz, id, Instant::now());
+        if outcome == PttOutcome::Granted {
+            *self
+                .pilot_jobs
+                .lock()
+                .unwrap()
+                .entry((freq_khz, id))
+                .or_default() += 1;
+            self.state.network.set_frequency_busy(freq_khz, true);
+        }
+        outcome
+    }
+
+    /// The pilot let go of the PTT: the floor stays theirs while it is processed.
+    pub(crate) fn pilot_release(&self, freq_khz: u32, id: ClientId) {
+        self.floor.lock().unwrap().pilot_release(freq_khz, id);
+    }
+
+    /// One of client `id`'s transmissions on `freq` is handled (or discarded). After the
+    /// last, the floor is free: the engines learn it and the speaker looks again.
+    pub(crate) fn pilot_done(&self, freq_khz: u32, id: ClientId) {
+        let freed = {
+            let mut floor = self.floor.lock().unwrap();
+            let mut jobs = self.pilot_jobs.lock().unwrap();
+            let Some(n) = jobs.get_mut(&(freq_khz, id)) else {
+                return;
+            };
+            *n -= 1;
+            if *n > 0 {
+                return;
+            }
+            jobs.remove(&(freq_khz, id));
+            drop(jobs);
+            let freed = floor.pilot_done(freq_khz, id, Instant::now());
+            if freed {
+                self.state.network.set_frequency_busy(freq_khz, false);
+            }
+            freed
+        };
+        if freed {
+            self.floor_changed(freq_khz);
+        }
+    }
+
+    /// Client `id` disconnected: every floor it held or was processed on is free.
+    pub(crate) fn floor_leave(&self, id: ClientId) {
+        let freed = {
+            let mut floor = self.floor.lock().unwrap();
+            self.pilot_jobs
+                .lock()
+                .unwrap()
+                .retain(|&(_, client), _| client != id);
+            let freed = floor.leave(id);
+            for &freq in &freed {
+                self.state.network.set_frequency_busy(freq, false);
+            }
+            freed
+        };
+        for freq in freed {
+            self.floor_changed(freq);
         }
     }
 
@@ -400,6 +694,25 @@ async fn ws_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airtime_from_audio_or_words() {
+        let pcm = |sample_rate, n| Pcm {
+            sample_rate,
+            samples: vec![0; n],
+        };
+        assert_eq!(
+            audio_airtime(&pcm(22_050, 44_100)),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(audio_airtime(&pcm(0, 100)), None);
+        assert_eq!(audio_airtime(&pcm(16_000, 0)), Some(Duration::ZERO));
+        assert_eq!(
+            words_airtime("one two three four five"),
+            Duration::from_secs(2)
+        );
+        assert_eq!(words_airtime(""), Duration::ZERO);
+    }
     use atc_navdata::procedures::parse_procedures;
 
     #[test]

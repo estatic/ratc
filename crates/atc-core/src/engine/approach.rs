@@ -1238,6 +1238,7 @@ impl AtcEngine {
         let (msg, Some(i), _) = self.hear(text, lang) else {
             return Vec::new();
         };
+        self.strips[i].heard += 1;
         // Spec 3.6: an IFR inbound call from a flight that went away (handed off, or still on
         // its departure plan) begins a new flight, which the unit sends to Approach.
         if is_ifr_inbound(&unit, &msg)
@@ -1279,6 +1280,7 @@ impl AtcEngine {
             station: unit.callsign,
             message,
             text,
+            reminder: None,
         }]
     }
 }
