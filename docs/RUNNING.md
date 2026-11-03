@@ -340,12 +340,12 @@ object ships with the plugin (`Resources/plugins/atc-overlay/objects/`); without
 comes without the sign (one line in X-Plane's `Log.txt`).
 
 Readback reminders: when a clearance that needs a readback (taxi, hold position, a frequency,
-…) is not read back within 10 s of simulator time after the controller finished speaking, the
+…) is not read back within 10 s after the frequency became free, the
 position that gave it says `read back taxi route` / `read back hold position` / … once. An
 aircraft that was standing and starts to move (over 3 kt) with a taxi readback pending is
 reminded at once.
 
-The reminder is sent 10 s after the frequency became free, never while you are talking. A
+The reminder is never sent while you are transmitting. A
 readback or call without a callsign is accepted when only one aircraft is in the exchange (a
 correct readback is answered `<callsign>, roger`); from the 3rd such call in a flight the
 controller adds `use your callsign in every transmission`.

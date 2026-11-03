@@ -495,7 +495,7 @@ impl AtcEngine {
     }
 
     /// The server's floor on `freq_khz` (a canonical frequency, matched by channel): `busy`
-    /// while someone transmits on it or a transmission waits for it. No readback reminder
+    /// while a transmission is on air or a pilot holds (or is being processed on) it. No readback reminder
     /// falls due on a busy frequency; when it becomes free, every readback pending there
     /// waits 10 s from now again (the "aircraft started moving" trigger at the next sample).
     pub fn set_frequency_busy(&mut self, freq_khz: u32, busy: bool) {
@@ -741,13 +741,17 @@ impl AtcEngine {
     /// `role` to aircraft `i`), re-rendered with the callsign in the same form, and keeps it
     /// as what was last said to the aircraft.
     fn remind_callsign(&mut self, i: usize, role: Role, out: &mut [AtcOutput]) {
-        let Some(last) = out.last_mut() else {
+        let cs = self.strips[i].callsign.clone();
+        let Some(last) = out
+            .iter_mut()
+            .rev()
+            .find(|o| o.message.to.as_ref() == Some(&cs))
+        else {
             return;
         };
         let full = render(&last.message, true) == last.text;
         last.message.items.push(AtcItem::UseCallsign);
         last.text = render(&last.message, full);
-        let cs = self.strips[i].callsign.clone();
         self.strips[i].issued.push(AtcItem::UseCallsign);
         self.last_told.insert(cs.clone(), last.text.clone());
         self.last_sent.insert((cs, role), last.clone());
