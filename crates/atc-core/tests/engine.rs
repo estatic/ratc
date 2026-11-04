@@ -2765,7 +2765,7 @@ mod delivery {
                 number: 1,
                 letter: 'A',
             },
-            AtcItem::ClimbTo(Level::Altitude(5000)),
+            AtcItem::ClimbTo(Level::FlightLevel(80)),
             AtcItem::Squawk(code),
         ]
     }
@@ -2776,7 +2776,7 @@ mod delivery {
 
     fn clearance_readback(sid: &str, code: u16) -> String {
         format!(
-            "cleared to Testville, {sid} departure, climb five thousand feet, squawk {}, {CS_ABBR}",
+            "cleared to Testville, {sid} departure, climb flight level eight zero, squawk {}, {CS_ABBR}",
             spoken(&format!("{code:04}"))
         )
     }
@@ -2797,7 +2797,7 @@ mod delivery {
             out[0].text,
             format!(
                 "Sierra Papa Tango Sierra Tango, cleared to Testville, ALFAX one Alpha departure, \
-                 climb altitude five thousand feet, squawk {}",
+                 climb flight level eight zero, squawk {}",
                 spoken(&format!("{code:04}"))
             )
         );
@@ -2812,7 +2812,7 @@ mod delivery {
             (plan.destination.as_str(), plan.dest_name.as_str()),
             ("ZZZY", "Testville")
         );
-        assert_eq!((plan.cruise_ft, plan.cleared_ft), (5000, 5000));
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (8000, 8000));
         assert_eq!(plan.sid.as_deref(), Some("ALFA1A"));
 
         let out = say(&mut e, DEL, &clearance_readback("Alfax one Alpha", code));
@@ -4030,8 +4030,8 @@ mod approach_departure {
         }
     }
 
-    /// 90 kt, 700 fpm up to 5000 ft.
-    pub(super) const CLIMB: (f64, f64, f64) = (90.0, 700.0, 5000.0);
+    /// 90 kt, 700 fpm up to FL080 (the ALFA1A floor).
+    pub(super) const CLIMB: (f64, f64, f64) = (90.0, 700.0, 8000.0);
 
     pub(super) fn never(_: &[AtcOutput]) -> bool {
         false
@@ -4040,10 +4040,10 @@ mod approach_departure {
     /// Cleared IFR (`ifr`) or VFR to `dest_spoken`, read back; holding short of RWY 27 owned
     /// by Tower; cleared for take-off and read back; airborne at the end of RWY 27.
     pub(super) fn departed(e: &mut AtcEngine, dest_spoken: &str, ifr: bool) -> Flight {
-        departed_climbing(e, dest_spoken, ifr, "five thousand")
+        departed_climbing(e, dest_spoken, ifr, "flight level eight zero")
     }
 
-    /// [`departed`] with an initial climb of `climb` feet (spoken).
+    /// [`departed`] with the initial climb `climb` (spoken, with its unit).
     fn departed_climbing(e: &mut AtcEngine, dest_spoken: &str, ifr: bool, climb: &str) -> Flight {
         departed_at(e, dest_spoken, ifr, climb, 0.0)
     }
@@ -4067,7 +4067,7 @@ mod approach_departure {
         let code = squawk_of(&clearance).expect("squawk");
         let cleared = if ifr {
             format!(
-                "cleared to {dest_spoken}, Alfax one Alpha departure, climb {climb} feet, \
+                "cleared to {dest_spoken}, Alfax one Alpha departure, climb {climb}, \
                  squawk {}, {CS_ABBR}",
                 spoken(&format!("{code:04}"))
             )
@@ -4337,7 +4337,7 @@ mod approach_departure {
                 p.legs[0].leg.alt = AltConstraint::AtOrBelow(4000);
             }
         });
-        let mut f = departed_climbing(&mut e, "Testville", true, "four thousand");
+        let mut f = departed_climbing(&mut e, "Testville", true, "four thousand feet");
         let tower = f.heard.drain(..).next().unwrap();
         assert!(say(&mut e, TWR, &readback(&tower.message.items, CS_ABBR)).is_empty());
         let out = say(&mut e, APP, AIRBORNE);
@@ -4436,7 +4436,7 @@ mod approach_departure {
         assert_eq!(strip.plan, None);
         assert!(!strip.identified && !strip.adjacent_identified);
         // The second flight: Approach identifies, clears the direct and hands off again.
-        let mut f = departed_at(&mut e, "Testville", true, "five thousand", f.t);
+        let mut f = departed_at(&mut e, "Testville", true, "flight level eight zero", f.t);
         fly_to_testville_tower(&mut e, &mut f);
         assert_eq!(
             e.strip(&cs).unwrap().handed_off.as_deref(),
@@ -4569,7 +4569,7 @@ mod approach_departure {
             heard: Vec::new(),
         };
         parked.step(&mut e, 0.0, 0.0, 0.0, true);
-        let mut f = departed_at(&mut e, "Testville", true, "five thousand", 10.0);
+        let mut f = departed_at(&mut e, "Testville", true, "flight level eight zero", 10.0);
         fly_to_testville_tower(&mut e, &mut f);
         f.pos = LatLon {
             lat: STAND_1.lat + 0.0005,
@@ -4607,6 +4607,8 @@ mod approach_departure {
             vec![AtcItem::Identified]
         );
         let handed = |h: &[AtcOutput]| h.iter().any(|o| contact_of(o).is_some());
+        // Already level at the cleared FL080: no "direct" instruction on the way.
+        f.alt = 8000.0;
         f.fly_to(&mut e, FARLAND, CLIMB, &handed);
         let contact = f.heard.last().unwrap().clone();
         assert_eq!(
@@ -6512,7 +6514,7 @@ mod vfr_points {
         clear(
             &mut e,
             "IFR",
-            "cleared to Testville, Alfax one Alpha departure, climb five thousand feet",
+            "cleared to Testville, Alfax one Alpha departure, climb flight level eight zero",
         );
         assert_eq!(e.strip(&cs()).unwrap().vfr_exit, None);
     }
@@ -6602,7 +6604,7 @@ mod handover {
         assert_eq!(h.plan.as_ref().unwrap().destination, "ZZZY");
         assert_eq!(h.squawk, strip.squawk);
         assert!(h.squawk.is_some());
-        assert_eq!(h.cleared_ft, Some(5000));
+        assert_eq!(h.cleared_ft, Some(8000));
         assert_eq!(h.rules, Some(FlightRules::Ifr));
         // Through JSON, as between stations.
         let h: FlightHandover = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
