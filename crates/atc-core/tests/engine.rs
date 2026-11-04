@@ -3455,6 +3455,34 @@ mod delivery {
     }
 
     #[test]
+    fn runway_change_to_a_sid_with_a_higher_floor_raises_the_cruise_level() {
+        let (ap, procs) = zzzz();
+        let mut set = load_procedure_set(&root(), "ZZZZ").unwrap();
+        for p in set
+            .procedures
+            .iter_mut()
+            .filter(|p| p.procedure.ident == "CHAR1A")
+        {
+            p.legs[0].leg.alt = AltConstraint::AtOrAbove(10000);
+        }
+        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(Strictness::Standard))
+            .with_procedure_set(set)
+            .with_destinations(destinations());
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new("SPTST"),
+            aircraft_type: "C172".into(),
+        });
+        e.on_weather(weather(1013));
+        ifr_cleared_on_27(&mut e);
+        assert_eq!(plan(&e).cruise_ft, 8000);
+        wind(&mut e, 90, 10);
+        request_taxi(&mut e);
+        let plan = plan(&e);
+        assert_eq!(plan.sid.as_deref(), Some("CHAR1A"));
+        assert_eq!((plan.cleared_ft, plan.cruise_ft), (10000, 10000));
+    }
+
+    #[test]
     fn runway_request_after_clearance_amends_it() {
         let mut e = engine();
         wind(&mut e, 270, 3);
@@ -4607,7 +4635,8 @@ mod approach_departure {
             vec![AtcItem::Identified]
         );
         let handed = |h: &[AtcOutput]| h.iter().any(|o| contact_of(o).is_some());
-        // Already level at the cleared FL080: no "direct" instruction on the way.
+        // Already level at the cleared FL080. A climbing aircraft past the SID's second fix
+        // is sent "direct" first, which would stop the fly_to before the FIS contact.
         f.alt = 8000.0;
         f.fly_to(&mut e, FARLAND, CLIMB, &handed);
         let contact = f.heard.last().unwrap().clone();

@@ -69,6 +69,15 @@ fn initial_climb_respects_floors_and_ceilings() {
     assert_eq!(initial_climb_ft(&path, 5000), 7000); // rounded up to 1000 ft
     path.constraints[0].1 = AltConstraint::AtOrBelow(4000);
     assert_eq!(initial_climb_ft(&path, 5000), 4000); // the ceiling still wins
+    // A ceiling above the target does not apply.
+    path.constraints[0].1 = AltConstraint::AtOrBelow(9000);
+    assert_eq!(initial_climb_ft(&path, 5000), 7000);
+    // The lower bound of Between is a floor, the upper bound a ceiling.
+    path.constraints[0].1 = AltConstraint::Between {
+        above: 9200,
+        below: 11000,
+    };
+    assert_eq!(initial_climb_ft(&path, 5000), 10000);
     path.constraints[0].1 = AltConstraint::Between {
         above: 2000,
         below: 3000,

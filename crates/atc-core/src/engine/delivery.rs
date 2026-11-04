@@ -4,9 +4,10 @@
 //! The pilot's request is the flight plan (spec 3.2): destination (one of the airports the
 //! engine was given, [`AtcEngine::with_destinations`]), flight rules and an optional level.
 //! IFR: destination, SID of the departure runway towards the destination, initial climb (the
-//! cruise level, raised to SID floors and lowered to a SID ceiling, [`initial_climb_ft`]) and squawk. VFR:
-//! destination, the VFR exit point towards it, squawk. Unknown destination: "unable, say again
-//! destination"; IFR without a procedure set: "unable, IFR not available, VFR only".
+//! cruise level, raised to SID floors and lowered to a SID ceiling, [`initial_climb_ft`]) and
+//! squawk. VFR: destination, the VFR exit point towards it, squawk. Unknown destination:
+//! "unable, say again destination"; IFR without a procedure set: "unable, IFR not available,
+//! VFR only".
 
 use atc_geo::{LatLon, bearing_deg};
 use atc_navdata::fixes::ProcedureSet;
@@ -287,6 +288,7 @@ impl AtcEngine {
             }
             plan.sid = Some(ident);
             plan.cleared_ft = climb_ft;
+            plan.cruise_ft = plan.cruise_ft.max(climb_ft);
         }
         plan.dep_runway = Some(runway.to_string());
         RunwayChange::Amended { items, plan }
