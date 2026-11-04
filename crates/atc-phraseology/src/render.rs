@@ -464,7 +464,7 @@ fn level_words(level: Level) -> String {
 }
 
 /// "ILS", "VOR D M E", "R NAV": spelled so Piper does not read a word.
-fn approach_words(kind: ApproachKind) -> &'static str {
+pub(crate) fn approach_words(kind: ApproachKind) -> &'static str {
     match kind {
         ApproachKind::Ils => "ILS",
         ApproachKind::VorDme => "VOR D M E",

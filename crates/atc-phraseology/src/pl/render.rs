@@ -333,16 +333,26 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             station_name(station, Lang::Pl),
             frequency(*khz)
         )),
+        // Tower says these to a handed-in IFR inbound (Tower speaks Polish).
+        AtcItem::ExpectApproach { kind, runway } => out.push(format!(
+            "spodziewaj się podejścia {}, pas {}",
+            crate::render::approach_words(*kind),
+            runway_words(runway)
+        )),
+        AtcItem::ExpectVisualApproach { runway } => out.push(format!(
+            "spodziewaj się podejścia z widocznością, pas {}",
+            runway_words(runway)
+        )),
+        AtcItem::ReportEstablished => {
+            out.push("zgłoś ustalenie na kursie podejścia końcowego".into())
+        }
         // Approach-only items: the engine never asks for Polish, English fallback.
         AtcItem::Star { .. }
         | AtcItem::DescendTo(_)
         | AtcItem::MaintainLevel(_)
         | AtcItem::Heading { .. }
         | AtcItem::DirectTo { .. }
-        | AtcItem::ExpectApproach { .. }
-        | AtcItem::ExpectVisualApproach { .. }
         | AtcItem::ClearedApproach { .. }
-        | AtcItem::ReportEstablished
         | AtcItem::Identified
         | AtcItem::RadarServiceTerminated
         | AtcItem::OffTrack { .. }
@@ -385,6 +395,7 @@ fn genitive(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ApproachKind;
 
     #[test]
     fn use_callsign_in_polish() {
@@ -406,5 +417,33 @@ mod tests {
             &mut out,
         );
         assert_eq!(out, vec!["Katowice Wieża"]);
+    }
+
+    /// The items Tower says to a handed-in IFR inbound, in Polish.
+    #[test]
+    fn tower_inbound_items_in_polish() {
+        let mut out = Vec::new();
+        item_parts(
+            &AtcItem::ExpectApproach {
+                kind: ApproachKind::Ils,
+                runway: "27".into(),
+            },
+            &mut out,
+        );
+        item_parts(
+            &AtcItem::ExpectVisualApproach {
+                runway: "09R".into(),
+            },
+            &mut out,
+        );
+        item_parts(&AtcItem::ReportEstablished, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                "spodziewaj się podejścia ILS, pas dwa siedem",
+                "spodziewaj się podejścia z widocznością, pas zero dziewięć prawy",
+                "zgłoś ustalenie na kursie podejścia końcowego",
+            ]
+        );
     }
 }
