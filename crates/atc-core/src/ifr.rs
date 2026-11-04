@@ -121,10 +121,23 @@ pub fn applicable_constraints(path: &Path, cleared_ft: i32) -> Vec<(usize, AltCo
         .collect()
 }
 
-/// Initial climb of a departure along `path` to `cruise_ft`: the cruise level, lowered only
-/// by the first constraint that is a ceiling at or below it (`At`, `AtOrBelow`, the upper
-/// bound of `Between`). "At or above" constraints are minimums, never a stop altitude.
+/// Initial climb of a departure along `path` to `cruise_ft`. The target is the cruise level,
+/// raised to the highest "at or above" floor on the path (rounded up to 1000 ft). The climb
+/// stops at the first ceiling (`At`, `AtOrBelow`, the upper bound of `Between`) at or below
+/// that target; without one it goes to the target.
 pub fn initial_climb_ft(path: &Path, cruise_ft: i32) -> i32 {
+    let floor = path
+        .constraints
+        .iter()
+        .filter_map(|(_, c)| match *c {
+            AltConstraint::AtOrAbove(a) => Some(a),
+            AltConstraint::Between { above, .. } => Some(above),
+            _ => None,
+        })
+        .max();
+    let target = floor.map_or(cruise_ft, |a| {
+        cruise_ft.max((a + 999).div_euclid(1000) * 1000)
+    });
     path.constraints
         .iter()
         .find_map(|(_, c)| {
@@ -133,9 +146,9 @@ pub fn initial_climb_ft(path: &Path, cruise_ft: i32) -> i32 {
                 AltConstraint::Between { below, .. } => below,
                 AltConstraint::None | AltConstraint::AtOrAbove(_) => return None,
             };
-            (ceiling <= cruise_ft).then_some(ceiling)
+            (ceiling <= target).then_some(ceiling)
         })
-        .unwrap_or(cruise_ft)
+        .unwrap_or(target)
 }
 
 /// Smallest absolute difference of two bearings, degrees.
