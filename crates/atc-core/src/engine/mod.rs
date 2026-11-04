@@ -844,6 +844,9 @@ impl AtcEngine {
         // A flight handed in is answered as handed over by Approach, or by Tower when it is
         // an IFR arrival here; elsewhere its call is served as it is.
         let was_handed_in = strip.handed_in;
+        // The literal first call since the hand-in (an Approach still waiting for telemetry
+        // keeps `handed_in` for the next one).
+        let first_call = was_handed_in && strip.heard == 1;
         if role != Role::Approach {
             strip.handed_in = false;
         }
@@ -929,7 +932,7 @@ impl AtcEngine {
         if items.is_empty() {
             let reply = match self.content(i, &msg) {
                 // A handed-in flight's first call is understood as its first contact.
-                Content::Message if was_handed_in => {
+                Content::Message if first_call => {
                     items.extend(self.position(role).map(|p| AtcItem::Station {
                         station: p.callsign.clone(),
                     }));

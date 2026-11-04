@@ -846,7 +846,10 @@ impl AtcEngine {
         let missed_ft = self.missed_alt_ft(&runway, kind);
         let strip = &mut self.strips[i];
         strip.missed_approach = true;
-        if strip.owner == Role::Tower || strip.handoff_to == Some(Role::Tower) {
+        // Back to Approach, to be identified again; a Tower-kept arrival stays identified.
+        if (strip.owner == Role::Tower || strip.handoff_to == Some(Role::Tower))
+            && !strip.tower_inbound
+        {
             strip.identified = false;
         }
         strip.permissions.may_land = false;

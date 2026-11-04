@@ -15,6 +15,18 @@ const SEQUENCE: u8 = 1;
 impl AtcEngine {
     pub(super) fn tower_request(&mut self, i: usize, msg: &PilotMessage) -> Vec<AtcItem> {
         let ready = self.ready_call(i, &msg.intent);
+        // A Tower-kept arrival's first call after its missed approach: the approach again.
+        let strip = &mut self.strips[i];
+        let missed = strip.tower_inbound && strip.missed_approach;
+        if missed {
+            strip.missed_approach = false;
+        }
+        match &msg.intent {
+            PilotIntent::ReportEstablished | PilotIntent::ReportLeg(CircuitLeg::Final) => {}
+            _ if msg.items.kinds.contains(&ClearanceKind::GoAround) => {}
+            _ if missed => return self.approach_again(i),
+            _ => {}
+        }
         match &msg.intent {
             _ if ready && self.departure_in_hand(i) => Vec::new(),
             _ if ready => self.departure(i),
@@ -58,13 +70,32 @@ impl AtcEngine {
     }
 
     /// The first call of a flight handed in to Tower is that of an airborne IFR arrival
-    /// bound here without an approach yet (its station has no Approach to take it).
+    /// bound here without an approach yet, at a station without Approach to take it.
     pub(super) fn is_tower_inbound_call(&self, i: usize) -> bool {
         let strip = &self.strips[i];
-        strip.phase.is_airborne()
+        self.position(Role::Approach).is_none()
+            && strip.phase.is_airborne()
             && strip.plan.as_ref().is_some_and(|p| {
-                p.ifr && p.destination == self.airport.icao && p.approach.is_none()
+                p.ifr
+                    && p.destination.eq_ignore_ascii_case(&self.airport.icao)
+                    && p.approach.is_none()
             })
+    }
+
+    /// A Tower-kept arrival after its missed approach: "expect <approach> runway <runway>,
+    /// report established" again (identified all along).
+    fn approach_again(&mut self, i: usize) -> Vec<AtcItem> {
+        let Some((kind, runway)) = self.arrival(i).and_then(|p| p.approach.clone()) else {
+            return vec![AtcItem::Report(CircuitLeg::Final)];
+        };
+        let items = vec![
+            AtcItem::ExpectApproach { kind, runway },
+            AtcItem::ReportEstablished,
+        ];
+        let strip = &mut self.strips[i];
+        strip.identified = true;
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
+        items
     }
 
     /// Tower takes a handed-in IFR arrival ([`AtcEngine::is_tower_inbound_call`]) and keeps
@@ -107,14 +138,23 @@ impl AtcEngine {
     }
 
     /// The pilot reports going around on his own ("going around"): an IFR arrival has missed
-    /// the approach and goes back to Approach at once (contact Approach); any other aircraft
-    /// is acknowledged ("roger").
+    /// the approach and goes back to Approach at once (contact Approach), or, kept by Tower
+    /// (`tower_inbound`), climbs to the published missed-approach altitude; any other
+    /// aircraft is acknowledged ("roger").
     fn going_around(&mut self, i: usize) -> Vec<AtcItem> {
         if self.arrival(i).is_none() {
             return vec![AtcItem::Roger];
         }
         self.set_missed_approach(i);
-        self.redirect(i, Role::Approach)
+        if !self.strips[i].tower_inbound {
+            return self.redirect(i, Role::Approach);
+        }
+        let Some(ft) = self.strips[i].plan.as_ref().map(|p| p.cleared_ft) else {
+            return vec![AtcItem::Roger];
+        };
+        let items = vec![AtcItem::ClimbTo(self.level(ft))];
+        self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
+        items
     }
 
     /// AIP AD 2.20 §2.2: the pilot omits the initial call after the transfer from Ground, so
@@ -240,7 +280,9 @@ impl AtcEngine {
     /// and go otherwise; go around when the runway is not available. An IFR arrival not on
     /// the final yet is asked to report final.
     fn landing(&mut self, i: usize) -> Vec<AtcItem> {
-        let arrival = self.arrival(i).is_some();
+        // A Tower-kept IFR arrival is one also on a visual approach.
+        let published = self.arrival(i).is_some();
+        let arrival = published || self.strips[i].tower_inbound;
         if !matches!(self.strips[i].phase, FlightPhase::Circuit(_)) {
             return if arrival && self.strips[i].phase == FlightPhase::Airborne {
                 vec![AtcItem::Report(CircuitLeg::Final)]
@@ -266,7 +308,7 @@ impl AtcEngine {
         };
         strip.expect_readback(&items, self.cfg.strictness, self.now);
         // An IFR arrival sent around goes back to Approach.
-        if arrival && items == [AtcItem::GoAround] {
+        if published && items == [AtcItem::GoAround] {
             self.set_missed_approach(i);
         }
         items

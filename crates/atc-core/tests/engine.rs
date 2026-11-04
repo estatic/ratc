@@ -6932,27 +6932,67 @@ mod handover {
         assert!(!json.contains("SPTST"), "{json}");
     }
 
-    /// An IFR arrival handed in to Tower (its station had no Approach to take it): Tower
-    /// names itself, gives the approach to expect and keeps the flight to the landing.
-    #[test]
-    fn handed_in_ifr_inbound_on_tower_expects_the_approach() {
-        let mut e = engine();
+    /// ZZZZ without its Approach position (Tower only), the procedure set changed by `edit`.
+    fn tower_only(edit: impl FnOnce(&mut atc_navdata::fixes::ProcedureSet)) -> AtcEngine {
+        engine_with_procs(
+            |p| {
+                p.positions
+                    .retain(|p| p.role != atc_navdata::model::FreqKind::Approach)
+            },
+            edit,
+        )
+    }
+
+    /// SPTST, an IFR flight bound for ZZZZ handed in to `e`, airborne 8 NM west at 3000 ft
+    /// on the Tower frequency, and its first call to Zeta Tower: the flight and the answer.
+    fn first_call_to_tower(e: &mut AtcEngine) -> (Flight, Vec<AtcItem>) {
         e.import_flight(handover(ifr_plan("ZZZZ", "Zeta", 3000)));
         let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
-        let mut f = airborne(&mut e, west, 3000.0, 90.0);
+        let mut f = airborne(e, west, 3000.0, 90.0);
         f.com1 = TWR;
         let out = say(
-            &mut e,
+            e,
             TWR,
             "Zeta Tower, Sierra Papa Tango Sierra Tango, three thousand feet",
         );
-        let got = items(&out);
+        (f, items(&out))
+    }
+
+    /// Flies `f` 5 samples east: Tower says no contact to Approach.
+    fn no_bounce(e: &mut AtcEngine, f: &mut Flight) {
+        for _ in 0..5 {
+            f.step(e, 90.0, 150.0, 0.0, false);
+        }
+        assert!(
+            f.heard.iter().all(|o| contact_of(o).is_none()),
+            "{:?}",
+            f.heard
+        );
+        assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+    }
+
+    /// Puts `f` on the RW27 final, 4 NM out at 1300 ft (3 samples).
+    fn on_final(e: &mut AtcEngine, f: &mut Flight) {
+        f.pos = destination(THR_27, 90.0, 4.0 * M_PER_NM);
+        f.alt = 1300.0;
+        for _ in 0..3 {
+            f.step(e, 270.0, 90.0, -500.0, false);
+        }
+    }
+
+    /// An IFR arrival handed in to a Tower-only station with published approaches: Tower
+    /// names itself, gives the approach to expect and keeps the flight to the landing; after
+    /// a go-around it stays with Tower, identified, and gets the approach again.
+    #[test]
+    fn handed_in_ifr_inbound_on_tower_expects_the_approach() {
+        let mut e = tower_only(|_| {});
+        let (mut f, got) = first_call_to_tower(&mut e);
         assert_eq!(
             got.first(),
             Some(&AtcItem::Station {
                 station: "Zeta Tower".into()
             }),
-            "{out:?}"
+            "{got:?}"
         );
         assert!(
             matches!(
@@ -6973,65 +7013,177 @@ mod handover {
             s.plan.as_ref().unwrap().approach,
             Some((ApproachKind::Ils, "27".into()))
         );
-        // No bounce to Approach.
-        for _ in 0..5 {
-            f.step(&mut e, 90.0, 150.0, 0.0, false);
-        }
-        assert!(
-            f.heard
-                .iter()
-                .all(|o| contact_of(o).is_none_or(|(_, khz)| khz != APP)),
-            "{:?}",
-            f.heard
-        );
-        assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        no_bounce(&mut e, &mut f);
         // Established on the ILS 27 final: cleared to land.
-        f.pos = destination(THR_27, 90.0, 4.0 * M_PER_NM);
-        f.alt = 1300.0;
-        for _ in 0..3 {
-            f.step(&mut e, 270.0, 90.0, -500.0, false);
-        }
+        on_final(&mut e, &mut f);
         let out = say(
             &mut e,
             TWR,
             "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
         );
+        let got = items(&out);
         assert!(
-            items(&out)
-                .iter()
-                .any(|i| matches!(i, AtcItem::ClearedLand { .. })),
+            matches!(got.as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
+            "{out:?} (phase {:?})",
+            e.strip(&cs()).unwrap().phase
+        );
+        assert!(say(&mut e, TWR, &readback(&got, CS_ABBR)).is_empty());
+        // Going around: Tower keeps it and gives the missed-approach climb.
+        let out = say(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, going around",
+        );
+        let got = items(&out);
+        let Some(AtcItem::ClimbTo(atc_phraseology::Level::Altitude(ft))) = got.first().cloned()
+        else {
+            panic!("{out:?}");
+        };
+        assert_eq!(got.len(), 1, "{got:?}");
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.owner, Role::Tower);
+        assert!(s.identified);
+        let rb = format!(
+            "climb {} feet, Sierra Papa Tango Sierra Tango",
+            spoken(&ft.to_string())
+        );
+        let out = say(&mut e, TWR, &rb);
+        assert!(
+            items(&out).iter().all(|i| !matches!(i, AtcItem::SayAgain)),
+            "{out:?}"
+        );
+        f.heard.clear();
+        f.alt = f64::from(ft);
+        no_bounce(&mut e, &mut f);
+        // The next call: the approach again.
+        let out = say(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, three thousand feet",
+        );
+        assert_eq!(
+            items(&out),
+            vec![
+                AtcItem::ExpectApproach {
+                    kind: ApproachKind::Ils,
+                    runway: "27".into()
+                },
+                AtcItem::ReportEstablished
+            ],
+            "{out:?}"
+        );
+        assert!(e.strip(&cs()).unwrap().identified);
+    }
+
+    /// A Tower-only station without published approaches: the visual approach, and the
+    /// landing clearance on final (not a touch and go).
+    #[test]
+    fn handed_in_ifr_inbound_on_tower_visual_is_cleared_to_land() {
+        let mut e = tower_only(|set| set.procedures.clear());
+        let (mut f, got) = first_call_to_tower(&mut e);
+        assert_eq!(
+            got,
+            vec![
+                AtcItem::Station {
+                    station: "Zeta Tower".into()
+                },
+                AtcItem::ExpectVisualApproach {
+                    runway: "27".into()
+                },
+                AtcItem::Report(CircuitLeg::Final),
+            ]
+        );
+        assert!(e.strip(&cs()).unwrap().tower_inbound);
+        no_bounce(&mut e, &mut f);
+        on_final(&mut e, &mut f);
+        let out = say(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, final runway two seven",
+        );
+        assert!(
+            matches!(items(&out).as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
             "{out:?} (phase {:?})",
             e.strip(&cs()).unwrap().phase
         );
     }
 
+    /// A station with Approach: Tower does not keep a handed-in IFR arrival calling it; it
+    /// goes to Approach as before.
+    #[test]
+    fn handed_in_ifr_inbound_on_tower_with_approach_goes_to_approach() {
+        let mut e = engine();
+        let (mut f, got) = first_call_to_tower(&mut e);
+        assert!(
+            !got.iter()
+                .any(|i| matches!(i, AtcItem::ExpectApproach { .. } | AtcItem::SayAgain)),
+            "{got:?}"
+        );
+        assert!(!e.strip(&cs()).unwrap().tower_inbound);
+        for _ in 0..3 {
+            f.step(&mut e, 90.0, 150.0, 0.0, false);
+        }
+        assert!(
+            f.heard
+                .iter()
+                .any(|o| contact_of(o).is_some_and(|(_, khz)| khz == APP)),
+            "{:?}",
+            f.heard
+        );
+    }
+
     /// A handed-in flight's first call that no handler answers is acknowledged, never
-    /// answered "say again".
+    /// answered "say again"; a second such call is.
     #[test]
     fn handed_in_first_call_is_never_say_again() {
+        for (khz, call, station) in [
+            (
+                GND,
+                "Zeta Ground, Sierra Papa Tango Sierra Tango, two thousand feet",
+                "Zeta Ground",
+            ),
+            (
+                TWR,
+                "Zeta Tower, Sierra Papa Tango Sierra Tango, two thousand feet",
+                "Zeta Tower",
+            ),
+        ] {
+            let mut e = engine();
+            let mut plan = ifr_plan("ZZZZ", "Zeta", 2000);
+            plan.ifr = false;
+            let mut h = handover(plan);
+            h.rules = Some(FlightRules::Vfr);
+            e.import_flight(h);
+            let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
+            airborne(&mut e, west, 2000.0, 90.0);
+            let out = say(&mut e, khz, call);
+            assert_eq!(
+                items(&out),
+                vec![
+                    AtcItem::Station {
+                        station: station.into()
+                    },
+                    AtcItem::Roger
+                ],
+                "{out:?}"
+            );
+            let out = say(&mut e, khz, call);
+            assert_eq!(items(&out), vec![AtcItem::SayAgain], "{out:?}");
+        }
+    }
+
+    /// Approach without telemetry yet keeps a handed-in flight handed in for its next call;
+    /// only the literal first call gets the acknowledgement.
+    #[test]
+    fn handed_in_second_call_on_approach_is_say_again() {
         let mut e = engine();
-        let mut plan = ifr_plan("ZZZZ", "Zeta", 2000);
-        plan.ifr = false;
-        let mut h = handover(plan);
-        h.rules = Some(FlightRules::Vfr);
-        e.import_flight(h);
-        let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
-        airborne(&mut e, west, 2000.0, 90.0);
-        let out = say(
-            &mut e,
-            GND,
-            "Zeta Ground, Sierra Papa Tango Sierra Tango, two thousand feet",
-        );
-        assert_eq!(
-            items(&out),
-            vec![
-                AtcItem::Station {
-                    station: "Zeta Ground".into()
-                },
-                AtcItem::Roger
-            ],
-            "{out:?}"
-        );
+        e.import_flight(handover(ifr_plan("ZZZZ", "Zeta", 5000)));
+        let call = "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet";
+        let first = items(&say(&mut e, APP, call));
+        assert!(!first.contains(&AtcItem::SayAgain), "{first:?}");
+        assert!(e.strip(&cs()).unwrap().handed_in);
+        let out = say(&mut e, APP, call);
+        assert_eq!(items(&out), vec![AtcItem::SayAgain], "{out:?}");
     }
 
     /// An IFR flight bound for ZZZZ handed in from the station it departed: its first call
