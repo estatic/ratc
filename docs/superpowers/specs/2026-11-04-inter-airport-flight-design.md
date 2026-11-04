@@ -32,9 +32,10 @@ A complete IFR flight between two loaded stations cannot be flown cleanly:
    loaded station:
    - If it has an Approach position, the departure station's Approach hands the flight to it when the
      flight enters the destination's area (where it now hands to the adjacent Tower). If both
-     positions use the same frequency (EPKK and EPKT both run "Kraków Approach" 121.075), the
-     transfer is silent: no "contact" instruction, the pilot keeps talking to the same callsign, and
-     the next call is answered by the destination engine without "say again".
+     transfer is still a real hand-off between two controllers, even on the same frequency
+     (EPKK and EPKT both list "Kraków Approach" 121.075): the current controller tells the pilot
+     to contact the destination position, the pilot reads it back and calls the new controller,
+     whose engine answers the first call (no "say again").
    - The destination Approach then vectors to the approach and hands to its Tower once established,
      as it already does today.
    - If it has no Approach position, the flight goes to its Tower as today, and the Tower accepts a
@@ -75,7 +76,7 @@ A complete IFR flight between two loaded stations cannot be flown cleanly:
 
 ## My calls (for review)
 
-- Same-frequency hand-off is silent rather than a "contact" on the same frequency.
+- Hand-off to another station is always announced with "contact", even on the same frequency (user's decision).
 - SID floor beats the 5000 ft default (gives FL100 for SUDOL 2J) instead of "climb via SID".
 - Duplicate stand names: the nearest free stand wins.
 
@@ -88,12 +89,13 @@ A complete IFR flight between two loaded stations cannot be flown cleanly:
   destination Approach when it is within 30 NM of the destination airport (new constant), or at
   once if it is already closer when it reaches Approach. The 10 NM destination-Tower hand-off
   stays for destinations without such an Approach.
-- **Silent transfer.** Same frequency: no transmission and no readback; the network moves the flight
-  directly (`export_flight` / `import_flight`) the moment the hand-off falls due. The destination
-  Approach treats it as already identified (no "radar contact"): the pilot's next call, or its own
-  next instruction where it already issues them unprompted (descent, vectors), is answered or
-  given normally. Different frequency: the normal "contact <callsign> <frequency>" with readback,
-  then the existing handed-in first-call handling.
+- **Transfer is always announced.** Same or different frequency, a hand-off to another station
+  is the normal "<callsign>, contact <position callsign> <frequency>" with readback, then the
+  pilot's first call to the new controller, handled by the destination engine's existing handed-in
+  first-call logic (identification, then descent / vectors). The user's rule: a different airport
+  is a different controller, and the pilot is told so. The callsign comes from the destination's
+  station data (EPKT's OpenAIP data names it "Kraków Approach"; the user can rename it in the
+  wizard).
 - **Destination Tower without an Approach.** A handed-in IFR flight with no approach set is
   identified and given the expected approach for the active runway from the station's approach
   procedures (ILS if there is one, else the first published approach, else "expect visual approach
