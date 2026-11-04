@@ -74,15 +74,15 @@ SID, STAR и заходы сервер берёт из CIFP вашей уста�
 
 Пилот (за 10 минут до запуска):
 
-> Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand three five, information Alpha, IFR to Katowice, request clearance
+> Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand niner romeo, information Alpha, IFR to Katowice, request clearance
 
 Delivery (ВПП 25):
 
-> Sierra Papa Alpha Bravo Charlie, cleared to Katowice, SUDOL two Juliett departure, climb altitude five thousand feet, squawk four two zero one
+> Sierra Papa Alpha Bravo Charlie, cleared to Katowice, SUDOL two Juliett departure, climb flight level one zero zero, squawk four two zero one
 
 Пилот читает обратно и ставит код 4201:
 
-> Cleared to Katowice, Sudol two Juliett departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie
+> Cleared to Katowice, Sudol two Juliett departure, climb flight level one zero zero, squawk four two zero one, Sierra Bravo Charlie
 
 Если вы прочитаете SID не тот (например, `Sudol one Foxtrot` вместо `two Juliett`), Delivery ответит:
 
@@ -100,11 +100,11 @@ Delivery (ВПП 25):
 
 Вне часов Delivery (например, 23:00 UTC) Delivery молчит. Вызовите Ground — он сам выдаёт разрешение (`scenarios/epkk-ifr-clearance-night.toml`):
 
-> Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand three five, information Alpha, IFR to Katowice, request clearance
+> Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand niner romeo, information Alpha, IFR to Katowice, request clearance
 
 Ground:
 
-> Sierra Papa Alpha Bravo Charlie, cleared to Katowice, SUDOL two Juliett departure, climb altitude five thousand feet, squawk four two zero one
+> Sierra Papa Alpha Bravo Charlie, cleared to Katowice, SUDOL two Juliett departure, climb flight level one zero zero, squawk four two zero one
 
 После квитанции Ground ответит `readback correct` и без передачи на другую частоту.
 
@@ -112,7 +112,7 @@ Ground:
 
 Пилот:
 
-> Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand three five, information Alpha, request start up
+> Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand niner romeo, information Alpha, request start up
 
 Ground:
 
@@ -128,13 +128,13 @@ Ground:
 
 Ground (ВПП 25):
 
-> Sierra Bravo Charlie, taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five
+> Sierra Bravo Charlie, taxi to holding point runway two five via Zulu four, Zulu five, Alpha, hold short runway two five
 
 Пилот читает обратно и переводит транспондер в ALT:
 
-> Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, Sierra Bravo Charlie
+> Taxi to holding point runway two five via Zulu four, Zulu five, Alpha, hold short runway two five, Sierra Bravo Charlie
 
-На ВПП 07 путь другой: `via Bravo four, Bravo three, Bravo two, Bravo one, Foxtrot, hold short runway zero seven`.
+На ВПП 07 путь другой: Ground назовёт его по таблице руления станции.
 
 Перед ВПП Ground передаёт на Tower:
 
@@ -170,13 +170,13 @@ Ground (ВПП 25):
 
 Первый вызов:
 
-> Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing five thousand feet
+> Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing flight level one zero zero
 
 Approach:
 
 > Sierra Papa Alpha Bravo Charlie, identified
 
-Набирайте 5000 ft по SID (ограничения SID выше 5000 ft не действуют, вы остановитесь на 5000). Когда вы прошли первый поворот SID и набираете эшелон, Approach выдаёт срезку:
+Набирайте эшелон 100 (FL100) по SID: разрешение берёт самое высокое ограничение «на этом уровне или выше» из SID (у SUDOL 2J и SUDOL 1F это FL100), потолки SID его ограничивают. Когда вы прошли первый поворот SID и набираете эшелон, Approach выдаёт срезку:
 
 > Sierra Bravo Charlie, proceed direct Katowice
 
@@ -184,7 +184,7 @@ Approach:
 
 > Direct Katowice, Sierra Bravo Charlie
 
-Примерно за 20 NM до EPKT:
+Примерно за 20 NM до EPKT (когда загружена только станция EPKK):
 
 > Sierra Bravo Charlie, descend to altitude three thousand feet, QNH one zero one three
 
@@ -192,7 +192,21 @@ Approach:
 
 > Descend three thousand feet, QNH one zero one three, Sierra Bravo Charlie
 
-За 10 NM до EPKT Approach передаёт вас на Katowice Tower:
+Если загружены обе станции (EPKK и EPKT), за 30 NM до EPKT Approach передаёт вас диспетчеру Approach станции EPKT. Передача всегда объявляется и читается обратно, даже когда частота та же (121.075 у обеих станций); 20-мильного снижения у вылетной станции в этом случае нет.
+
+> Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five
+
+Пилот:
+
+> Approach one two one decimal zero seven five, Sierra Bravo Charlie
+
+Это Approach станции EPKT. Вызовите его (частота та же, переставлять COM1 не нужно):
+
+> Kraków Approach, Sierra Papa Alpha Bravo Charlie, descending, inbound to Katowice
+
+Если на первый вызов принятого борта нечего ответить, диспетчер говорит `Kraków Approach, roger`, а не `say again`.
+
+Если у EPKT нет Approach, за 10 NM до EPKT вас передаёт Katowice Tower:
 
 > Sierra Bravo Charlie, contact Katowice Tower one two niner decimal two five five
 
@@ -204,11 +218,7 @@ Approach:
 
 > Katowice Tower, Sierra Papa Alpha Bravo Charlie, descending three thousand feet, inbound to Katowice
 
-Katowice Tower:
-
-> Sierra Papa Alpha Bravo Charlie, identified
-
-На этом полёт 1 закончен: Katowice Tower — граничная станция, дальнейшего обслуживания у неё нет. Посадка в EPKT в этой версии не моделируется.
+Katowice Tower опознаёт борт, называет ожидаемый заход («expect ILS approach runway two seven, report established»; без захода по приборам: «expect visual approach runway two seven, report final»), оставляет вас у себя, разрешает посадку и при уходе на второй круг ведёт набор и снова ожидаемый заход.
 
 ### Если уходите вне плана
 
@@ -234,11 +244,11 @@ EPKT как аэропорт в этой версии не моделирует�
 
 Пилот:
 
-> Krakow Approach, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, IFR, airborne Katowice, passing four thousand feet climbing five thousand feet, inbound Krakow, information Alpha
+> Krakow Approach, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, IFR, airborne Katowice, passing four thousand feet climbing flight level one zero zero, inbound Krakow, information Alpha
 
 Approach (борт уже внутри точек начала STAR, поэтому STAR не даётся, а даются векторы):
 
-> Sierra Papa Alpha Bravo Charlie, identified, turn left heading one zero five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two five
+> Sierra Papa Alpha Bravo Charlie, identified, turn left heading one zero five, climb flight level one zero zero, QNH one zero one three, expect ILS approach runway two five
 
 Пилот читает обратно и летит курсом 105 (HDG, магнитный):
 
@@ -296,21 +306,23 @@ Tower:
 
 Пилот:
 
-> Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five
+> Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand niner romeo
 
 Ground:
 
-> Sierra Papa Alpha Bravo Charlie, taxi to stand three five via Charlie, Bravo four
+> Sierra Papa Alpha Bravo Charlie, taxi to stand niner romeo via Alpha, Zulu five, Zulu four
 
 Пилот:
 
-> Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie
+> Taxi to stand niner romeo via Alpha, Zulu five, Zulu four, Sierra Bravo Charlie
 
 На стоянке:
 
-> Sierra Bravo Charlie, on stand three five
+> Sierra Bravo Charlie, on stand niner romeo
 
 Ground ответит `good day`.
+
+Если вызвать «request taxi» без названия стоянки, Ground ведёт на вашу собственную стоянку (без QNH и кода); если своей нет, он спросит `say stand`. Имена стоянок распознаются свободно: без учёта регистра, пробелов и ключевого слова («apron four golf alpha» = «APRON4 GA»); при одинаковых именах берётся ближайшая свободная; слова после имени (например, позывной) игнорируются.
 
 ### Вариант: прилёт по STAR с северо-запада
 
@@ -353,7 +365,7 @@ Information:
 
 Delivery:
 
-> Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand three five, information Alpha, VFR to Nowy Targ via Sierra, request clearance
+> Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, stand niner romeo, information Alpha, VFR to Nowy Targ via Sierra, request clearance
 
 > Sierra Papa Alpha Bravo Charlie, cleared to Nowy Targ, leave control zone via SIERRA, squawk four two zero one
 
