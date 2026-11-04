@@ -48,6 +48,7 @@ fn route_failures(ap: &Airport) -> Vec<String> {
             }
             let to = TaxiTarget::Stand {
                 name: st.name.clone(),
+                at: None,
             };
             if let Err(e) = g.route(ap, g.node_pos(hold).unwrap(), &to) {
                 failures.push(format!("hold {rwy} -> {}: {e}", st.name));

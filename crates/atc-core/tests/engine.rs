@@ -3913,10 +3913,21 @@ mod approach_departure {
         edit_procs: impl FnOnce(&mut Procedures),
         edit: impl FnOnce(&mut ProcedureSet),
     ) -> AtcEngine {
-        let ap = resolve_airport(&root(), "ZZZZ")
+        engine_airport(strictness, |_| {}, edit_procs, edit)
+    }
+
+    /// [`engine_full`] with the airport changed by `edit_ap`.
+    pub(super) fn engine_airport(
+        strictness: Strictness,
+        edit_ap: impl FnOnce(&mut Airport),
+        edit_procs: impl FnOnce(&mut Procedures),
+        edit: impl FnOnce(&mut ProcedureSet),
+    ) -> AtcEngine {
+        let mut ap = resolve_airport(&root(), "ZZZZ")
             .unwrap()
             .parse("ZZZZ")
             .unwrap();
+        edit_ap(&mut ap);
         let text = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/ZZZZ/procedures.toml"
@@ -4390,6 +4401,146 @@ mod approach_departure {
         lon: 10.0,
     };
 
+    /// ZZZZ with the `extra` stands added.
+    fn engine_with_stands(extra: &[(&str, LatLon)]) -> AtcEngine {
+        engine_airport(
+            Strictness::Standard,
+            |ap| {
+                for (name, pos) in extra {
+                    ap.stands.push(Stand {
+                        name: (*name).into(),
+                        pos: *pos,
+                        heading_deg: 0.0,
+                    });
+                }
+            },
+            |_| {},
+            |_| {},
+        )
+    }
+
+    /// 100 m east of Stand 1.
+    const NEAR_GA: LatLon = LatLon {
+        lat: 10.0012,
+        lon: 10.0009,
+    };
+    /// 300 m east of Stand 1.
+    const FAR_GA: LatLon = LatLon {
+        lat: 10.0012,
+        lon: 10.0027,
+    };
+
+    /// SPTST parked on Stand 1, ready to ask Ground for a stand.
+    fn parked_on_stand_1(e: &mut AtcEngine) {
+        let mut f = Flight {
+            t: 0.0,
+            pos: STAND_1,
+            alt: 100.0,
+            com1: GND,
+            rolling: true,
+            xpdr: None,
+            heard: Vec::new(),
+        };
+        f.step(e, 0.0, 0.0, 0.0, true);
+    }
+
+    /// A second aircraft stopped at `pos`.
+    fn other_aircraft_at(e: &mut AtcEngine, pos: LatLon) {
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new("SPOTH"),
+            aircraft_type: "C172".into(),
+        });
+        e.on_telemetry(AircraftState {
+            callsign: Callsign::new("SPOTH"),
+            t: SimTime(0.0),
+            pos,
+            alt_ft_msl: 100.0,
+            heading_deg: 0.0,
+            ias_kt: 0.0,
+            gs_kt: 0.0,
+            vs_fpm: 0.0,
+            on_ground: true,
+            com1_khz: GND,
+            xpdr_code: None,
+            xpdr_mode: None,
+            utc_s: None,
+            day_of_year: None,
+        });
+    }
+
+    /// A stand name heard with spaces, split letters or a keyword still finds the stand.
+    #[test]
+    fn stand_with_spaces_is_matched_loosely() {
+        for said in [
+            "apron four golf alpha",
+            "apron 4 GA",
+            "parking apron4 GA",
+            "stand apron4 ga",
+        ] {
+            let mut e = engine_with_stands(&[("APRON4 GA", NEAR_GA)]);
+            parked_on_stand_1(&mut e);
+            let out = items(&say(&mut e, GND, &format!("{CS}, request taxi to {said}")));
+            assert!(
+                matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "APRON4 GA"),
+                "{said}: {out:?}"
+            );
+        }
+    }
+
+    /// Of two stands with one name, the nearest free one: not the one another aircraft is on.
+    #[test]
+    fn duplicate_stand_names_pick_the_nearest_free() {
+        let mut e = engine_with_stands(&[("GA", NEAR_GA), ("GA", FAR_GA)]);
+        other_aircraft_at(&mut e, NEAR_GA);
+        parked_on_stand_1(&mut e);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to stand golf alpha"),
+        ));
+        assert!(matches!(out[0], AtcItem::Taxi { .. }), "{out:?}");
+        let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+        assert_eq!(
+            strip.taxi_target,
+            Some(atc_core::taxi::TaxiTarget::Stand {
+                name: "GA".into(),
+                at: Some(FAR_GA)
+            })
+        );
+        // Free again: the nearest.
+        let mut e = engine_with_stands(&[("GA", NEAR_GA), ("GA", FAR_GA)]);
+        parked_on_stand_1(&mut e);
+        say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to stand golf alpha"),
+        );
+        let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+        assert_eq!(
+            strip.taxi_target,
+            Some(atc_core::taxi::TaxiTarget::Stand {
+                name: "GA".into(),
+                at: Some(NEAR_GA)
+            })
+        );
+    }
+
+    /// An unknown stand is named without the keyword.
+    #[test]
+    fn unknown_stand_names_the_heard_stand() {
+        let mut e = engine();
+        parked_on_stand_1(&mut e);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to stand nine nine"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Unable(atc_phraseology::UnableReason::UnknownStand { stand }) if stand == "99"),
+            "{out:?}"
+        );
+    }
+
     /// The IFR departure `f` to Testville, read back throughout: transferred to Approach,
     /// identified, direct to Testville after ZZ002, the descent 20 NM out and the hand-off to
     /// Testville Tower 10 NM out, which identifies it.
@@ -4676,7 +4827,10 @@ mod approach_departure {
         assert!(e.take_vehicle_orders().is_empty());
         assert_eq!(
             e.strip(&cs).unwrap().taxi_target,
-            Some(atc_core::taxi::TaxiTarget::Stand { name: stand })
+            Some(atc_core::taxi::TaxiTarget::Stand {
+                name: stand,
+                at: None
+            })
         );
     }
 

@@ -6,6 +6,7 @@ use atc_phraseology::{AtcItem, FlightRules, PilotIntent, PilotMessage, TaxiTo, U
 
 use super::{AtcEngine, AtcOutput, standby};
 use crate::engine::stand::ON_STAND_M;
+use crate::engine::stand_match::display_heard;
 use crate::phase::FlightPhase;
 use crate::runway::RunwayUse;
 use crate::strip::{Role, RouteCrossing};
@@ -225,18 +226,25 @@ impl AtcEngine {
         let Some(pos) = self.last_pos(i) else {
             return standby();
         };
-        // A heard stand keeps the navdata spelling when it matches one.
-        let heard = stand.map(|s| {
-            self.airport
-                .stands
-                .iter()
-                .find(|st| st.name.eq_ignore_ascii_case(&s))
-                .map_or(s, |st| st.name.clone())
-        });
-        let Some(name) = heard.or_else(|| self.strips[i].home_stand.clone()) else {
-            return vec![AtcItem::SayStand];
+        // A heard stand is matched loosely and keeps the navdata spelling; one that matches
+        // nothing goes to the route as heard (keyword dropped), so the refusal names it.
+        let (name, at) = match stand {
+            Some(heard) => match self.resolve_stand(i, &heard) {
+                Some(k) => {
+                    let st = &self.airport.stands[k];
+                    (st.name.clone(), Some(st.pos))
+                }
+                None => (display_heard(&heard), None),
+            },
+            None => match self.strips[i].home_stand.clone() {
+                Some(home) => (home, None),
+                None => return vec![AtcItem::SayStand],
+            },
         };
-        let target = TaxiTarget::Stand { name: name.clone() };
+        let target = TaxiTarget::Stand {
+            name: name.clone(),
+            at,
+        };
         let route = match self.graph.route(&self.airport, pos, &target) {
             Ok(r) => r,
             Err(e) => return vec![unable(&e)],
@@ -294,11 +302,11 @@ impl AtcEngine {
                 ),
                 AtcItem::HoldShort(runway),
             ],
-            TaxiTarget::Stand { name } => {
+            TaxiTarget::Stand { name, at } => {
                 let mut items =
                     vec![self.taxi_item(i, TaxiTo::Stand { name: name.clone() }, &route)];
                 items.extend(
-                    self.stand_hint_at(i, &name)
+                    self.stand_hint_at(i, &name, at)
                         .filter(|(d, _)| *d <= STAND_HINT_M && *d > ON_STAND_M)
                         .map(|(_, hint)| hint),
                 );
