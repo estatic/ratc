@@ -63,7 +63,7 @@ use std::ops::RangeInclusive;
 use atc_geo::{LatLon, RunwayFrame, distance_m};
 use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::{Airport, Destination};
-use atc_navdata::procedures::{PositionDef, Procedures};
+use atc_navdata::procedures::{AdjacentUnit, PositionDef, Procedures};
 use atc_phraseology::{
     AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
     PilotIntent, PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_in, render,
@@ -202,6 +202,10 @@ pub struct AtcEngine {
     procedure_set: Option<ProcedureSet>,
     /// Airports a flight may be cleared to.
     destinations: std::sync::Arc<[Destination]>,
+    /// The Approach positions of the other stations loaded with this one
+    /// ([`AtcEngine::set_station_units`]): an IFR flight bound for one of their airports is
+    /// handed to it. Not in `procs.adjacent`: nothing here emulates them.
+    station_units: Vec<AdjacentUnit>,
     /// Words the parser knows besides the callsigns: VFR points, procedure fixes, places.
     vocab: Vocabulary,
     /// Sim UTC time of day (s) and day of year of the latest telemetry sample that had a
@@ -301,6 +305,7 @@ impl AtcEngine {
             next_vehicle: 0,
             procedure_set: None,
             destinations: std::sync::Arc::from([]),
+            station_units: Vec::new(),
             vocab,
             clock: (None, None),
             now: 0.0,
@@ -415,12 +420,36 @@ impl AtcEngine {
     /// where one is required, else any acknowledgement) or called the unit: the flight is to
     /// be taken by the station working that frequency. `None` before, for handovers between
     /// this engine's own positions, for a release without a unit, and once the flight was
-    /// taken (exported).
+    /// taken (exported). For a destination's Approach or Tower,
+    /// [`AtcEngine::handoff_airport`] names the station to take it.
     pub fn handoff_target(&self, cs: &Callsign) -> Option<u32> {
         let strip = self.strip(cs)?;
-        strip.handed_off_khz.filter(|_| {
-            strip.handed_off.is_some() && strip.handoff_acked && strip.pending_readback.is_none()
-        })
+        strip
+            .handed_off_khz
+            .filter(|_| Self::handoff_answered(strip))
+    }
+
+    /// The ICAO code of the airport whose unit (destination Approach or Tower) flight `cs`
+    /// was handed off to, under the conditions of [`AtcEngine::handoff_target`]: the network
+    /// gives the flight to that airport's station even on a frequency this one works too.
+    pub fn handoff_airport(&self, cs: &Callsign) -> Option<String> {
+        let strip = self.strip(cs)?;
+        strip
+            .handed_off_airport
+            .clone()
+            .filter(|_| strip.handed_off_khz.is_some() && Self::handoff_answered(strip))
+    }
+
+    fn handoff_answered(strip: &Strip) -> bool {
+        strip.handed_off.is_some() && strip.handoff_acked && strip.pending_readback.is_none()
+    }
+
+    /// The Approach positions of the other stations loaded with this one (`kind`
+    /// [`AdjacentKind::Approach`](atc_navdata::procedures::AdjacentKind::Approach),
+    /// `airport` set): an IFR flight bound for one of their airports is handed to its
+    /// Approach within 30 NM of it, instead of to the destination's tower.
+    pub fn set_station_units(&mut self, units: Vec<AdjacentUnit>) {
+        self.station_units = units;
     }
 
     /// New weather: issues the first ATIS, or a new letter on a significant change.

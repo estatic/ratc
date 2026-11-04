@@ -412,6 +412,162 @@ fn handoff_moves_flight_with_plan() {
     assert_eq!(strip.squawk, Some(4601));
 }
 
+/// Testville with an Approach of the same callsign and frequency as Zeta's (the EPKK/EPKT case).
+const TESTVILLE_SAME_APP: &str =
+    "\n[[positions]]\nrole = \"Approach\"\ncallsign = \"Zeta Approach\"\nkhz = 119100\n";
+/// The frequency of [`TESTVILLE_OWN_APP`] (`TESTVILLE_APP` is the en-route tests' 119.900).
+const TESTVILLE_OWN_APP_KHZ: u32 = 120_400;
+const TESTVILLE_OWN_APP: &str =
+    "\n[[positions]]\nrole = \"Approach\"\ncallsign = \"Testville Approach\"\nkhz = 120400\n";
+/// 2 s of flight northbound at 150 kt, in degrees of latitude.
+const STEP_LAT: f64 = 150.0 / 3600.0 * 2.0 / 60.0;
+
+/// The first `Contact` item of `out`, with the station that said it.
+fn contact_in(out: &[AtcOutput]) -> Option<(String, String, u32)> {
+    out.iter().find_map(|o| {
+        o.message.items.iter().find_map(|i| match i {
+            AtcItem::Contact { station, khz } => Some((o.station.clone(), station.clone(), *khz)),
+            _ => None,
+        })
+    })
+}
+
+/// ZZZY with `zzzy_extra` and ZZZZ (Testville a destination); an IFR flight bound for
+/// `dest` handed in to ZZZZ's Approach and identified at `lat`, northbound.
+fn identified_ifr(zzzy_extra: &str, dest: &str, lat: f64) -> (Network, Callsign) {
+    let net = Network::new(vec![
+        fixture_station("ZZZY", zzzy_extra),
+        zeta_with_testville(),
+    ]);
+    net.on_weather(&frame(vec![]));
+    let c = join(&net, "SPTST");
+    let mut h = ifr_to_testville(&c);
+    h.plan.as_mut().unwrap().destination = dest.into();
+    net.stations()[ZZZZ].engine.lock().unwrap().import_flight(h);
+    net.on_telemetry(sample(&c, 0.0, at(lat), 2000.0, 150.0, ZETA_APP));
+    let out = net.on_transmission(
+        &c,
+        ZETA_APP,
+        "Zeta Approach, Sierra Papa Tango Sierra Tango, two thousand feet",
+        Lang::En,
+        SimTime(0.0),
+    );
+    assert_eq!(
+        out.first().map(|o| o.message.items[0].clone()),
+        Some(AtcItem::Identified),
+        "{out:?}"
+    );
+    assert_eq!(contact_in(&out), None, "{out:?}");
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    (net, c)
+}
+
+/// Flies the flight north from `lat` (2 s steps at 150 kt, on ZZZZ's Approach) until a
+/// contact: (who said it, the unit, its frequency), the latitude and time reached.
+fn fly_to_contact(net: &Network, c: &Callsign, mut lat: f64) -> ((String, String, u32), f64, f64) {
+    let mut t = 0.0;
+    loop {
+        assert!(lat < 10.5, "no hand-off before Testville");
+        t += 2.0;
+        lat += STEP_LAT;
+        let out = net.on_telemetry(sample(c, t, at(lat), 2000.0, 150.0, ZETA_APP));
+        if let Some(contact) = contact_in(&out) {
+            return (contact, lat, t);
+        }
+    }
+}
+
+/// After the move to ZZZY: the first call on `khz` is answered by ZZZY, and 5 more samples
+/// bring no hand-off back (nor one to ZZZZ's Approach on the shared frequency).
+fn first_call_to_testville(net: &Network, c: &Callsign, khz: u32, call: &str, lat: f64, t: f64) {
+    // The client's telemetry goes on (1 Hz): the new station tracks it before the call.
+    net.on_telemetry(sample(c, t + 0.8, at(lat), 2000.0, 150.0, khz));
+    let out = net.on_transmission(c, khz, call, Lang::En, SimTime(t + 1.0));
+    assert!(!out.is_empty());
+    assert!(
+        out.iter()
+            .all(|o| !o.message.items.contains(&AtcItem::SayAgain)),
+        "{out:?}"
+    );
+    assert_eq!(net.owner(c), Some(Owner::Station(ZZZY)));
+    for k in 1..=5 {
+        let t = t + 1.0 + 2.0 * f64::from(k);
+        let lat = lat + STEP_LAT * f64::from(k);
+        let out = net.on_telemetry(sample(c, t, at(lat), 2000.0, 150.0, khz));
+        assert_eq!(contact_in(&out), None, "{out:?}");
+    }
+    assert_eq!(net.owner(c), Some(Owner::Station(ZZZY)));
+}
+
+/// The destination's Approach on the departure's frequency, under the same callsign: the
+/// hand-off is still said and read back, and the flight moves to the destination station.
+#[test]
+fn destination_approach_same_frequency_takes_flight() {
+    let (net, c) = identified_ifr(TESTVILLE_SAME_APP, "ZZZY", 10.2);
+    let ((said_by, unit, khz), lat, t) = fly_to_contact(&net, &c, 10.2);
+    assert_eq!(
+        (said_by.as_str(), unit.as_str(), khz),
+        ("Zeta Approach", "Zeta Approach", ZETA_APP)
+    );
+    assert_ne!(khz, TESTVILLE_TWR);
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    let rb = "contact one one niner decimal one, Sierra Papa Tango Sierra Tango";
+    net.on_transmission(&c, ZETA_APP, rb, Lang::En, SimTime(t + 0.5));
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
+    assert!(!registered(&net, ZZZZ, &c));
+    let call = "Zeta Approach, Sierra Papa Tango Sierra Tango, two thousand feet";
+    first_call_to_testville(&net, &c, ZETA_APP, call, lat, t);
+}
+
+/// The destination's Approach on its own frequency: contact it there.
+#[test]
+fn destination_approach_other_frequency_takes_flight() {
+    let (net, c) = identified_ifr(TESTVILLE_OWN_APP, "ZZZY", 10.2);
+    let ((said_by, unit, khz), lat, t) = fly_to_contact(&net, &c, 10.2);
+    assert_eq!(
+        (said_by.as_str(), unit.as_str(), khz),
+        ("Zeta Approach", "Testville Approach", TESTVILLE_OWN_APP_KHZ)
+    );
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    let rb = "contact one two zero decimal four, Sierra Papa Tango Sierra Tango";
+    net.on_transmission(&c, ZETA_APP, rb, Lang::En, SimTime(t + 0.5));
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
+    assert!(!registered(&net, ZZZZ, &c));
+    let call = "Testville Approach, Sierra Papa Tango Sierra Tango, two thousand feet";
+    first_call_to_testville(&net, &c, TESTVILLE_OWN_APP_KHZ, call, lat, t);
+}
+
+/// No hand-off to the destination's Approach farther than 30 NM out.
+#[test]
+fn destination_approach_waits_for_30_nm() {
+    let (net, c) = identified_ifr(TESTVILLE_OWN_APP, "ZZZY", 9.9);
+    let ((_, unit, khz), lat, _) = fly_to_contact(&net, &c, 9.9);
+    assert!(lat >= 10.0, "contact at lat {lat}");
+    assert!(lat <= 10.02, "contact at lat {lat}");
+    assert_eq!(
+        (unit.as_str(), khz),
+        ("Testville Approach", TESTVILLE_OWN_APP_KHZ)
+    );
+}
+
+/// Another station's Approach on the same unit takes only the flights bound for its airport.
+#[test]
+fn approach_hand_off_only_for_the_flights_destination() {
+    let (net, c) = identified_ifr(TESTVILLE_SAME_APP, "ZZZF", 10.2);
+    let mut lat = 10.2;
+    let mut t = 0.0;
+    while lat < 10.45 {
+        t += 2.0;
+        lat += STEP_LAT;
+        let out = net.on_telemetry(sample(&c, t, at(lat), 2000.0, 150.0, ZETA_APP));
+        assert!(
+            contact_in(&out).is_none_or(|(_, _, khz)| khz != ZETA_APP),
+            "{out:?}"
+        );
+        assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    }
+}
+
 /// Calling the next station without reading back the contact moves the flight on that call.
 #[test]
 fn direct_call_to_other_station_moves_flight() {

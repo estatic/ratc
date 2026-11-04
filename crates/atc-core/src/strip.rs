@@ -246,6 +246,10 @@ pub struct Strip {
     /// hand-off (`handed_off`); `None` without one (also a release without a unit).
     #[serde(default)]
     pub handed_off_khz: Option<u32>,
+    /// The ICAO code of the airport whose unit (destination Approach or Tower) the flight was
+    /// handed off to; `None` otherwise. Cleared with `handed_off_khz`.
+    #[serde(default)]
+    pub handed_off_airport: Option<String>,
     /// The flight was handed in from another station's engine and has not called yet: its
     /// first call is answered as a flight handed over.
     #[serde(default)]
@@ -316,6 +320,7 @@ impl Strip {
             code_with_clearance: false,
             requested_runway: None,
             handed_off_khz: None,
+            handed_off_airport: None,
             handed_in: false,
             handoff_acked: false,
             callsign_misses: 0,
@@ -361,6 +366,7 @@ impl Strip {
         self.code_with_clearance = false;
         self.requested_runway = None;
         self.handed_off_khz = None;
+        self.handed_off_airport = None;
         self.handed_in = false;
         self.handoff_acked = false;
     }
