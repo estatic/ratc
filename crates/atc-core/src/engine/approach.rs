@@ -467,7 +467,7 @@ impl AtcEngine {
     }
 
     /// The default approach to `runway`: ILS, else RNAV; VOR/DME only when it is the only one.
-    fn default_approach(&self, runway: &str) -> Option<ApproachKind> {
+    pub(super) fn default_approach(&self, runway: &str) -> Option<ApproachKind> {
         [ApproachKind::Ils, ApproachKind::Rnav, ApproachKind::VorDme]
             .into_iter()
             .find(|&k| self.has_approach(runway, k))

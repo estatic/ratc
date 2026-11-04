@@ -6786,8 +6786,8 @@ mod handover {
     use atc_phraseology::{ApproachKind, FlightRules};
 
     use super::approach_departure::{
-        AIRBORNE, ALFAX, APP, CLIMB, FARLAND, Flight, TWR, ZZ002, contact_of, departed, engine,
-        engine_full, engine_with_procs, never,
+        AIRBORNE, ALFAX, APP, CLIMB, FARLAND, Flight, GND, THR_27, TWR, ZZ002, contact_of,
+        departed, engine, engine_full, engine_with_procs, never,
     };
     use super::*;
 
@@ -6930,6 +6930,108 @@ mod handover {
         assert!(e.remove_pilot(&cs()));
         let json = serde_json::to_string(&e.snapshot()).unwrap();
         assert!(!json.contains("SPTST"), "{json}");
+    }
+
+    /// An IFR arrival handed in to Tower (its station had no Approach to take it): Tower
+    /// names itself, gives the approach to expect and keeps the flight to the landing.
+    #[test]
+    fn handed_in_ifr_inbound_on_tower_expects_the_approach() {
+        let mut e = engine();
+        e.import_flight(handover(ifr_plan("ZZZZ", "Zeta", 3000)));
+        let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
+        let mut f = airborne(&mut e, west, 3000.0, 90.0);
+        f.com1 = TWR;
+        let out = say(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, three thousand feet",
+        );
+        let got = items(&out);
+        assert_eq!(
+            got.first(),
+            Some(&AtcItem::Station {
+                station: "Zeta Tower".into()
+            }),
+            "{out:?}"
+        );
+        assert!(
+            matches!(
+                got.get(1),
+                Some(AtcItem::ExpectApproach {
+                    kind: ApproachKind::Ils,
+                    ..
+                })
+            ),
+            "{got:?}"
+        );
+        assert_eq!(got.get(2), Some(&AtcItem::ReportEstablished), "{got:?}");
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.owner, Role::Tower);
+        assert!(s.identified);
+        assert!(s.tower_inbound);
+        assert_eq!(
+            s.plan.as_ref().unwrap().approach,
+            Some((ApproachKind::Ils, "27".into()))
+        );
+        // No bounce to Approach.
+        for _ in 0..5 {
+            f.step(&mut e, 90.0, 150.0, 0.0, false);
+        }
+        assert!(
+            f.heard
+                .iter()
+                .all(|o| contact_of(o).is_none_or(|(_, khz)| khz != APP)),
+            "{:?}",
+            f.heard
+        );
+        assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        // Established on the ILS 27 final: cleared to land.
+        f.pos = destination(THR_27, 90.0, 4.0 * M_PER_NM);
+        f.alt = 1300.0;
+        for _ in 0..3 {
+            f.step(&mut e, 270.0, 90.0, -500.0, false);
+        }
+        let out = say(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
+        );
+        assert!(
+            items(&out)
+                .iter()
+                .any(|i| matches!(i, AtcItem::ClearedLand { .. })),
+            "{out:?} (phase {:?})",
+            e.strip(&cs()).unwrap().phase
+        );
+    }
+
+    /// A handed-in flight's first call that no handler answers is acknowledged, never
+    /// answered "say again".
+    #[test]
+    fn handed_in_first_call_is_never_say_again() {
+        let mut e = engine();
+        let mut plan = ifr_plan("ZZZZ", "Zeta", 2000);
+        plan.ifr = false;
+        let mut h = handover(plan);
+        h.rules = Some(FlightRules::Vfr);
+        e.import_flight(h);
+        let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
+        airborne(&mut e, west, 2000.0, 90.0);
+        let out = say(
+            &mut e,
+            GND,
+            "Zeta Ground, Sierra Papa Tango Sierra Tango, two thousand feet",
+        );
+        assert_eq!(
+            items(&out),
+            vec![
+                AtcItem::Station {
+                    station: "Zeta Ground".into()
+                },
+                AtcItem::Roger
+            ],
+            "{out:?}"
+        );
     }
 
     /// An IFR flight bound for ZZZZ handed in from the station it departed: its first call

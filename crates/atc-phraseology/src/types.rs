@@ -398,6 +398,10 @@ pub enum AtcItem {
     ThisIs {
         station: String,
     },
+    /// "<station>": the controller names itself on a first contact.
+    Station {
+        station: String,
+    },
     AtisCurrent(char),
     Vacate {
         via: Option<String>,
@@ -477,6 +481,11 @@ pub enum AtcItem {
     },
     ExpectApproach {
         kind: ApproachKind,
+        runway: String,
+    },
+    /// "Expect visual approach runway <runway>": an IFR arrival at an airport without
+    /// published approaches.
+    ExpectVisualApproach {
         runway: String,
     },
     ClearedApproach {

@@ -279,6 +279,7 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             out.push("say again".into());
         }
         AtcItem::ThisIs { station } => out.push(format!("this is {station}")),
+        AtcItem::Station { station } => out.push(station.clone()),
         AtcItem::AtisCurrent(c) => out.push(format!("information {} is current", spell_char(*c))),
         AtcItem::Vacate { via } => match via {
             Some(t) => out.push(format!("vacate via {}", spell(t))),
@@ -381,6 +382,10 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         AtcItem::ClearedApproach { kind, runway } => out.push(format!(
             "cleared {} approach runway {}",
             approach_words(*kind),
+            runway_words(runway)
+        )),
+        AtcItem::ExpectVisualApproach { runway } => out.push(format!(
+            "expect visual approach runway {}",
             runway_words(runway)
         )),
         AtcItem::ReportEstablished => out.push("report established".into()),
@@ -565,5 +570,41 @@ mod tests {
             render_en(&msg, true),
             "November Sierra Papa, use your callsign in every transmission"
         );
+    }
+
+    #[test]
+    fn station_named_after_the_callsign() {
+        let msg = AtcMessage {
+            to: Some(Callsign::new("SPTST")),
+            from: "Katowice Tower".into(),
+            items: vec![
+                AtcItem::Station {
+                    station: "Katowice Tower".into(),
+                },
+                AtcItem::ExpectApproach {
+                    kind: ApproachKind::Ils,
+                    runway: "27".into(),
+                },
+                AtcItem::ReportEstablished,
+            ],
+            lang: Lang::En,
+        };
+        assert_eq!(
+            render_en(&msg, true),
+            "Sierra Papa Tango Sierra Tango, Katowice Tower, expect ILS approach runway two \
+             seven, report established"
+        );
+    }
+
+    #[test]
+    fn expect_visual_approach() {
+        let mut out = Vec::new();
+        item_parts(
+            &AtcItem::ExpectVisualApproach {
+                runway: "18".into(),
+            },
+            &mut out,
+        );
+        assert_eq!(out, vec!["expect visual approach runway one eight"]);
     }
 }

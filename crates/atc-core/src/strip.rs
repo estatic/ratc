@@ -254,6 +254,10 @@ pub struct Strip {
     /// first call is answered as a flight handed over.
     #[serde(default)]
     pub handed_in: bool,
+    /// Tower keeps this IFR arrival (handed in to a station without Approach); never handed
+    /// to Approach.
+    #[serde(default)]
+    pub tower_inbound: bool,
     /// The pilot has answered (read back or acknowledged) since its hand-off to an adjacent
     /// unit, or called the unit.
     #[serde(default)]
@@ -322,6 +326,7 @@ impl Strip {
             handed_off_khz: None,
             handed_off_airport: None,
             handed_in: false,
+            tower_inbound: false,
             handoff_acked: false,
             callsign_misses: 0,
             heard: 0,
@@ -368,6 +373,7 @@ impl Strip {
         self.handed_off_khz = None;
         self.handed_off_airport = None;
         self.handed_in = false;
+        self.tower_inbound = false;
         self.handoff_acked = false;
     }
 

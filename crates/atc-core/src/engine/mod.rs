@@ -841,11 +841,18 @@ impl AtcEngine {
             Some(_) => {}
             None => strip.owner = role,
         }
-        // A flight handed in is answered as handed over by Approach; elsewhere its call is
-        // served as it is.
+        // A flight handed in is answered as handed over by Approach, or by Tower when it is
+        // an IFR arrival here; elsewhere its call is served as it is.
+        let was_handed_in = strip.handed_in;
         if role != Role::Approach {
             strip.handed_in = false;
         }
+        if role == Role::Tower && was_handed_in && self.is_tower_inbound_call(i) {
+            let mut items = self.handed_in_ifr_inbound(i);
+            self.greet_back(i, role, msg.greeting, &mut items);
+            return self.transmit(i, role, items);
+        }
+        let strip = &mut self.strips[i];
         // Taxi help replaces an open taxi clearance with the route from where it is now; a
         // follow-me request and an on-stand report are answered whatever is open.
         let help = role == Role::Ground
@@ -921,6 +928,14 @@ impl AtcEngine {
         }
         if items.is_empty() {
             let reply = match self.content(i, &msg) {
+                // A handed-in flight's first call is understood as its first contact.
+                Content::Message if was_handed_in => {
+                    items.extend(self.position(role).map(|p| AtcItem::Station {
+                        station: p.callsign.clone(),
+                    }));
+                    items.push(AtcItem::Roger);
+                    None
+                }
                 Content::Message => Some(AtcItem::SayAgain),
                 Content::Call => Some(AtcItem::PassYourMessage),
                 Content::Acknowledgement => None,
@@ -1600,10 +1615,10 @@ impl AtcEngine {
             }
             (FlightPhase::TaxiIn, Role::Tower) => (Role::Tower, Role::Ground, Vec::new()),
             (FlightPhase::Airborne, Role::Tower)
-                if strip
-                    .plan
-                    .as_ref()
-                    .is_some_and(|p| p.ifr && (p.approach.is_none() || strip.missed_approach)) =>
+                if !strip.tower_inbound
+                    && strip.plan.as_ref().is_some_and(|p| {
+                        p.ifr && (p.approach.is_none() || strip.missed_approach)
+                    }) =>
             {
                 (Role::Tower, Role::Approach, Vec::new())
             }

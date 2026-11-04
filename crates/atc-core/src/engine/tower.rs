@@ -57,6 +57,55 @@ impl AtcEngine {
         }
     }
 
+    /// The first call of a flight handed in to Tower is that of an airborne IFR arrival
+    /// bound here without an approach yet (its station has no Approach to take it).
+    pub(super) fn is_tower_inbound_call(&self, i: usize) -> bool {
+        let strip = &self.strips[i];
+        strip.phase.is_airborne()
+            && strip.plan.as_ref().is_some_and(|p| {
+                p.ifr && p.destination == self.airport.icao && p.approach.is_none()
+            })
+    }
+
+    /// Tower takes a handed-in IFR arrival ([`AtcEngine::is_tower_inbound_call`]) and keeps
+    /// it: names itself, then the default approach to the runway in use and "report
+    /// established", or the visual approach and "report final" without a published one.
+    pub(super) fn handed_in_ifr_inbound(&mut self, i: usize) -> Vec<AtcItem> {
+        let runway = self.strips[i].runway.clone();
+        let kind = self.default_approach(&runway);
+        let mut items: Vec<AtcItem> = self
+            .position(Role::Tower)
+            .map(|p| AtcItem::Station {
+                station: p.callsign.clone(),
+            })
+            .into_iter()
+            .collect();
+        match kind {
+            Some(kind) => items.extend([
+                AtcItem::ExpectApproach {
+                    kind,
+                    runway: runway.clone(),
+                },
+                AtcItem::ReportEstablished,
+            ]),
+            None => items.extend([
+                AtcItem::ExpectVisualApproach {
+                    runway: runway.clone(),
+                },
+                AtcItem::Report(CircuitLeg::Final),
+            ]),
+        }
+        let strip = &mut self.strips[i];
+        if let (Some(kind), Some(plan)) = (kind, strip.plan.as_mut()) {
+            plan.approach = Some((kind, runway));
+        }
+        strip.owner = Role::Tower;
+        strip.identified = true;
+        strip.tower_inbound = true;
+        strip.expect_readback(&items, self.cfg.strictness, self.now);
+        items
+    }
+
     /// The pilot reports going around on his own ("going around"): an IFR arrival has missed
     /// the approach and goes back to Approach at once (contact Approach); any other aircraft
     /// is acknowledged ("roger").

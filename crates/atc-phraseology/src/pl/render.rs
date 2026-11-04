@@ -214,6 +214,7 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             out.push("powtórz".into());
         }
         AtcItem::ThisIs { station } => out.push(format!("tu {}", station_name(station, Lang::Pl))),
+        AtcItem::Station { station } => out.push(station_name(station, Lang::Pl)),
         AtcItem::AtisCurrent(c) => out.push(format!("aktualna informacja {}", spell_char(*c))),
         AtcItem::Vacate { via } => match via {
             Some(t) => out.push(format!("zwolnij pas drogą {}", spell(t))),
@@ -339,6 +340,7 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         | AtcItem::Heading { .. }
         | AtcItem::DirectTo { .. }
         | AtcItem::ExpectApproach { .. }
+        | AtcItem::ExpectVisualApproach { .. }
         | AtcItem::ClearedApproach { .. }
         | AtcItem::ReportEstablished
         | AtcItem::Identified
@@ -392,5 +394,17 @@ mod tests {
             out,
             vec!["używaj znaku wywoławczego w każdej korespondencji"]
         );
+    }
+
+    #[test]
+    fn station_in_polish() {
+        let mut out = Vec::new();
+        item_parts(
+            &AtcItem::Station {
+                station: "Katowice Tower".into(),
+            },
+            &mut out,
+        );
+        assert_eq!(out, vec!["Katowice Wieża"]);
     }
 }

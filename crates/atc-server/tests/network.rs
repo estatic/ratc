@@ -13,7 +13,7 @@ use atc_geo::LatLon;
 use atc_navdata::enroute::{EnrouteKind, EnrouteUnitDef, SectorDef};
 use atc_navdata::model::{Destination, FreqKind};
 use atc_navdata::procedures::PositionDef;
-use atc_phraseology::{AtcItem, Callsign, FlightRules, Lang};
+use atc_phraseology::{AtcItem, Callsign, CircuitLeg, FlightRules, Lang};
 use atc_proto::{CloudLayer, WeatherFrame};
 use atc_server::network::{Network, Owner};
 use atc_server::stations::LoadedStation;
@@ -490,13 +490,96 @@ fn first_call_to_testville(net: &Network, c: &Callsign, khz: u32, call: &str, la
         "{out:?}"
     );
     assert_eq!(net.owner(c), Some(Owner::Station(ZZZY)));
+    no_bounce(net, c, khz, lat, t + 1.0);
+}
+
+/// 5 samples on `khz` after `t` from `lat` northbound: no hand-off, release or frequency
+/// change is said, and the flight stays with ZZZY only.
+fn no_bounce(net: &Network, c: &Callsign, khz: u32, lat: f64, t: f64) {
     for k in 1..=5 {
-        let t = t + 1.0 + 2.0 * f64::from(k);
+        let t = t + 2.0 * f64::from(k);
         let lat = lat + STEP_LAT * f64::from(k);
         let out = net.on_telemetry(sample(c, t, at(lat), 2000.0, 150.0, khz));
         assert_eq!(contact_in(&out), None, "{out:?}");
+        assert!(
+            out.iter().all(|o| !o.message.items.iter().any(|i| matches!(
+                i,
+                AtcItem::RadarServiceTerminated | AtcItem::FrequencyChangeApproved
+            ))),
+            "{out:?}"
+        );
     }
     assert_eq!(net.owner(c), Some(Owner::Station(ZZZY)));
+    assert!(!registered(net, ZZZZ, c));
+}
+
+/// ZZZY (Tower only) and ZZZZ; an IFR flight bound for ZZZY handed in to ZZZZ's Approach,
+/// identified and flown north until Approach hands it to Testville Tower (not read back
+/// yet): the network, the flight, the latitude and time reached.
+fn handed_to_testville_tower() -> (Network, Callsign, f64, f64) {
+    let (net, c) = identified_ifr("", "ZZZY", 10.2);
+    let ((said_by, unit, khz), lat, t) = fly_to_contact(&net, &c, 10.2);
+    assert_eq!(
+        (said_by.as_str(), unit.as_str(), khz),
+        ("Zeta Approach", "Testville Tower", TESTVILLE_TWR)
+    );
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    (net, c, lat, t)
+}
+
+/// The destination has a Tower only: it takes the IFR arrival handed to it, names itself
+/// and gives the visual approach, and keeps the flight.
+#[test]
+fn destination_tower_accepts_handed_in_ifr() {
+    let (net, c, lat, t) = handed_to_testville_tower();
+    let rb = "contact one one eight decimal five, Sierra Papa Tango Sierra Tango";
+    net.on_transmission(&c, ZETA_APP, rb, Lang::En, SimTime(t + 0.5));
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
+    assert!(!registered(&net, ZZZZ, &c));
+    net.on_telemetry(sample(&c, t + 0.8, at(lat), 2000.0, 150.0, TESTVILLE_TWR));
+    let call = "Testville Tower, Sierra Papa Tango Sierra Tango, two thousand feet";
+    let out = net.on_transmission(&c, TESTVILLE_TWR, call, Lang::En, SimTime(t + 1.0));
+    assert_eq!(stations(&out), vec!["Testville Tower"], "{out:?}");
+    let runway = net.stations()[ZZZY]
+        .engine
+        .lock()
+        .unwrap()
+        .strip(&c)
+        .unwrap()
+        .runway
+        .clone();
+    assert!(runway == "18" || runway == "36", "{runway}");
+    assert_eq!(
+        out[0].message.items,
+        vec![
+            AtcItem::Station {
+                station: "Testville Tower".into()
+            },
+            AtcItem::ExpectVisualApproach { runway },
+            AtcItem::Report(CircuitLeg::Final),
+        ],
+        "{out:?}"
+    );
+    no_bounce(&net, &c, TESTVILLE_TWR, lat, t + 1.0);
+}
+
+/// A hand-off read back with the wrong frequency (Standard strictness) keeps the flight
+/// with the station that handed it off.
+#[test]
+fn handoff_wrong_frequency_readback_keeps_flight() {
+    let (net, c, _, t) = handed_to_testville_tower();
+    let rb = "contact one one eight decimal seven, Sierra Papa Tango Sierra Tango";
+    net.on_transmission(&c, ZETA_APP, rb, Lang::En, SimTime(t + 0.5));
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
+    assert!(registered(&net, ZZZZ, &c));
+    assert_eq!(
+        net.stations()[ZZZZ]
+            .engine
+            .lock()
+            .unwrap()
+            .handoff_target(&c),
+        None
+    );
 }
 
 /// The destination's Approach on the departure's frequency, under the same callsign: the
