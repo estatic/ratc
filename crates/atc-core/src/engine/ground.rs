@@ -61,6 +61,16 @@ impl AtcEngine {
                 self.request_departure_runway(i, runway)
             }
             PilotIntent::RequestStartUp { push } => self.start_up(i, *push),
+            // After landing "request taxi" means taxi to a stand. A new departure starts
+            // from `Parked` ("request start up"), so `TaxiIn` never heads to a holding point.
+            PilotIntent::RequestTaxi { .. }
+                if matches!(
+                    self.strips[i].phase,
+                    FlightPhase::TaxiIn | FlightPhase::Landed
+                ) =>
+            {
+                self.taxi_to_stand(i, None)
+            }
             PilotIntent::RequestTaxi { atis, .. } => {
                 self.taxi_to_holding_point(i, *atis, Vec::new())
             }
@@ -125,18 +135,11 @@ impl AtcEngine {
     ) -> Vec<AtcItem> {
         if !matches!(
             self.strips[i].phase,
-            FlightPhase::Parked | FlightPhase::TaxiOut | FlightPhase::TaxiIn
+            FlightPhase::Parked | FlightPhase::TaxiOut
         ) {
             return Vec::new();
         }
-        let amended = if matches!(
-            self.strips[i].phase,
-            FlightPhase::Parked | FlightPhase::TaxiOut
-        ) {
-            self.refresh_runway(i)
-        } else {
-            None
-        };
+        let amended = self.refresh_runway(i);
         let (Some(atis), Some(pos)) = (
             self.atis.as_ref().map(|a| a.current().clone()),
             self.last_pos(i),

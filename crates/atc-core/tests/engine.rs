@@ -4580,6 +4580,64 @@ mod approach_departure {
         assert_eq!(strip.plan, None);
     }
 
+    /// An aircraft that landed and taxis in north of Stand 1, optionally first seen on it.
+    fn taxiing_in_near_stand_1(e: &mut AtcEngine, home_stand: bool) {
+        if home_stand {
+            let mut parked = Flight {
+                t: 0.0,
+                pos: STAND_1,
+                alt: 100.0,
+                com1: GND,
+                rolling: true,
+                xpdr: None,
+                heard: Vec::new(),
+            };
+            parked.step(e, 0.0, 0.0, 0.0, true);
+        }
+        let mut f = departed_at(e, "Testville", true, "flight level eight zero", 10.0);
+        fly_to_testville_tower(e, &mut f);
+        f.pos = LatLon {
+            lat: STAND_1.lat + 0.0005,
+            lon: STAND_1.lon,
+        };
+        f.alt = 800.0;
+        f.rolling = true;
+        for _ in 0..3 {
+            f.step(e, 0.0, 0.0, 0.0, true);
+        }
+        let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+        assert_eq!(strip.phase, FlightPhase::TaxiIn);
+    }
+
+    /// After landing "request taxi" is a taxi to the home stand, not to a holding point,
+    /// and carries no QNH, squawk or ATIS.
+    #[test]
+    fn request_taxi_after_landing_goes_to_the_home_stand() {
+        let mut e = engine();
+        taxiing_in_near_stand_1(&mut e, true);
+        let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "Stand 1"),
+            "{out:?}"
+        );
+        assert!(
+            !out.iter().any(|i| matches!(
+                i,
+                AtcItem::Qnh(_) | AtcItem::Squawk(_) | AtcItem::AtisCurrent(_)
+            )),
+            "{out:?}"
+        );
+    }
+
+    /// Without a home stand, "request taxi" after landing asks which stand.
+    #[test]
+    fn request_taxi_after_landing_without_a_stand_says_stand() {
+        let mut e = engine();
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
+        assert_eq!(out, vec![AtcItem::SayStand], "{out:?}");
+    }
+
     /// M-4: taxiing in near the home stand with no taxi clearance, "request follow me" gets
     /// the plain taxi instruction (too short for a car), and the stand it names becomes the
     /// taxi target, so later help knows where the aircraft is going.
