@@ -22,6 +22,10 @@ SID, STAR и заходы сервер берёт из CIFP вашей уста�
 
 Без CIFP (неверный `xplane_root` или файла нет) на любой IFR-запрос диспетчер отвечает `unable, IFR not available, VFR only`. В этом случае летайте по VFR или поправьте `xplane_root` и перезапустите сервер.
 
+### Схема аэродрома
+
+Стоянка 9R (`niner romeo`) и маршруты руления в этом руководстве взяты из стандартной сцены EPKK X-Plane 11 (сервер читает её, когда задан `xplane_root`). В `data/airports/EPKK/apt.dat` из репозитория, который используется без `xplane_root`, стоянки 9R нет, и маршруты руления будут другими.
+
 ### Частоты
 
 Станция, с которой вы говорите, определяется частотой радиостанции, выбранной на передачу на аудиопанели (COM1 MIC или COM2 MIC; по умолчанию COM1). Ответы слышны на ней и на любой другой COM, включённой на прослушивание: например, ATIS на COM2, пока вы работаете с Tower на COM1.
@@ -134,7 +138,7 @@ Ground (ВПП 25):
 
 > Taxi to holding point runway two five via Zulu four, Zulu five, Alpha, hold short runway two five, Sierra Bravo Charlie
 
-На ВПП 07 путь другой: Ground назовёт его по таблице руления станции.
+На ВПП 07 путь другой: `via Zulu three, Zulu two, Zulu one, Golf, Bravo four, Bravo three, Bravo two, Bravo one, Foxtrot, hold short runway zero seven`.
 
 Перед ВПП Ground передаёт на Tower:
 
@@ -184,7 +188,9 @@ Approach:
 
 > Direct Katowice, Sierra Bravo Charlie
 
-Примерно за 20 NM до EPKT (когда загружена только станция EPKK):
+Дальше всё зависит от того, какие станции загружены.
+
+**Загружена только станция EPKK.** Примерно за 20 NM до EPKT:
 
 > Sierra Bravo Charlie, descend to altitude three thousand feet, QNH one zero one three
 
@@ -192,21 +198,7 @@ Approach:
 
 > Descend three thousand feet, QNH one zero one three, Sierra Bravo Charlie
 
-Если загружены обе станции (EPKK и EPKT), за 30 NM до EPKT Approach передаёт вас диспетчеру Approach станции EPKT. Передача всегда объявляется и читается обратно, даже когда частота та же (121.075 у обеих станций); 20-мильного снижения у вылетной станции в этом случае нет.
-
-> Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five
-
-Пилот:
-
-> Approach one two one decimal zero seven five, Sierra Bravo Charlie
-
-Это Approach станции EPKT. Вызовите его (частота та же, переставлять COM1 не нужно):
-
-> Kraków Approach, Sierra Papa Alpha Bravo Charlie, descending, inbound to Katowice
-
-Если на первый вызов принятого борта нечего ответить, диспетчер говорит `Kraków Approach, roger`, а не `say again`.
-
-Если у EPKT нет Approach, за 10 NM до EPKT вас передаёт Katowice Tower:
+За 10 NM до EPKT Approach передаёт вас на Katowice Tower:
 
 > Sierra Bravo Charlie, contact Katowice Tower one two niner decimal two five five
 
@@ -218,7 +210,27 @@ Approach:
 
 > Katowice Tower, Sierra Papa Alpha Bravo Charlie, descending three thousand feet, inbound to Katowice
 
-Katowice Tower опознаёт борт, называет ожидаемый заход («expect ILS approach runway two seven, report established»; без захода по приборам: «expect visual approach runway two seven, report final»), оставляет вас у себя, разрешает посадку и при уходе на второй круг ведёт набор и снова ожидаемый заход.
+Katowice Tower:
+
+> Sierra Papa Alpha Bravo Charlie, identified
+
+На этом полёт 1 закончен: здесь Katowice Tower — граничная станция EPKK, дальнейшего обслуживания у неё нет. Посадка в EPKT в этом случае не моделируется.
+
+**Загружены обе станции (EPKK и EPKT).** За 30 NM до EPKT Approach передаёт вас диспетчеру Approach станции EPKT. Передача всегда объявляется и читается обратно, даже когда частота та же (121.075 у обеих станций); 20-мильного снижения у вылетной станции в этом случае нет, вы на FL100 или ещё набираете его.
+
+> Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five
+
+Пилот:
+
+> Approach one two one decimal zero seven five, Sierra Bravo Charlie
+
+Это Approach станции EPKT. Вызовите его (частота та же, переставлять COM1 не нужно):
+
+> Kraków Approach, Sierra Papa Alpha Bravo Charlie, flight level one zero zero, inbound to Katowice
+
+Approach EPKT опознаёт борт и ведёт его на заход по данным станции EPKT: курс, `descend altitude five thousand feet`, QNH и `expect ILS approach runway two seven`. Если на первый вызов принятого борта нечего ответить, диспетчер говорит `Kraków Approach, roger`, а не `say again`.
+
+**Загружена станция EPKT без позиции Approach.** У настоящей EPKT Approach есть (Kraków Approach 121.075), поэтому этот случай относится только к станции, собранной без Approach. Тогда за 10 NM до EPKT вас передают на Tower этой станции. Он опознаёт борт, называет ожидаемый заход («expect ILS approach runway two seven, report established»; без захода по приборам: «expect visual approach runway two seven, report final»), оставляет вас у себя, разрешает посадку и при уходе на второй круг ведёт набор и снова даёт ожидаемый заход.
 
 ### Если уходите вне плана
 
@@ -231,12 +243,14 @@ Katowice Tower опознаёт борт, называет ожидаемый з
 
 ### Как начать
 
-EPKT как аэропорт в этой версии не моделируется (Katowice Tower — граничная станция). Есть два способа:
+**Загружена только станция EPKK.** EPKT как аэропорт не моделируется (Katowice Tower — граничная станция EPKK). Есть два способа:
 
 - взлететь из EPKT самостоятельно и после набора около 4000 ft сразу вызвать Kraków Approach;
 - запустить X-Plane уже в воздухе над районом EPKT на 4000–5000 ft и вызвать Kraków Approach.
 
-В обоих случаях первый вызов — Kraków Approach 121.075 (ближе 40 NM до EPKK; принимается вызов без ожидания передачи с другой станции). Ground и Delivery EPKT не отвечают.
+В обоих случаях первый вызов — Kraków Approach 121.075 (ближе 40 NM до EPKK; принимается вызов без ожидания передачи с другой станции). Ground и Delivery EPKT не отвечают. Обмен ниже написан для этого случая.
+
+**Загружены EPKK и EPKT.** Delivery, Ground и Tower EPKT отвечают: разрешение IFR на Kraków (по данным станции EPKT), запуск, руление и взлёт идут у станции EPKT так же, как в полёте 1 у EPKK, а после взлёта Tower EPKT передаёт вас на её Approach. За 30 NM до EPKK этот Approach передаёт вас на Approach станции EPKK тем же способом, что в полёте 1: `contact Kraków Approach one two one decimal zero seven five`, квитанция, вызов на той же частоте. Approach EPKK принимает вас как переданный борт и дальше ведёт на ILS 25, как ниже; первый ответ (курс, высота) может отличаться от приведённого.
 
 Заранее прослушайте ATIS EPKK (126.130) и загрузите в G1000 ILS 25 (PROC → Select Approach, ВПП 25, ILS; переход «Vectors», потому что Approach ведёт вас на векторах).
 
@@ -244,11 +258,11 @@ EPKT как аэропорт в этой версии не моделирует�
 
 Пилот:
 
-> Krakow Approach, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, IFR, airborne Katowice, passing four thousand feet climbing flight level one zero zero, inbound Krakow, information Alpha
+> Krakow Approach, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, IFR, airborne Katowice, passing four thousand feet climbing five thousand feet, inbound Krakow, information Alpha
 
 Approach (борт уже внутри точек начала STAR, поэтому STAR не даётся, а даются векторы):
 
-> Sierra Papa Alpha Bravo Charlie, identified, turn left heading one zero five, climb flight level one zero zero, QNH one zero one three, expect ILS approach runway two five
+> Sierra Papa Alpha Bravo Charlie, identified, turn left heading one zero five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two five
 
 Пилот читает обратно и летит курсом 105 (HDG, магнитный):
 
@@ -310,11 +324,13 @@ Tower:
 
 Ground:
 
-> Sierra Papa Alpha Bravo Charlie, taxi to stand niner romeo via Alpha, Zulu five, Zulu four
+> Sierra Papa Alpha Bravo Charlie, taxi to stand niner romeo via Charlie, Bravo four, Golf, Zulu one, Zulu two, Zulu three
 
 Пилот:
 
-> Taxi to stand niner romeo via Alpha, Zulu five, Zulu four, Sierra Bravo Charlie
+> Taxi to stand niner romeo via Charlie, Bravo four, Golf, Zulu one, Zulu two, Zulu three, Sierra Bravo Charlie
+
+Маршрут зависит от того, где вы освободили ВПП. Выше — сход по Charlie (обычный после посадки на 25). Со схода Delta: `via Delta, Bravo three, Bravo four, Golf, Zulu one, Zulu two, Zulu three`; со схода Alpha в конце ВПП: `via Alpha, Zulu five, Zulu four`.
 
 На стоянке:
 

@@ -205,20 +205,24 @@ one that does not load is skipped with a warning naming the file. The log starts
 - **Frequencies.** A call is answered by the station that works the frequency. Several stations
   that list the same callsign on the same frequency (Kraków Approach at both EPKK and EPKT,
   121.075) are one unit: a flight that already belongs to one of them stays with it on that
-  frequency, and a new caller is taken by the station nearest the aircraft. This does not hold
-  for a flight bound for the other airport: its destination's Approach is a separate station
-  (see the next item). A frequency nobody works is silent.
+  frequency, and a new caller is taken by the station nearest the aircraft. A flight bound for
+  the other airport stays too, until its destination's Approach takes it (next item). A
+  frequency nobody works is silent.
 - **Hand-offs between stations.** When a controller tells you to contact a station or unit
   and you read the frequency back, the flight moves there with its plan, squawk and cleared
   level, and the next controller greets you as a flight handed over ("identified"). Calling
-  another station directly moves the flight as well. An IFR flight to a loaded destination
-  with an Approach position is told "contact <destination Approach> <frequency>" within 30 NM
-  of it, always announced and read back, even on the same frequency (EPKK to EPKT: "contact
-  Kraków Approach one two one decimal zero seven five", answered by EPKT's controller); the
-  departure Approach gives no 20 NM descent then. With no Approach there the flight goes to
-  the destination Tower within 10 NM. That Tower identifies it, says "expect ILS approach
-  runway X, report established" (or "expect visual approach runway X, report final"), keeps
-  it, clears it to land and, on a go-around, gives the climb and the expected approach again.
+  another station directly moves the flight as well. An IFR flight to a neighbouring loaded
+  destination (within 60 NM of the departure airport) with an Approach position is told
+  "contact <destination Approach> <frequency>" within 30 NM of it, always announced and read
+  back, even on the same frequency (EPKK to EPKT: "contact Kraków Approach one two one
+  decimal zero seven five", answered by EPKT's controller); the departure Approach gives no
+  20 NM descent then. A farther destination's Approach does not take it: the usual ACC/FIS
+  hand-off on leaving the TMA applies. With no Approach at the loaded destination the flight
+  goes to the destination Tower within 10 NM. That Tower identifies it, says "expect ILS
+  approach runway X, report established" (or "expect visual approach runway X, report
+  final"), keeps it, clears it to land and, on a go-around, gives the climb and the expected
+  approach again. A destination that is not loaded keeps the old behaviour: its emulated
+  Tower (an `[[adjacent]]` unit) only says "identified".
   The first call of a handed-in flight that nothing else answers gets "<station>, roger".
 - **SID level and taxi-in.** The SID clearance climbs to at least the highest "at or above"
   level on the SID (FL100 for SUDOL 2J and SUDOL 1F at EPKK: "climb flight level one zero
