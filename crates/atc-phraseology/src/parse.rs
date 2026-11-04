@@ -296,7 +296,6 @@ fn is_place(w: &str) -> bool {
     matches!(w, "krakow" | "kraków" | "cracow")
 }
 
-/// Any form of "request": "request taxi", "requests taxi", "requesting departure".
 /// A word that can be part of a stand name: a stand keyword, a name with a digit
 /// (`apron4`), or a short word (`ga`), but not a preposition or conjunction.
 fn is_stand_word(w: &str) -> bool {
@@ -304,9 +303,26 @@ fn is_stand_word(w: &str) -> bool {
         || (w.chars().all(|c| c.is_ascii_alphanumeric()) && w.chars().any(|c| c.is_ascii_digit()))
         || (w.chars().count() <= 2
             && w.chars().all(|c| c.is_alphabetic())
-            && !matches!(w, "to" | "on" | "at" | "via" | "and" | "for"))
+            && !matches!(
+                w,
+                "to" | "on"
+                    | "at"
+                    | "i"
+                    | "w"
+                    | "z"
+                    | "o"
+                    | "na"
+                    | "do"
+                    | "po"
+                    | "za"
+                    | "is"
+                    | "in"
+                    | "my"
+                    | "ok"
+            ))
 }
 
+/// Any form of "request": "request taxi", "requests taxi", "requesting departure".
 fn is_request_word(w: &str) -> bool {
     matches!(w, "request" | "requests" | "requesting" | "requested")
 }
@@ -1294,7 +1310,7 @@ impl<'a> Scan<'a> {
             }
             if let Some(keyword @ ("stand" | "parking" | "apron")) = self.w(s) {
                 let mut parts = vec![keyword.to_string()];
-                for t in self.toks[s + 1..n.min(s + 7)].iter() {
+                for t in self.toks[s + 1..n.min(s + 11)].iter() {
                     match t {
                         Token::Letter(c) => parts.push(c.to_string()),
                         Token::Number(d) => parts.push(d.clone()),

@@ -4474,7 +4474,7 @@ mod approach_departure {
         for said in [
             "apron four golf alpha",
             "apron 4 GA",
-            "parking apron4 GA",
+            "parking APRON4 GA",
             "stand apron4 ga",
         ] {
             let mut e = engine_with_stands(&[("APRON4 GA", NEAR_GA)]);
@@ -4522,6 +4522,22 @@ mod approach_departure {
                 name: "GA".into(),
                 at: Some(NEAR_GA)
             })
+        );
+    }
+
+    /// Words after the stand (here the callsign, spelled) do not hide it.
+    #[test]
+    fn trailing_words_after_the_stand_are_dropped() {
+        let mut e = engine_with_stands(&[("5", NEAR_GA)]);
+        parked_on_stand_1(&mut e);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to stand five sierra bravo charlie"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "5"),
+            "{out:?}"
         );
     }
 

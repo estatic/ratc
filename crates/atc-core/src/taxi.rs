@@ -28,6 +28,23 @@ pub fn find_stand<'a>(airport: &'a Airport, name: &str, at: Option<LatLon>) -> O
     }
 }
 
+#[cfg(test)]
+mod target_serde_tests {
+    use super::*;
+
+    #[test]
+    fn old_stand_target_loads_without_at() {
+        let t: TaxiTarget = serde_json::from_str(r#"{"Stand":{"name":"5"}}"#).unwrap();
+        assert_eq!(
+            t,
+            TaxiTarget::Stand {
+                name: "5".into(),
+                at: None
+            }
+        );
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaxiRoute {
     pub nodes: Vec<u32>,

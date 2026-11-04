@@ -45,6 +45,14 @@ fn request_taxi_to_stand() {
     );
 }
 
+#[test]
+fn request_taxi_to_stand_stops_at_via() {
+    assert_eq!(
+        heard_stand("Ground, Sierra Bravo Charlie, request taxi to stand 5 via alpha"),
+        "stand 5"
+    );
+}
+
 fn heard_stand(text: &str) -> String {
     match en(text).intent {
         PilotIntent::RequestTaxiToStand { stand: Some(s) } => s,

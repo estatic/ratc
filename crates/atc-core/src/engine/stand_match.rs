@@ -45,18 +45,38 @@ impl AtcEngine {
     /// The stand `heard` names, as an index into `airport.stands`: among the stands whose
     /// name matches, the nearest free one to aircraft `i`, else the nearest.
     pub(super) fn resolve_stand(&self, i: usize, heard: &str) -> Option<usize> {
-        let h = normalize_stand(heard);
         let stands = &self.airport.stands;
         let norm: Vec<String> = stands.iter().map(|s| normalize_stand(&s.name)).collect();
-        let mut candidates: Vec<usize> = (0..stands.len()).filter(|&k| norm[k] == h).collect();
-        if candidates.is_empty() {
-            let hs = strip_stand_keyword(&h);
-            candidates = (0..stands.len())
+        let matching = |h: &str| -> Vec<usize> {
+            let exact: Vec<usize> = (0..stands.len()).filter(|&k| norm[k] == h).collect();
+            if !exact.is_empty() {
+                return exact;
+            }
+            let hs = strip_stand_keyword(h);
+            (0..stands.len())
                 .filter(|&k| {
                     let ss = strip_stand_keyword(&norm[k]);
                     hs == ss || hs == norm[k] || h == ss
                 })
-                .collect();
+                .collect()
+        };
+        // The whole heard text, else with trailing words dropped one at a time (a callsign
+        // or filler after the stand), keeping the keyword and one more word.
+        let words: Vec<&str> = heard.split_whitespace().collect();
+        let keep = if words
+            .first()
+            .is_some_and(|w| KEYWORDS.contains(&normalize_stand(w).as_str()))
+        {
+            2
+        } else {
+            1
+        };
+        let mut candidates = Vec::new();
+        for len in (keep.min(words.len())..=words.len()).rev() {
+            candidates = matching(&normalize_stand(&words[..len].join(" ")));
+            if !candidates.is_empty() {
+                break;
+            }
         }
         let from = self.last_pos(i);
         let dist = |k: usize| from.map_or(0.0, |p| distance_m(p, stands[k].pos));
