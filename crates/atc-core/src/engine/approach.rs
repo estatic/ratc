@@ -92,6 +92,11 @@ const DEST_TOWER_M: f64 = 10.0 * M_PER_NM;
 /// The destination's Approach (another loaded station) takes the flight this far from the
 /// destination.
 const DEST_APPROACH_M: f64 = 30.0 * M_PER_NM;
+/// The destination's Approach (another loaded station) works the flight only when the
+/// destination's reference point lies within this distance of this station's airport: a
+/// neighbour. A destination farther away gets the usual ACC/FIS hand-off (or release) on
+/// leaving the TMA, as with no destination Approach.
+const NEIGHBOUR_DEST_M: f64 = 60.0 * M_PER_NM;
 
 /// A hand-off due: the unit's callsign (empty for a release), the ICAO code of the airport
 /// for a destination Approach or Tower, and the items to say.
@@ -1135,8 +1140,13 @@ impl AtcEngine {
     }
 
     /// The Approach of the flight's destination, when another loaded station
-    /// ([`AtcEngine::set_station_units`]) has one.
+    /// ([`AtcEngine::set_station_units`]) has one and the destination is a neighbour: within
+    /// [`NEIGHBOUR_DEST_M`] of this station's airport.
     fn destination_approach(&self, plan: &FlightPlan) -> Option<&AdjacentUnit> {
+        let dest = self.destination_pos(plan)?;
+        if distance_m(self.airport_ref()?, dest) > NEIGHBOUR_DEST_M {
+            return None;
+        }
         self.station_units.iter().find(|u| {
             u.kind == AdjacentKind::Approach
                 && u.airport

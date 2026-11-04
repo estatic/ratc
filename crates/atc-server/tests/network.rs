@@ -1233,6 +1233,100 @@ kind = "Acc"
     );
 }
 
+/// A loaded destination Approach farther than 60 NM (`NEIGHBOUR_DEST_M`) from the
+/// departure airport does not hold the flight: Zeta Approach still hands it to Bravo Radar
+/// on leaving its TMA. Testville is placed 120 NM north in Zeta's destination data, and Zeta
+/// emulates no Testville Tower (as EPKK has none for EPWA).
+#[test]
+fn far_destination_approach_does_not_block_acc_handoff() {
+    let zeta_extra = r#"
+[[positions]]
+role = "Approach"
+callsign = "Zeta Approach"
+khz = 119100
+
+[tma]
+radius_nm = 10.0
+ceiling_ft = 9500
+
+[[adjacent]]
+callsign = "Bravo Radar"
+khz = 127660
+kind = "Acc"
+"#;
+    let LoadedStation {
+        id,
+        dir,
+        procs,
+        airport,
+        engine,
+    } = fixture_station("ZZZZ", zeta_extra);
+    let far_testville = Destination {
+        icao: "ZZZY".into(),
+        name: "Testville".into(),
+        pos: at(12.0),
+        elevation_ft: Some(50),
+    };
+    let engine = engine
+        .into_inner()
+        .unwrap()
+        .with_destinations(vec![far_testville]);
+    let zeta = LoadedStation {
+        id,
+        dir,
+        procs,
+        airport,
+        engine: Mutex::new(engine),
+    };
+    let net =
+        Network::new(vec![fixture_station("ZZZY", TESTVILLE_OWN_APP), zeta]).with_units(vec![
+            EnrouteUnitDef {
+                sectors: vec![box_sector("ACC BRAVO", 9.0, 12.5, 24500)],
+                ..bravo()
+            },
+        ]);
+    net.on_weather(&frame(vec![]));
+    let c = join(&net, "SPTST");
+    let mut h = ifr_to_testville(&c);
+    let plan = h.plan.as_mut().unwrap();
+    plan.cruise_ft = 6000;
+    plan.cleared_ft = 6000;
+    h.cleared_ft = Some(6000);
+    net.stations()[ZZZZ].engine.lock().unwrap().import_flight(h);
+    net.on_telemetry(sample(&c, 0.0, at(10.05), 6000.0, 150.0, ZETA_APP));
+    let out = net.on_transmission(
+        &c,
+        ZETA_APP,
+        "Zeta Approach, Sierra Papa Tango Sierra Tango, six thousand feet",
+        Lang::En,
+        SimTime(1.0),
+    );
+    assert_eq!(
+        items_of(&out).first(),
+        Some(&AtcItem::Identified),
+        "{out:?}"
+    );
+    let (contact, lat, _) = fly_until(
+        &net,
+        &c,
+        10.05,
+        0.01,
+        6000.0,
+        ZETA_APP,
+        1.0,
+        has(|i| matches!(i, AtcItem::Contact { .. })),
+    );
+    assert_eq!(contact.station, "Zeta Approach");
+    assert_eq!(
+        contact.message.items,
+        vec![AtcItem::Contact {
+            station: "Bravo Radar".into(),
+            khz: BRAVO
+        }],
+        "at lat {lat}"
+    );
+    assert!(lat < 10.2, "{lat}");
+}
 /// Alpha Information reaching from 9.0 to 11.0 N: under (and around) Testville's TMA.
 fn wide_alpha() -> EnrouteUnitDef {
     EnrouteUnitDef {
