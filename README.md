@@ -278,7 +278,7 @@ hand-made `data/airports/EPKK/procedures.toml`, used when there is no `station.t
    listening. Tune the ATIS frequency of the airport, then call Delivery or Ground.
 
 Step-by-step flights (in Russian for now): [VFR circuit](docs/user-guide/ru/scenario-circuit.md),
-[IFR departure](docs/user-guide/ru/scenario-ifr-departure.md),
+[IFR flight EPKK → EPKT](docs/user-guide/ru/scenario-ifr-departure.md),
 [IFR and VFR points](docs/user-guide/ru/ifr-and-vfr-points.md),
 [Polish circuit](docs/user-guide/ru/polish-circuit.md). Phraseology the controller understands:
 [English](docs/phraseology/en.md), [Polish](docs/phraseology/pl.md). More detail on every
