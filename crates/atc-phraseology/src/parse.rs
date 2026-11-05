@@ -296,6 +296,32 @@ fn is_place(w: &str) -> bool {
     matches!(w, "krakow" | "kraków" | "cracow")
 }
 
+/// A word that can be part of a stand name: a stand keyword, a name with a digit
+/// (`apron4`), or a short word (`ga`), but not a preposition or conjunction.
+fn is_stand_word(w: &str) -> bool {
+    matches!(w, "stand" | "parking" | "apron")
+        || (w.chars().all(|c| c.is_ascii_alphanumeric()) && w.chars().any(|c| c.is_ascii_digit()))
+        || (w.chars().count() <= 2
+            && w.chars().all(|c| c.is_alphabetic())
+            && !matches!(
+                w,
+                "to" | "on"
+                    | "at"
+                    | "i"
+                    | "w"
+                    | "z"
+                    | "o"
+                    | "na"
+                    | "do"
+                    | "po"
+                    | "za"
+                    | "is"
+                    | "in"
+                    | "my"
+                    | "ok"
+            ))
+}
+
 /// Any form of "request": "request taxi", "requests taxi", "requesting departure".
 fn is_request_word(w: &str) -> bool {
     matches!(w, "request" | "requests" | "requesting" | "requested")
@@ -1282,17 +1308,18 @@ impl<'a> Scan<'a> {
             if self.w(s) == Some("to") {
                 s += 1;
             }
-            if matches!(self.w(s), Some("stand" | "parking" | "apron")) {
-                let mut stand = String::new();
-                for t in self.toks[s + 1..n.min(s + 4)].iter() {
+            if let Some(keyword @ ("stand" | "parking" | "apron")) = self.w(s) {
+                let mut parts = vec![keyword.to_string()];
+                for t in self.toks[s + 1..n.min(s + 11)].iter() {
                     match t {
-                        Token::Letter(c) => stand.push(*c),
-                        Token::Number(d) => stand.push_str(d),
+                        Token::Letter(c) => parts.push(c.to_string()),
+                        Token::Number(d) => parts.push(d.clone()),
+                        Token::Word(w) if is_stand_word(w) => parts.push(w.clone()),
                         Token::Word(_) | Token::Break => break,
                     }
                 }
                 return PilotIntent::RequestTaxiToStand {
-                    stand: (!stand.is_empty()).then_some(stand),
+                    stand: (parts.len() > 1).then(|| parts.join(" ")),
                 };
             }
             let vfr_circuits = (0..n).any(|j| matches!(self.w(j), Some("circuit" | "circuits")));

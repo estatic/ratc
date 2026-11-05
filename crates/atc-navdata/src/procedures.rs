@@ -124,6 +124,8 @@ pub enum AdjacentKind {
     Fis,
     /// Aerodrome tower.
     Tower,
+    /// Approach unit of another loaded station; never in procedures.toml in practice.
+    Approach,
 }
 
 /// A neighbouring unit with its frequency.
@@ -135,7 +137,7 @@ pub struct AdjacentUnit {
     pub khz: u32,
     /// Unit kind.
     pub kind: AdjacentKind,
-    /// ICAO code of the aerodrome for a tower.
+    /// ICAO code of the aerodrome for a tower or another station's Approach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub airport: Option<String>,
     /// Lowest level (ft) the unit serves.

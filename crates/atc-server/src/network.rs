@@ -7,11 +7,19 @@
 //! 1. a frequency of a station position or of an en-route unit: that station or unit; when
 //!    several stations work it (one shared unit), the owner of the flight if it is one of
 //!    them, else the station nearest the aircraft (a station before a unit on the same
-//!    frequency). A flight owned by someone else moves on this call;
+//!    frequency). A flight owned by someone else moves on this call. A flight handed to
+//!    another station on a frequency both work (below) is that station's from the readback;
 //! 2. otherwise a frequency of an adjacent unit some engine emulates
 //!    ([`Procedures::adjacent`]): the owning engine if it emulates it, else the nearest one
 //!    that does (the flight moves). A real en-route unit on that frequency wins (rule 1);
 //! 3. otherwise nobody answers.
+//!
+//! Station to station: each engine knows the other stations' Approach positions
+//! ([`AtcEngine::set_station_units`]). An IFR flight bound for one of their airports is
+//! handed to that Approach 30 NM out ("contact <callsign> <frequency>", said and read back
+//! even on the same frequency under the same callsign); without one, to the destination's
+//! tower 10 NM out. Once the pilot reads it back (or calls the unit), the flight moves to
+//! the destination's station, chosen by airport, not by frequency or callsign.
 //!
 //! En-route units ([`EnrouteUnit`]): when a flight a unit works enters a staffed station's
 //! CTR, TMA or ATZ (outside at the previous sample, inside now, within its level limits),
@@ -40,7 +48,7 @@ use atc_core::strip::{PilotProfile, Role};
 use atc_geo::{LatLon, distance_m, point_in_polygon};
 use atc_navdata::enroute::EnrouteUnitDef;
 use atc_navdata::model::{Airport, FreqKind};
-use atc_navdata::procedures::AirspaceKind;
+use atc_navdata::procedures::{AdjacentKind, AdjacentUnit, AirspaceKind};
 use atc_phraseology::{AtcItem, AtcMessage, Callsign, Lang, render};
 use atc_proto::WeatherFrame;
 use serde::{Deserialize, Serialize};
@@ -190,6 +198,29 @@ impl Network {
             for q in p.positions.iter().filter(|q| q.role == FreqKind::Atis) {
                 atis.entry(q.khz).or_insert(i);
             }
+        }
+        // Each engine knows the other stations' Approach positions: an IFR flight bound for
+        // one of their airports is handed there (not emulated: those stations answer).
+        for (i, s) in stations.iter().enumerate() {
+            let units = stations
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .flat_map(|(_, o)| {
+                    o.procs
+                        .positions
+                        .iter()
+                        .filter(|q| q.role == FreqKind::Approach)
+                        .map(|q| AdjacentUnit {
+                            callsign: q.callsign.clone(),
+                            khz: q.khz,
+                            kind: AdjacentKind::Approach,
+                            airport: Some(o.airport.icao.clone()),
+                            min_level_ft: None,
+                        })
+                })
+                .collect();
+            s.engine.lock().unwrap().set_station_units(units);
         }
         let language = stations[0].engine.lock().unwrap().language();
         Network {
@@ -684,6 +715,13 @@ impl Network {
             .or_else(|| at.iter().copied().find(|o| matches!(o, Owner::Unit(_))))
     }
 
+    /// The station of airport `icao` (any case).
+    fn station_of_airport(&self, icao: &str) -> Option<usize> {
+        self.stations
+            .iter()
+            .position(|s| s.airport.icao.eq_ignore_ascii_case(icao))
+    }
+
     /// The candidate station nearest `pos` (the first on a tie, or without a position).
     fn nearest(
         &self,
@@ -743,7 +781,9 @@ impl Network {
     }
 
     /// The owner's acknowledged hand-off to another frequency moves the flight to whoever
-    /// works it. From a station: a frequency the station works too (a shared unit) or one
+    /// works it. From a station: a hand-off to another station's unit (its Approach or
+    /// Tower, by airport) moves it to that station when it works the frequency, even one the
+    /// owner works too; otherwise a frequency the station works too (a shared unit) or one
     /// nobody works (an emulated adjacent unit) keeps it. From a unit: the target is taken
     /// once read back or timed out at `t`; with nobody on it the flight is released.
     fn check_handoff(
@@ -761,13 +801,22 @@ impl Network {
                 let Some(khz) = self.stations[i].engine.lock().unwrap().handoff_target(cs) else {
                     return;
                 };
+                let airport = self.stations[i].engine.lock().unwrap().handoff_airport(cs);
                 let Some(at) = on_channel(&self.freq_index, khz) else {
                     return;
                 };
-                if at.contains(&from) {
+                // Handed to another station's unit: that station, even on a frequency the
+                // owner works too (one Approach unit listed by both).
+                let dest = airport
+                    .and_then(|a| self.station_of_airport(&a))
+                    .filter(|&j| j != i && at.contains(&Owner::Station(j)));
+                if let Some(j) = dest {
+                    Some(Owner::Station(j))
+                } else if at.contains(&from) {
                     return;
+                } else {
+                    self.taker(at, pos)
                 }
-                self.taker(at, pos)
             }
             Owner::Unit(k) => {
                 let Some(khz) = self.units[k].lock().unwrap().handoff_target(cs, t) else {

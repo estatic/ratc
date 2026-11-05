@@ -40,9 +40,43 @@ fn request_taxi_to_stand() {
     assert_eq!(
         m.intent,
         PilotIntent::RequestTaxiToStand {
-            stand: Some("5".into())
+            stand: Some("stand 5".into())
         }
     );
+}
+
+#[test]
+fn request_taxi_to_stand_stops_at_via() {
+    assert_eq!(
+        heard_stand("Ground, Sierra Bravo Charlie, request taxi to stand 5 via alpha"),
+        "stand 5"
+    );
+}
+
+fn heard_stand(text: &str) -> String {
+    match en(text).intent {
+        PilotIntent::RequestTaxiToStand { stand: Some(s) } => s,
+        other => panic!("not a stand request: {other:?}"),
+    }
+}
+
+fn squash(s: &str) -> String {
+    s.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_uppercase()
+}
+
+#[test]
+fn request_taxi_to_apron_stand_with_letters() {
+    let s = heard_stand("Ground, Sierra Bravo Charlie, request taxi to apron four golf alpha");
+    assert_eq!(squash(&s), "APRON4GA", "{s}");
+}
+
+#[test]
+fn request_taxi_to_parking_with_name() {
+    let s = heard_stand("Ground, Sierra Bravo Charlie, request taxi to parking apron4 ga");
+    assert_eq!(squash(&s), "PARKINGAPRON4GA", "{s}");
 }
 
 #[test]

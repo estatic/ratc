@@ -89,6 +89,22 @@ use crate::strip::{FlightPlan, PatternLeg, Role};
 const PASSED_FIX_M: f64 = M_PER_NM;
 /// The destination's tower takes the flight this far from the destination.
 const DEST_TOWER_M: f64 = 10.0 * M_PER_NM;
+/// The destination's Approach (another loaded station) takes the flight this far from the
+/// destination.
+const DEST_APPROACH_M: f64 = 30.0 * M_PER_NM;
+/// The destination's Approach (another loaded station) works the flight only when the
+/// destination's reference point lies within this distance of this station's airport: a
+/// neighbour. A destination farther away gets the usual ACC/FIS hand-off (or release) on
+/// leaving the TMA, as with no destination Approach.
+const NEIGHBOUR_DEST_M: f64 = 60.0 * M_PER_NM;
+
+/// A hand-off due: the unit's callsign (empty for a release), the ICAO code of the airport
+/// for a destination Approach or Tower, and the items to say.
+struct HandOff {
+    unit: String,
+    airport: Option<String>,
+    items: Vec<AtcItem>,
+}
 /// Climbing: a vertical speed above this, or still this far below the cleared level.
 const CLIMBING_FPM: f64 = 100.0;
 const BELOW_LEVEL_FT: f64 = 200.0;
@@ -456,7 +472,7 @@ impl AtcEngine {
     }
 
     /// The default approach to `runway`: ILS, else RNAV; VOR/DME only when it is the only one.
-    fn default_approach(&self, runway: &str) -> Option<ApproachKind> {
+    pub(super) fn default_approach(&self, runway: &str) -> Option<ApproachKind> {
         [ApproachKind::Ils, ApproachKind::Rnav, ApproachKind::VorDme]
             .into_iter()
             .find(|&k| self.has_approach(runway, k))
@@ -835,7 +851,10 @@ impl AtcEngine {
         let missed_ft = self.missed_alt_ft(&runway, kind);
         let strip = &mut self.strips[i];
         strip.missed_approach = true;
-        if strip.owner == Role::Tower || strip.handoff_to == Some(Role::Tower) {
+        // Back to Approach, to be identified again; a Tower-kept arrival stays identified.
+        if (strip.owner == Role::Tower || strip.handoff_to == Some(Role::Tower))
+            && !strip.tower_inbound
+        {
             strip.identified = false;
         }
         strip.permissions.may_land = false;
@@ -1007,7 +1026,12 @@ impl AtcEngine {
             strip.expect_readback(&items, self.cfg.strictness, self.now);
             return self.transmit(i, Role::Approach, items);
         }
-        if let Some((unit, items)) = self.hand_off(&plan, s.pos) {
+        if let Some(HandOff {
+            unit,
+            airport,
+            items,
+        }) = self.hand_off(&plan, s.pos)
+        {
             let strip = &mut self.strips[i];
             // An empty unit: released, no unit to contact (see `Strip::handed_off`).
             strip.handed_off = Some(unit);
@@ -1016,6 +1040,7 @@ impl AtcEngine {
                 AtcItem::Contact { khz, .. } => Some(*khz),
                 _ => None,
             });
+            strip.handed_off_airport = airport;
             strip.expect_readback(&items, self.cfg.strictness, self.now);
             return self.transmit(i, Role::Approach, items);
         }
@@ -1035,7 +1060,11 @@ impl AtcEngine {
 
     /// The descent due at `pos` before the hand-off to the destination's tower: 20 NM out,
     /// to the destination's approach altitude ([`approach_alt_ft`]) with the QNH, once.
+    /// None when the destination has an Approach of its own: that Approach descends it.
     fn descent_before_tower(&self, plan: &FlightPlan, pos: LatLon) -> Option<(i32, Vec<AtcItem>)> {
+        if self.destination_approach(plan).is_some() {
+            return None;
+        }
         self.destination_tower(plan)?;
         let dest = self
             .destinations
@@ -1055,16 +1084,27 @@ impl AtcEngine {
         Some((alt, items))
     }
 
-    /// The hand-off due at `pos`: the unit's callsign (empty for a release) and the items.
-    fn hand_off(&self, plan: &FlightPlan, pos: LatLon) -> Option<(String, Vec<AtcItem>)> {
+    /// The hand-off due at `pos`: to the destination's Approach (another loaded station)
+    /// within 30 NM of the destination, else to its tower within 10 NM; with neither, to the
+    /// ACC or FIS (or a release) on leaving the TMA. Nothing farther out from a destination
+    /// with an Approach or a tower.
+    fn hand_off(&self, plan: &FlightPlan, pos: LatLon) -> Option<HandOff> {
         let contact = |u: &AdjacentUnit| AtcItem::Contact {
             station: u.callsign.clone(),
             khz: u.khz,
         };
+        let to_unit = |u: &AdjacentUnit| HandOff {
+            unit: u.callsign.clone(),
+            airport: u.airport.clone(),
+            items: vec![contact(u)],
+        };
+        if let Some(app) = self.destination_approach(plan) {
+            let dest = self.destination_pos(plan)?;
+            return (distance_m(pos, dest) <= DEST_APPROACH_M).then(|| to_unit(app));
+        }
         if let Some(tower) = self.destination_tower(plan) {
             let dest = self.destination_pos(plan)?;
-            return (distance_m(pos, dest) <= DEST_TOWER_M)
-                .then(|| (tower.callsign.clone(), vec![contact(tower)]));
+            return (distance_m(pos, dest) <= DEST_TOWER_M).then(|| to_unit(tower));
         }
         let tma = self.procs.tma?;
         if distance_m(self.airport_ref()?, pos) < tma.radius_nm * M_PER_NM {
@@ -1075,22 +1115,44 @@ impl AtcEngine {
             u.kind == AdjacentKind::Acc && u.min_level_ft.is_none_or(|m| plan.cleared_ft >= m)
         });
         if let Some(acc) = acc {
-            return Some((acc.callsign.clone(), vec![contact(acc)]));
+            return Some(HandOff {
+                unit: acc.callsign.clone(),
+                airport: None,
+                items: vec![contact(acc)],
+            });
         }
         // Neither unit: released, no unit to contact.
         let Some(fis) = units.iter().find(|u| u.kind == AdjacentKind::Fis) else {
-            return Some((
-                String::new(),
-                vec![
+            return Some(HandOff {
+                unit: String::new(),
+                airport: None,
+                items: vec![
                     AtcItem::RadarServiceTerminated,
                     AtcItem::FrequencyChangeApproved,
                 ],
-            ));
+            });
         };
-        Some((
-            fis.callsign.clone(),
-            vec![AtcItem::RadarServiceTerminated, contact(fis)],
-        ))
+        Some(HandOff {
+            unit: fis.callsign.clone(),
+            airport: None,
+            items: vec![AtcItem::RadarServiceTerminated, contact(fis)],
+        })
+    }
+
+    /// The Approach of the flight's destination, when another loaded station
+    /// ([`AtcEngine::set_station_units`]) has one and the destination is a neighbour: within
+    /// [`NEIGHBOUR_DEST_M`] of this station's airport.
+    fn destination_approach(&self, plan: &FlightPlan) -> Option<&AdjacentUnit> {
+        let dest = self.destination_pos(plan)?;
+        if distance_m(self.airport_ref()?, dest) > NEIGHBOUR_DEST_M {
+            return None;
+        }
+        self.station_units.iter().find(|u| {
+            u.kind == AdjacentKind::Approach
+                && u.airport
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(&plan.destination))
+        })
     }
 
     /// The adjacent tower of the flight's destination.
@@ -1111,8 +1173,8 @@ impl AtcEngine {
     }
 
     /// Where to clear the aircraft direct to, once it has passed the SID's second fix and is
-    /// still climbing: the destination when it is within the TMA or has an adjacent tower,
-    /// otherwise the SID's last fix.
+    /// still climbing: the destination when it is within the TMA or has an adjacent tower or
+    /// an Approach of another loaded station, otherwise the SID's last fix.
     fn direct_after_turn(&self, i: usize, plan: &FlightPlan, s: &AircraftState) -> Option<String> {
         let path = self.sid_path(i)?;
         let climbing =
@@ -1130,7 +1192,10 @@ impl AtcEngine {
             }
             _ => false,
         };
-        if near || self.destination_tower(plan).is_some() {
+        if near
+            || self.destination_tower(plan).is_some()
+            || self.destination_approach(plan).is_some()
+        {
             Some(plan.dest_name.clone())
         } else {
             path.points.last().map(|(fix, _)| fix.clone())

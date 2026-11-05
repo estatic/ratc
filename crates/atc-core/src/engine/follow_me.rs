@@ -66,7 +66,7 @@ fn on_the_way() -> Vec<AtcItem> {
 /// "Follow the follow-me car to <where the taxi target is>".
 fn follow_items(target: &TaxiTarget) -> Vec<AtcItem> {
     let to = match target {
-        TaxiTarget::Stand { name } => TaxiTo::Stand { name: name.clone() },
+        TaxiTarget::Stand { name, .. } => TaxiTo::Stand { name: name.clone() },
         TaxiTarget::HoldingPoint { runway } => TaxiTo::HoldingPoint {
             runway: runway.clone(),
         },
@@ -94,7 +94,10 @@ impl AtcEngine {
                 .home_stand
                 .clone()
                 .filter(|_| matches!(strip.phase, FlightPhase::TaxiIn | FlightPhase::Landed))?;
-            Some(TaxiTarget::Stand { name: home })
+            Some(TaxiTarget::Stand {
+                name: home,
+                at: None,
+            })
         });
         let Some(target) = target else {
             return vec![AtcItem::SayIntentions];
@@ -116,8 +119,8 @@ impl AtcEngine {
         // The stand itself is off the network: the car stops at the last node and pulls
         // aside away from it.
         let (end_heading_deg, stand_pos) = match &target {
-            TaxiTarget::Stand { name } => {
-                let Some(st) = self.airport.stands.iter().find(|s| &s.name == name) else {
+            TaxiTarget::Stand { name, at } => {
+                let Some(st) = crate::taxi::find_stand(&self.airport, name, *at) else {
                     return vec![AtcItem::SayIntentions];
                 };
                 (st.heading_deg, Some(st.pos))

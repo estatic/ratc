@@ -59,16 +59,25 @@ fn constraints_above_cleared_level_dropped() {
 }
 
 #[test]
-fn initial_climb_stops_only_at_ceilings() {
+fn initial_climb_respects_floors_and_ceilings() {
     let set = zzzz();
     let sid = choose_sid(&set, "27", AIRPORT, ll(20.0, 10.0)).unwrap();
     let mut path = procedure_path(sid);
-    // +3000 and +FL080 are minimums: climb to the cruise level.
-    assert_eq!(initial_climb_ft(&path, 5000), 5000);
+    assert_eq!(initial_climb_ft(&path, 5000), 8000); // floor FL080 beats 5000
+    assert_eq!(initial_climb_ft(&path, 10000), 10000); // planned level above the floor
+    path.constraints[1].1 = AltConstraint::AtOrAbove(6100);
+    assert_eq!(initial_climb_ft(&path, 5000), 7000); // rounded up to 1000 ft
     path.constraints[0].1 = AltConstraint::AtOrBelow(4000);
-    assert_eq!(initial_climb_ft(&path, 5000), 4000);
-    // A ceiling above the cruise level does not apply.
-    assert_eq!(initial_climb_ft(&path, 3500), 3500);
+    assert_eq!(initial_climb_ft(&path, 5000), 4000); // the ceiling still wins
+    // A ceiling above the target does not apply.
+    path.constraints[0].1 = AltConstraint::AtOrBelow(9000);
+    assert_eq!(initial_climb_ft(&path, 5000), 7000);
+    // The lower bound of Between is a floor, the upper bound a ceiling.
+    path.constraints[0].1 = AltConstraint::Between {
+        above: 9200,
+        below: 11000,
+    };
+    assert_eq!(initial_climb_ft(&path, 5000), 10000);
     path.constraints[0].1 = AltConstraint::Between {
         above: 2000,
         below: 3000,

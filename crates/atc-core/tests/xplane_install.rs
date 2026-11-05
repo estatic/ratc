@@ -48,6 +48,7 @@ fn route_failures(ap: &Airport) -> Vec<String> {
             }
             let to = TaxiTarget::Stand {
                 name: st.name.clone(),
+                at: None,
             };
             if let Err(e) = g.route(ap, g.node_pos(hold).unwrap(), &to) {
                 failures.push(format!("hold {rwy} -> {}: {e}", st.name));
@@ -116,7 +117,7 @@ fn installed_epkk_layout_routes() {
 }
 
 /// The EPKK engine with the installed CIFP clears an IFR flight to Katowice via a SID
-/// towards the west-north-west, climbing to the 5000 ft cruise level. Skips (with a
+/// towards the west-north-west, climbing to the SID floor (FL100 for SUDOL 2J). Skips (with a
 /// note) when the install has no EPKK CIFP.
 #[test]
 fn installed_epkk_clearance_to_katowice() {
@@ -181,14 +182,21 @@ fn installed_epkk_clearance_to_katowice() {
         matches!(&items[1], AtcItem::Sid { fix, .. } if ["SUDOL", "NUMBA", "EMBIK"].contains(&fix.as_str())),
         "{items:?}"
     );
-    // The SID's "at or above" constraints are minimums: climb to the 5000 ft cruise level.
-    assert_eq!(items[2], AtcItem::ClimbTo(Level::Altitude(5000)));
-    assert!(
-        out[0]
-            .text
-            .contains(", climb altitude five thousand feet, "),
-        "{}",
-        out[0].text
-    );
+    // The SID's "at or above" constraints are floors: SUDOL 2J has +FL100, so the climb goes
+    // to FL100 instead of the 5000 ft default.
+    if matches!(&items[1], AtcItem::Sid { fix, number: 2, letter: 'J' } if fix == "SUDOL") {
+        assert_eq!(items[2], AtcItem::ClimbTo(Level::FlightLevel(100)));
+        assert!(
+            out[0].text.contains("climb flight level one zero zero"),
+            "{}",
+            out[0].text
+        );
+    } else {
+        assert!(
+            matches!(items[2], AtcItem::ClimbTo(Level::Altitude(a)) if a >= 5000)
+                || matches!(items[2], AtcItem::ClimbTo(Level::FlightLevel(_))),
+            "{items:?}"
+        );
+    }
     assert!(matches!(items[3], AtcItem::Squawk(_)));
 }
