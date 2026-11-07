@@ -60,10 +60,10 @@ flowchart LR
         tts["Piper<br/>text to speech"]
     end
 
-    pilot -- voice --> client
-    client -- controller's voice --> pilot
-    sim -- aircraft state --> client
-    client -- exchange text,<br/>car commands --> overlay
+    pilot -->|"voice"| client
+    client -->|"controller voice"| pilot
+    sim -->|"aircraft state"| client
+    client -->|"exchange text,<br/>car commands"| overlay
     client <-->|"WebSocket: audio, telemetry"| server
     stt --> engine --> tts
 ```
