@@ -33,9 +33,9 @@
 //!
 //! Arrivals (spec 3.3): an airborne aircraft without a flight plan calling Approach inbound
 //! (or asking for an approach) gets an IFR plan to this airport (level: for a flight handed
-//! in, the one the previous unit cleared it to; else the one it reports, the one farthest
-//! from its altitude when it reports passing one and climbing to another; else its
-//! altitude); a VFR one (it says VFR, or names a VFR point without saying IFR) is
+//! in, the one the previous unit cleared it to; else the one it reports, never the one after
+//! "passing" (the highest said when climbing, the lowest when descending); the arrival level
+//! when it reports only the level it is passing; else its altitude); a VFR one (it says VFR, or names a VFR point without saying IFR) is
 //! sent to Tower.
 //! The first reply: "identified", then the STAR chosen by [`choose_star`] when the aircraft is
 //! still outside its start fix and on its side of the field (the start fix within 90 degrees
@@ -224,7 +224,7 @@ impl AtcEngine {
             return self.redirect(i, Role::Tower);
         }
         // The level the previous unit cleared it to, kept as the level it reports.
-        let cleared_ft = plan.as_ref().map(|p| p.cleared_ft);
+        let cleared_ft = plan.as_ref().map(|p| p.cleared_ft).filter(|&ft| ft > 0);
         self.strips[i].plan = None;
         let (kind, full) = match msg.intent {
             PilotIntent::RequestApproach {
@@ -290,12 +290,6 @@ impl AtcEngine {
         let Some((thr, course)) = self.final_geometry(&runway) else {
             return vec![AtcItem::Unable(UnableReason::NoIfrData)];
         };
-        // The level it is cleared to: the one the previous unit cleared it to, else the one
-        // it reports ([`reported_level_ft`]), else its altitude.
-        let actual_ft = ((s.alt_ft_msl / 100.0).round() as i32) * 100;
-        let present_ft = cleared_ft
-            .or_else(|| reported_level_ft(msg, s.alt_ft_msl))
-            .unwrap_or(actual_ft);
         // AIP AD 2.22: VOR approaches are not linked to STARs.
         let star = self
             .airport_ref()
@@ -320,6 +314,14 @@ impl AtcEngine {
         if star_item.is_none() && vectors && distance_m(s.pos, point) <= DESCENT_M {
             target = target.min(intercept_ft);
         }
+        // The level it is cleared to: the one the previous unit cleared it to, else the one
+        // it reports ([`reported_level`]), else its altitude; reporting only the altitude it
+        // is passing, the arrival level (a passing altitude is never given back as a level).
+        let actual_ft = ((s.alt_ft_msl / 100.0).round() as i32) * 100;
+        let reported = reported_level(&msg.raw);
+        let present_ft = cleared_ft
+            .or(reported.level_ft)
+            .unwrap_or(if reported.passing { target } else { actual_ft });
         let level_ft = present_ft.min(target);
         let mut items = vec![AtcItem::Identified];
         let (mut heading, mut direct, mut pattern) = (None, None, None);
@@ -1399,22 +1401,98 @@ fn is_ifr_inbound(unit: &AdjacentUnit, msg: &PilotMessage) -> bool {
         && !says(&msg.raw, "vfr")
 }
 
-/// The level an inbound call reports, the aircraft at `alt_ft`: the altitudes and flight
-/// levels said, the one farthest from where it is ("passing four thousand seven hundred feet,
-/// climbing flight level one zero zero" reports FL100, not the altitude it is passing).
-/// `None` when no level is said.
-fn reported_level_ft(msg: &PilotMessage, alt_ft: f64) -> Option<i32> {
-    let items = &msg.items;
-    items
-        .altitudes_ft
-        .iter()
-        .copied()
-        .chain(items.flight_levels.iter().map(|&fl| i32::from(fl) * 100))
-        .max_by(|a, b| {
-            (f64::from(*a) - alt_ft)
-                .abs()
-                .total_cmp(&(f64::from(*b) - alt_ft).abs())
-        })
+/// The levels of an inbound call: the level reported and whether a passing level was said.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Reported {
+    /// The level climbed or descended to, or kept: never the one after "passing".
+    level_ft: Option<i32>,
+    /// "Passing <level>" was said.
+    passing: bool,
+}
+
+/// The level an inbound call reports, by the pilot's words: the levels said (altitudes and
+/// flight levels) other than the one after "passing"; climbing, the highest of them,
+/// descending, the lowest, otherwise the only one ("passing four thousand seven hundred
+/// feet, climbing flight level one zero zero" reports FL100; "passing four thousand seven
+/// hundred" alone reports none).
+fn reported_level(text: &str) -> Reported {
+    let toks = normalize(text);
+    let word = |k: usize, w: &str| matches!(toks.get(k), Some(Token::Word(x)) if x == w);
+    // The level starting at `k` ("flight level N", "FL N", "altitude N", "N feet"), with the
+    // index after it.
+    let level_at = |mut k: usize| -> Option<(i32, usize)> {
+        while matches!(toks.get(k), Some(Token::Break)) || word(k, "through") || word(k, "to") {
+            k += 1;
+        }
+        let fl = if word(k, "flight") && word(k + 1, "level") {
+            k += 2;
+            true
+        } else if word(k, "fl") {
+            k += 1;
+            true
+        } else {
+            if word(k, "altitude") {
+                k += 1;
+            }
+            false
+        };
+        while matches!(toks.get(k), Some(Token::Break)) {
+            k += 1;
+        }
+        let Some(Token::Number(n)) = toks.get(k) else {
+            return None;
+        };
+        let v: i32 = n.parse().ok()?;
+        let ft = if fl { v * 100 } else { v };
+        (fl && (10..=600).contains(&v) || !fl && ft >= 500).then_some((ft, k + 1))
+    };
+    let (mut levels, mut passing) = (Vec::new(), false);
+    let (mut up, mut down) = (false, false);
+    let mut k = 0;
+    while k < toks.len() {
+        let w = match &toks[k] {
+            Token::Word(w) => w.as_str(),
+            _ => "",
+        };
+        match w {
+            "climb" | "climbing" => up = true,
+            "descend" | "descending" => down = true,
+            _ => {}
+        }
+        let after_verb = matches!(
+            w,
+            "passing"
+                | "climb"
+                | "climbing"
+                | "descend"
+                | "descending"
+                | "maintain"
+                | "maintaining"
+        );
+        let start = if after_verb { k + 1 } else { k };
+        let leading = matches!(w, "flight" | "fl" | "altitude")
+            || matches!(toks.get(k), Some(Token::Number(_)))
+                && (word(k + 1, "feet") || word(k + 1, "foot"));
+        if (after_verb || leading)
+            && let Some((ft, next)) = level_at(start)
+        {
+            if w == "passing" {
+                passing = true;
+            } else {
+                levels.push(ft);
+            }
+            k = next;
+            continue;
+        }
+        k += 1;
+    }
+    let level_ft = match (up, down) {
+        (true, false) => levels.iter().copied().max(),
+        (false, true) => levels.iter().copied().min(),
+        _ if levels.len() == 1 => levels.first().copied(),
+        _ => levels.last().copied(),
+    };
+    Reported { level_ft, passing }
 }
 
 /// The point `INTERCEPT_NM` out on the final to the threshold `thr` (final course `course`).
@@ -1464,6 +1542,47 @@ pub(super) fn says(text: &str, word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reported_level_by_the_pilots_words() {
+        let r = |t: &str| reported_level(t);
+        let lvl = |ft: i32, passing: bool| Reported {
+            level_ft: Some(ft),
+            passing,
+        };
+        assert_eq!(
+            r("passing four thousand seven hundred feet, climbing flight level one zero zero"),
+            lvl(10000, true)
+        );
+        assert_eq!(
+            r("passing four thousand seven hundred feet climbing five thousand feet"),
+            lvl(5000, true)
+        );
+        assert_eq!(
+            r("climbing five thousand feet, passing four thousand seven hundred"),
+            lvl(5000, true)
+        );
+        assert_eq!(
+            r("passing flight level eight zero descending five thousand feet"),
+            lvl(5000, true)
+        );
+        assert_eq!(
+            r("maintaining six thousand feet, inbound"),
+            lvl(6000, false)
+        );
+        assert_eq!(r("flight level one zero zero, inbound"), lvl(10000, false));
+        assert_eq!(
+            r("passing four thousand seven hundred feet, inbound"),
+            Reported {
+                level_ft: None,
+                passing: true
+            }
+        );
+        assert_eq!(
+            r("IFR, inbound, squawk four six zero one"),
+            Reported::default()
+        );
+    }
 
     #[test]
     fn approach_altitude_rounds_up() {

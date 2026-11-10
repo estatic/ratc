@@ -5385,6 +5385,12 @@ mod approach_arrival {
 
     /// SPTST, an IFR flight to ZZZZ cleared to FL100 by the unit it comes from, handed in.
     fn hand_in(e: &mut AtcEngine) {
+        hand_in_at(e, 10000);
+    }
+
+    /// [`hand_in`] with the plan cleared to `cleared_ft` (0: never cleared, as
+    /// `export_flight` hands such a plan over: no separate cleared level).
+    fn hand_in_at(e: &mut AtcEngine, cleared_ft: i32) {
         e.import_flight(atc_core::handover::FlightHandover {
             callsign: cs(),
             aircraft_type: "C172".into(),
@@ -5398,7 +5404,7 @@ mod approach_arrival {
                 star: None,
                 approach: None,
                 vectors: false,
-                cleared_ft: 10000,
+                cleared_ft,
                 direct: None,
                 heading: None,
                 approach_cleared: false,
@@ -5406,7 +5412,7 @@ mod approach_arrival {
                 established_check: false,
             }),
             squawk: Some(4601),
-            cleared_ft: Some(10000),
+            cleared_ft: Some(cleared_ft).filter(|&ft| ft > 0),
             rules: Some(atc_phraseology::FlightRules::Ifr),
             callsign_misses: 0,
         });
@@ -5493,6 +5499,85 @@ mod approach_arrival {
         let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
         assert_eq!(plan.cleared_ft, 5000);
         assert_eq!(plan.cruise_ft, 10000);
+    }
+
+    /// A handed-in flight reporting only the altitude it is passing: the level it was cleared
+    /// to comes from the hand-over (FL100), not from the call.
+    #[test]
+    fn handed_in_level_comes_from_the_hand_over() {
+        let mut e = engine();
+        hand_in(&mut e);
+        let pos = destination(
+            LatLon {
+                lat: 10.0,
+                lon: 10.0,
+            },
+            135.0,
+            30.0 * M_PER_NM,
+        );
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, passing four thousand seven \
+                    hundred feet, inbound to Zeta, information Alpha";
+        let (_, out) = inbound(&mut e, pos, 4700.0, 300.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (10000, 5000));
+    }
+
+    /// "Passing four thousand seven hundred, climbing five thousand", heard when the aircraft
+    /// is already at 4900 ft: the level is the one it climbs to, never the passing one.
+    #[test]
+    fn passing_level_is_never_the_target_late_in_the_climb() {
+        let mut e = engine();
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, passing four thousand \
+                    seven hundred feet climbing five thousand feet, inbound";
+        let (_, out) = inbound(&mut e, WEST, 4900.0, 90.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::MaintainLevel(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (5000, 5000));
+    }
+
+    /// "Passing four thousand seven hundred" alone reports no level: the arrival altitude is
+    /// given, the passing altitude is not echoed back.
+    #[test]
+    fn passing_only_gets_the_arrival_altitude() {
+        let mut e = engine();
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, passing four thousand \
+                    seven hundred feet, inbound";
+        let (_, out) = inbound(&mut e, WEST, 4700.0, 90.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+    }
+
+    /// A handed-in plan never cleared (level 0) is ignored: the level comes from the call.
+    #[test]
+    fn handed_in_zero_level_is_ignored() {
+        let mut e = engine();
+        hand_in_at(&mut e, 0);
+        let pos = destination(
+            LatLon {
+                lat: 10.0,
+                lon: 10.0,
+            },
+            135.0,
+            30.0 * M_PER_NM,
+        );
+        let (_, out) = inbound(&mut e, pos, 4700.0, 300.0, CLIMBING_FL100);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
     }
 
     /// Without a hand-over, the level a climbing pilot reports as a flight level is the one
