@@ -1,11 +1,18 @@
-//! Read-only X-Plane 11 reader over the UDP RREF protocol.
+//! The X-Plane 11 adapter: a read-only reader over the UDP RREF protocol ([`XPlaneReader`])
+//! and the overlay plugin for on-screen text and the follow-me car ([`XPlaneDisplay`]).
+
+pub mod datarefs;
+pub mod overlay;
+
 use crate::aircraft::SimAircraft;
-use crate::datarefs::{
+use crate::sim::{SimClock, SimDisplay, SimInfo, SimReader, SimUpdate};
+use atc_proto::{CloudLayer, ServerMsg, TelemetryFrame, WeatherFrame, overlay_command};
+use datarefs::{
     AIRCRAFT_ICAO, AIRCRAFT_TAIL, ALL, SLOT_COUNT, SUBSCRIPTION_COUNT, Slot, StrDataref,
     subscriptions,
 };
-use atc_proto::{CloudLayer, TelemetryFrame, WeatherFrame};
-use std::net::SocketAddr;
+use overlay::Overlay;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -62,29 +69,6 @@ pub fn decode_rref(packet: &[u8]) -> Result<Vec<(i32, f32)>, XpError> {
             )
         })
         .collect())
-}
-
-/// Client-side monotonic time. Advances only while the sim runs: not paused and
-/// `total_running_time_sec` growing. If the running time goes backwards (flight restarted)
-/// `t` simply holds and continues from the last value; the position jump is handled
-/// downstream as a telemetry discontinuity.
-#[derive(Debug, Default, Clone)]
-pub struct SimClock {
-    t: f64,
-    last_running: Option<f64>,
-}
-
-impl SimClock {
-    pub fn update(&mut self, running_sec: f64, paused: bool) -> f64 {
-        if let Some(prev) = self.last_running
-            && !paused
-            && running_sec > prev
-        {
-            self.t += running_sec - prev;
-        }
-        self.last_running = Some(running_sec);
-        self.t
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -253,14 +237,6 @@ fn cloud_cover(coverage: f64) -> Option<&'static str> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum XpUpdate {
-    Telemetry(TelemetryFrame),
-    Weather(WeatherFrame),
-    /// The aircraft type or tail number changed (also: first read). Not debounced.
-    Aircraft(SimAircraft),
-}
-
 #[derive(Debug, Clone)]
 pub struct XpConfig {
     /// X-Plane host and RREF port (default port 49000).
@@ -335,7 +311,7 @@ fn aircraft_update(state: &XPlaneState, last: &mut Option<SimAircraft>) -> Optio
 /// 5 s until the receiver is dropped or the task is cancelled. Only binding the local socket
 /// is fatal: send/receive errors (X-Plane not running yet, ICMP port unreachable reported on
 /// the next call) are logged and retried.
-pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Result<()> {
+pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<SimUpdate>) -> anyhow::Result<()> {
     let sock = Arc::new(UdpSocket::bind(cfg.local_bind).await?);
     let _guard = Unsubscribe {
         sock: sock.clone(),
@@ -378,12 +354,12 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
         state.apply(&values);
         if has_telemetry
             && let Some(f) = state.telemetry()
-            && tx.send(XpUpdate::Telemetry(f)).await.is_err()
+            && tx.send(SimUpdate::Telemetry(f)).await.is_err()
         {
             return Ok(());
         }
         if let Some(aircraft) = aircraft_update(&state, &mut last_aircraft)
-            && tx.send(XpUpdate::Aircraft(aircraft)).await.is_err()
+            && tx.send(SimUpdate::Aircraft(aircraft)).await.is_err()
         {
             return Ok(());
         }
@@ -391,9 +367,92 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
             && let Some(w) = state.weather()
         {
             last_weather = Some(Instant::now());
-            if tx.send(XpUpdate::Weather(w)).await.is_err() {
+            if tx.send(SimUpdate::Weather(w)).await.is_err() {
                 return Ok(());
             }
+        }
+    }
+}
+
+/// The simulator's name in console lines.
+pub const NAME: &str = "X-Plane";
+/// The client config key with the X-Plane address.
+pub const CONFIG_KEY: &str = "xplane";
+
+/// X-Plane at `address` (as configured).
+pub fn info(address: &str) -> SimInfo {
+    SimInfo {
+        name: NAME,
+        address: address.to_string(),
+        config_key: CONFIG_KEY,
+    }
+}
+
+/// [`run_xplane`] behind [`SimReader`].
+pub struct XPlaneReader {
+    cfg: XpConfig,
+    address: String,
+}
+
+impl XPlaneReader {
+    /// `address` is the configured `xplane` value, named in console lines.
+    pub fn new(cfg: XpConfig, address: String) -> Self {
+        Self { cfg, address }
+    }
+}
+
+impl SimReader for XPlaneReader {
+    fn info(&self) -> SimInfo {
+        info(&self.address)
+    }
+
+    fn spawn(self: Box<Self>, tx: mpsc::Sender<SimUpdate>) {
+        tokio::spawn(async move {
+            if let Err(e) = run_xplane(self.cfg, tx).await {
+                tracing::error!("X-Plane reader stopped: {e:#}");
+            }
+        });
+    }
+}
+
+/// On-screen text and the follow-me car through the overlay plugin; without an overlay,
+/// everything is dropped.
+pub struct XPlaneDisplay {
+    overlay: Option<Overlay>,
+}
+
+impl XPlaneDisplay {
+    pub fn new(overlay: Option<Overlay>) -> Self {
+        Self { overlay }
+    }
+
+    /// The overlay at `addr`; without one, with a warning, when the address is bad.
+    pub fn open(addr: &str) -> Self {
+        let to = match addr.to_socket_addrs().map(|mut a| a.next()) {
+            Ok(Some(to)) => to,
+            _ => {
+                tracing::warn!("overlay address {addr:?} does not resolve; no on-screen text");
+                return Self::new(None);
+            }
+        };
+        Self::new(
+            Overlay::new(to)
+                .inspect_err(|e| tracing::warn!("overlay socket: {e}; no on-screen text"))
+                .ok(),
+        )
+    }
+}
+
+impl SimDisplay for XPlaneDisplay {
+    fn show_text(&mut self, line: &str) {
+        if let Some(o) = &self.overlay {
+            o.send(line);
+        }
+    }
+
+    fn follow_me(&mut self, msg: &ServerMsg) {
+        if let (Some(o), Some(cmd)) = (&self.overlay, overlay_command(msg)) {
+            o.send(&cmd);
         }
     }
 }
@@ -401,6 +460,53 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<XpUpdate>) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::{SimDisplay, SimInfo, SimReader};
+    use atc_proto::{ServerMsg, parse_overlay_command};
+
+    fn recv_text(rx: &std::net::UdpSocket) -> String {
+        let mut buf = [0u8; 4096];
+        let n = rx.recv(&mut buf).unwrap();
+        String::from_utf8(buf[..n].to_vec()).unwrap()
+    }
+
+    #[test]
+    fn display_sends_text_and_follow_me() {
+        let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut d = XPlaneDisplay::new(Some(Overlay::new(rx.local_addr().unwrap()).unwrap()));
+        d.show_text("hello");
+        assert_eq!(recv_text(&rx), "hello");
+        let m = ServerMsg::FollowMe {
+            id: 3,
+            path: vec![[50.0, 19.0], [50.001, 19.0]],
+            end_heading_deg: 0.0,
+            aside_left: true,
+        };
+        d.follow_me(&m);
+        assert_eq!(parse_overlay_command(&recv_text(&rx)), Some(m));
+    }
+
+    #[test]
+    fn display_without_overlay_drops_everything() {
+        let mut d = XPlaneDisplay::new(None);
+        d.show_text("hello");
+        d.follow_me(&ServerMsg::FollowMeCancel { id: 3 });
+    }
+
+    #[test]
+    fn info_names_the_configured_address() {
+        assert_eq!(
+            info("127.0.0.1:49000"),
+            SimInfo {
+                name: "X-Plane",
+                address: "127.0.0.1:49000".into(),
+                config_key: "xplane",
+            }
+        );
+        let addr: SocketAddr = "127.0.0.1:49000".parse().unwrap();
+        let reader = XPlaneReader::new(XpConfig::new(addr), "host:49000".into());
+        assert_eq!(reader.info().address, "host:49000");
+    }
 
     fn pkt(vals: &[(i32, f32)]) -> Vec<u8> {
         let mut p = b"RREF,".to_vec();
@@ -595,25 +701,6 @@ mod tests {
         v[Slot::CloudBase0 as usize].1 = 0.0;
         s.apply(&v);
         assert!(s.weather().unwrap().clouds.is_empty());
-    }
-
-    #[test]
-    fn time_backwards_and_pause_are_forwarded_monotonic() {
-        let mut c = SimClock::default();
-        assert_eq!(c.update(100.0, false), 0.0);
-        assert!((c.update(100.2, false) - 0.2).abs() < 1e-9);
-        let t = c.update(100.4, false);
-        // paused: time frozen even though running time moves
-        assert_eq!(c.update(105.0, true), t);
-        assert_eq!(c.update(106.0, true), t);
-        // unpaused: only the delta since the last sample counts
-        let t2 = c.update(106.2, false);
-        assert!((t2 - t - 0.2).abs() < 1e-9);
-        // restart: running time jumps back; t holds, then keeps growing from there
-        let t3 = c.update(3.0, false);
-        assert_eq!(t3, t2);
-        let t4 = c.update(3.2, false);
-        assert!((t4 - t2 - 0.2).abs() < 1e-9);
     }
 
     #[test]

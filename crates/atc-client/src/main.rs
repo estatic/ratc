@@ -12,12 +12,13 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow, bail};
 use atc_client::aircraft::{Identity, IdentityTracker, UNKNOWN_TYPE};
 use atc_client::app::{App, Input, spawn_links};
+use atc_client::audio;
 use atc_client::config::ClientConfig;
 use atc_client::connection::{Backoff, ConnConfig};
-use atc_client::overlay::{DEFAULT_ADDR, Overlay};
 use atc_client::ptt::{PttInput, parse_key, spawn_joystick, spawn_keyboard};
 use atc_client::record::TrackWriter;
-use atc_client::{XpConfig, audio};
+use atc_client::sim::xplane::XpConfig;
+use atc_client::sim::xplane::overlay::{DEFAULT_ADDR, Overlay};
 use atc_proto::CallsignSource;
 use tokio::sync::{mpsc, watch};
 

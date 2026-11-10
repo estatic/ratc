@@ -9,7 +9,8 @@ use std::time::Duration;
 use atc_client::aircraft::Identity;
 use atc_client::app::{App, Input, spawn_links};
 use atc_client::connection::{Backoff, ConnConfig, Outgoing, ServerEvent, run_connection};
-use atc_client::{XpConfig, XpUpdate};
+use atc_client::sim::SimUpdate;
+use atc_client::sim::xplane::XpConfig;
 use atc_proto::{CallsignSource, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame};
 use common::fake_xp::{T, answer, read_subscriptions};
 use common::server::{GROUND, TAXI_REQUEST, parked, start, start_on};
@@ -316,7 +317,7 @@ async fn xplane_reader_feeds_links() {
     let (client, names) = read_subscriptions(&fake).await;
     answer(&fake, client, &names, parked_value).await;
     loop {
-        if let Input::Xp(XpUpdate::Telemetry(f)) = timeout(T, rx.recv()).await.unwrap().unwrap() {
+        if let Input::Sim(SimUpdate::Telemetry(f)) = timeout(T, rx.recv()).await.unwrap().unwrap() {
             assert_eq!(f.com1_khz, GROUND);
             break;
         }

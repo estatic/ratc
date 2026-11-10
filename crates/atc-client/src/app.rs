@@ -17,7 +17,8 @@ use crate::connection::{ConnConfig, Outgoing, ServerEvent, run_connection};
 use crate::playback::{Playback, should_play};
 use crate::ptt::{PttEvent, PttInput, PttMerger};
 use crate::record::TrackWriter;
-use crate::xplane::{XpConfig, XpUpdate, run_xplane};
+use crate::sim::SimUpdate;
+use crate::sim::xplane::{XpConfig, run_xplane};
 
 /// After stdin ends, keep printing replies to what was typed for this long.
 const LINGER: Duration = Duration::from_secs(3);
@@ -30,7 +31,7 @@ const WAIT_NOTICE: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub enum Input {
-    Xp(XpUpdate),
+    Sim(SimUpdate),
     Server(ServerEvent),
     /// A typed line (text mode).
     Line(String),
@@ -66,7 +67,7 @@ pub fn spawn_links(
         loop {
             let input = tokio::select! {
                 Some(e) = ev_rx.recv() => Input::Server(e),
-                Some(u) = xp_rx.recv() => Input::Xp(u),
+                Some(u) = xp_rx.recv() => Input::Sim(u),
                 else => return,
             };
             if inputs.send(input).await.is_err() {
@@ -209,7 +210,7 @@ impl App {
                 },
                 Input::Mic(pcm) => self.mic(pcm).await,
                 Input::Line(l) => self.line(&l).await,
-                Input::Xp(u) => self.xp(u).await,
+                Input::Sim(u) => self.xp(u).await,
                 Input::Server(e) => self.server(e),
             }
         }
@@ -246,9 +247,9 @@ impl App {
         }
     }
 
-    async fn xp(&mut self, u: XpUpdate) {
+    async fn xp(&mut self, u: SimUpdate) {
         match u {
-            XpUpdate::Telemetry(f) => {
+            SimUpdate::Telemetry(f) => {
                 let heard = f.heard_khz();
                 if self.com1 != Some(f.com1_khz) || self.heard != heard {
                     let prefix = if self.com1.is_none() {
@@ -271,14 +272,16 @@ impl App {
                 }
                 self.send(ClientMsg::Telemetry(f)).await;
             }
-            XpUpdate::Weather(w) => self.send(ClientMsg::Weather(w)).await,
-            XpUpdate::Aircraft(a) => {
+            SimUpdate::Weather(w) => self.send(ClientMsg::Weather(w)).await,
+            SimUpdate::Aircraft(a) => {
                 if let Some(tracker) = &mut self.identity
                     && let Some(l) = tracker.observe(std::time::Instant::now(), a)
                 {
                     self.say(&l);
                 }
             }
+            // used from phase 5 (traffic drawing range)
+            SimUpdate::DrawRange { .. } => {}
         }
     }
 

@@ -1,6 +1,7 @@
 mod common;
 
-use atc_client::{XpConfig, XpUpdate, run_xplane};
+use atc_client::sim::SimUpdate;
+use atc_client::sim::xplane::{XpConfig, run_xplane};
 use common::fake_xp::{T, answer, parse_request, read_subscriptions};
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -51,9 +52,9 @@ async fn fake_xplane_end_to_end() {
     let mut got_w = None;
     while got_t.is_none() || got_w.is_none() {
         match timeout(T, rx.recv()).await.unwrap().unwrap() {
-            XpUpdate::Telemetry(f) => got_t = Some(f),
-            XpUpdate::Weather(w) => got_w = Some(w),
-            XpUpdate::Aircraft(_) => {}
+            SimUpdate::Telemetry(f) => got_t = Some(f),
+            SimUpdate::Weather(w) => got_w = Some(w),
+            SimUpdate::Aircraft(_) | SimUpdate::DrawRange { .. } => {}
         }
     }
     let f = got_t.unwrap();
@@ -71,7 +72,7 @@ async fn fake_xplane_end_to_end() {
     drop(rx);
     let mut buf = [0u8; 1024];
     let mut unsub = 0;
-    while unsub < atc_client::datarefs::SUBSCRIPTION_COUNT {
+    while unsub < atc_client::sim::xplane::datarefs::SUBSCRIPTION_COUNT {
         let (n, _) = timeout(T, fake.recv_from(&mut buf)).await.unwrap().unwrap();
         if parse_request(&buf[..n]).0 == 0 {
             unsub += 1;
@@ -112,7 +113,7 @@ async fn survives_unreachable_xplane() {
     let (client, names) = read_subscriptions(&fake).await;
     answer(&fake, client, &names, value).await;
     loop {
-        if let XpUpdate::Telemetry(f) = timeout(T, rx.recv()).await.unwrap().unwrap() {
+        if let SimUpdate::Telemetry(f) = timeout(T, rx.recv()).await.unwrap().unwrap() {
             assert_eq!(f.com1_khz, 118_105);
             break;
         }
