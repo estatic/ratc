@@ -7807,6 +7807,39 @@ mod handover {
         }
     }
 
+    /// A garbled transmission does not use up a handed-in flight's first call.
+    #[test]
+    fn garbled_transmission_does_not_use_up_the_first_call() {
+        let mut e = engine();
+        let mut plan = ifr_plan("ZZZZ", "Zeta", 2000);
+        plan.ifr = false;
+        let mut h = handover(plan);
+        h.rules = Some(FlightRules::Vfr);
+        e.import_flight(h);
+        let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
+        airborne(&mut e, west, 2000.0, 90.0);
+        let out = say(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, blah blah blah",
+        );
+        assert_eq!(items(&out), vec![AtcItem::SayAgain], "{out:?}");
+        let call = "Zeta Tower, Sierra Papa Tango Sierra Tango, two thousand feet";
+        let out = say(&mut e, TWR, call);
+        assert_eq!(
+            items(&out),
+            vec![
+                AtcItem::Station {
+                    station: "Zeta Tower".into()
+                },
+                AtcItem::Roger
+            ],
+            "{out:?}"
+        );
+        let out = say(&mut e, TWR, call);
+        assert_eq!(items(&out), vec![AtcItem::SayAgain], "{out:?}");
+    }
+
     /// Approach without telemetry yet keeps a handed-in flight handed in for its next call;
     /// only the literal first call gets the acknowledgement.
     #[test]

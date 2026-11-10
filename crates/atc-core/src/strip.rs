@@ -227,6 +227,10 @@ pub struct Strip {
     /// descent to the intercept altitude waits until it is reached (or the intercept).
     #[serde(default)]
     pub missed_climb: bool,
+    /// A flight handed in has not yet had an understood call since the hand-in: that call
+    /// is acknowledged as its first contact rather than answered "say again".
+    #[serde(default)]
+    pub first_call_due: bool,
     /// The Approach frequency the aircraft last called on (the unit has several); Approach
     /// answers on it.
     pub approach_khz: Option<u32>,
@@ -325,6 +329,7 @@ impl Strip {
             radio_failure: false,
             missed_approach: false,
             missed_climb: false,
+            first_call_due: false,
             approach_khz: None,
             vfr: None,
             vfr_exit: None,
