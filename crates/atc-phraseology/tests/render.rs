@@ -300,6 +300,10 @@ fn stand_names_with_words_are_spoken() {
     assert_eq!(stand("Z4"), "taxi to stand Zulu four");
     assert_eq!(stand("GA12"), "taxi to stand Golf Alpha one two");
     assert_eq!(stand("Hangar"), "taxi to stand hangar");
+    // Punctuation separates runs and is not said.
+    assert_eq!(stand("APRON-4"), "taxi to stand apron four");
+    assert_eq!(stand("GA/1"), "taxi to stand Golf Alpha one");
+    assert_eq!(stand("A-B-"), "taxi to stand Alpha Bravo");
 }
 
 #[test]

@@ -312,6 +312,10 @@ fn stand_names_with_words_are_spoken_pl() {
         taxi("9R"),
         "kołuj za samochodem follow me do stanowiska dziewięć Romeo"
     );
+    assert_eq!(
+        taxi("APRON-4"),
+        "kołuj za samochodem follow me do stanowiska apron cztery"
+    );
 }
 
 #[test]

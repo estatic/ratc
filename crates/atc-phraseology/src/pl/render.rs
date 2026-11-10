@@ -69,7 +69,8 @@ pub fn runway_words(rwy: &str) -> String {
 /// A letter run of a name this long or longer is said as a word, a shorter one is spelled.
 const WORD_MIN_LETTERS: usize = 4;
 
-/// A stand name made speakable: each word split into runs of digits and of letters;
+/// A stand name made speakable: each word split into runs of digits and of letters
+/// (punctuation separates runs and is dropped);
 /// digits and runs of up to three letters are spelled (`"9R"` -> "dziewięć Romeo", `"GA"`
 /// -> "Golf Alfa"), longer runs are said as a word (`"APRON4 GA"` -> "apron cztery Golf
 /// Alfa").
@@ -88,6 +89,11 @@ fn name_words(name: &str) -> String {
             run.clear();
         };
         for c in word.chars() {
+            // Punctuation separates runs and is not said ("APRON-4").
+            if !c.is_alphanumeric() {
+                flush(&mut run, &mut parts);
+                continue;
+            }
             let digit = c.is_ascii_digit();
             if run.starts_with(|r: char| r.is_ascii_digit()) != digit {
                 flush(&mut run, &mut parts);
