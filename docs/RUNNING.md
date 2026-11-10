@@ -120,7 +120,8 @@ used. After installing or removing airport scenery, restart both X-Plane and the
   (`Resources/default data/CIFP/EPKK.dat`) through `xplane_root`. Without CIFP the controller
   answers an IFR request with `IFR not available, VFR only`.
 - A step-by-step guide to instrument departures and arrivals and to VFR entry via the reporting
-  points on a C172 G1000 (in Russian): `docs/user-guide/ru/ifr-and-vfr-points.md`; the wording
+  points on a C172 G1000: `docs/user-guide/en/ifr-and-vfr-points.md` (Russian:
+  `docs/user-guide/ru/ifr-and-vfr-points.md`); the wording
   with its sources: `docs/phraseology/en.md`.
 
 ### Languages: English and Polish
@@ -131,8 +132,8 @@ used. After installing or removing airport scenery, restart both X-Plane and the
   Polish (`[pl.ground]`, `[pl.tower]`, `[pl.atis]`) voices of `config/voices.toml`; without a
   Polish voice a station speaks with its English one.
 - Polish phraseology (what the parser understands and what the controller answers):
-  `docs/phraseology/pl.md`; a step-by-step Polish circuit (in Russian):
-  `docs/user-guide/ru/polish-circuit.md`.
+  `docs/phraseology/pl.md`; a step-by-step Polish circuit:
+  `docs/user-guide/en/polish-circuit.md` (Russian: `docs/user-guide/ru/polish-circuit.md`).
 
 ## Stations and the airport wizard
 

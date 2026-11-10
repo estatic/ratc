@@ -1,5 +1,7 @@
 # Сценарий: самостоятельный круг, ВПП 25 (EPKK)
 
+**Русский** · [English](../en/scenario-circuit.md)
+
 Левый круг на высоте 1800 ft, в хорошую погоду. Реплики взяты из записанного полёта, по которому проходят тесты (`scenarios/epkk-circuit-vmc.toml`). Позывной — SP-ABC, сокращённо Sierra Bravo Charlie.
 
 ## Подготовка
@@ -54,6 +56,6 @@ C172 стоит на стоянке EPKK. Станцию выбирает час
 | Ground | Sierra Bravo Charlie, taxi to stand three five via Charlie, Bravo four |
 | Ты | Taxi to stand three five via Charlie, Bravo four, Sierra Bravo Charlie |
 | Ты (на стоянке) | Sierra Bravo Charlie, on stand three five |
-| Ground | good day |
+| Ground | Sierra Bravo Charlie, good day |
 
 Если потерялся при рулении: «Sierra Bravo Charlie, I am lost, I need help». Если не найдёшь стоянку — «request follow-me».

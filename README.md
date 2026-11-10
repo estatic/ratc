@@ -279,10 +279,13 @@ hand-made `data/airports/EPKK/procedures.toml`, used when there is no `station.t
 
 Step-by-step flights: IFR flight EPKK → EPKT
 ([English](docs/user-guide/en/scenario-ifr-departure.md),
-[Russian](docs/user-guide/ru/scenario-ifr-departure.md)); in Russian only for now:
-[VFR circuit](docs/user-guide/ru/scenario-circuit.md),
-[IFR and VFR points](docs/user-guide/ru/ifr-and-vfr-points.md),
-[Polish circuit](docs/user-guide/ru/polish-circuit.md). Phraseology the controller understands:
+[Russian](docs/user-guide/ru/scenario-ifr-departure.md)); VFR circuit
+([English](docs/user-guide/en/scenario-circuit.md),
+[Russian](docs/user-guide/ru/scenario-circuit.md)); IFR and VFR points
+([English](docs/user-guide/en/ifr-and-vfr-points.md),
+[Russian](docs/user-guide/ru/ifr-and-vfr-points.md)); Polish circuit
+([English](docs/user-guide/en/polish-circuit.md),
+[Russian](docs/user-guide/ru/polish-circuit.md)). Phraseology the controller understands:
 [English](docs/phraseology/en.md), [Polish](docs/phraseology/pl.md). More detail on every
 option: [docs/RUNNING.md](docs/RUNNING.md).
 

@@ -1,5 +1,7 @@
 # IFR и точки VFR на Cessna 172 G1000 (EPKK)
 
+**Русский** · [English](../en/ifr-and-vfr-points.md)
+
 Три полёта для проверки в X-Plane 11 на Cessna 172 G1000: вылет по приборам EPKK→EPKT, прилёт по приборам EPKT→EPKK с заходом ILS 25 и вход в зону Кракова по точке VFR ZULU. Реплики пилота ниже взяты дословно из сценариев в `scenarios/`, ответы диспетчера — из их эталонов `*.expected.txt`, поэтому всё написанное проверяется тестами (`cargo test -p atc-replay`). Общий порядок работы с клиентом и PTT — в `docs/RUNNING.md`; пошаговый круг — в `docs/user-guide/ru/polish-circuit.md`.
 
 Позывной в примерах — SP-ABC (`Sierra Papa Alpha Bravo Charlie`, сокращённо `Sierra Bravo Charlie`). Обмен в этом руководстве английский (`language = "en"` или автоопределение).
@@ -46,7 +48,7 @@ SID, STAR и заходы сервер берёт из CIFP вашей уста�
 - **Tower сам вызывает вас после Ground.** Когда Ground передал на Tower и вы выставили 123.255 перед ВПП, начальный вызов не нужен (AIP AD 2.20): Tower сам даёт разрешение на взлёт. Ваш вызов не вреден, но не требуется. Если транспондер не выставлен, Tower скажет `check squawk` или `squawk Charlie`: поставьте код и режим ALT.
 - **Переход с Delivery на Ground:** диспетчер сам называет частоту (`contact Kraków Ground one one eight decimal one zero five`), читайте её обратно.
 - **Квитанции проверяются.** Ошибка в SID, высоте, QNH, коде, ВПП — `negative` и повтор. Читайте обратно именно то, что в разрешении.
-- **Уровни:** переходная высота 6500 ft. Ниже — высоты по QNH, выше — эшелоны. Эшелон по умолчанию для C172 — 5000 ft; другой назовите в запросе.
+- **Уровни:** переходная высота 6500 ft. Ниже — высоты по QNH, выше — эшелоны. Эшелон по умолчанию для C172 — 5000 ft; другой назовите в запросе. На вылете по SID разрешение не ниже самого высокого ограничения «на этом уровне или выше» на SID: FL100 на SUDOL 2J и SUDOL 1F.
 
 ## 2. Загрузка процедур в G1000 (стандартный порядок X-Plane 11)
 
@@ -180,7 +182,11 @@ Approach:
 
 > Sierra Papa Alpha Bravo Charlie, identified
 
-Набирайте эшелон 100 (FL100) по SID: разрешение берёт самое высокое ограничение «на этом уровне или выше» из SID (у SUDOL 2J и SUDOL 1F это FL100), потолки SID его ограничивают. Когда вы прошли первый поворот SID и набираете эшелон, Approach выдаёт срезку:
+Набирайте эшелон 100 (FL100) по SID: разрешение берёт самое высокое ограничение «на этом уровне или выше» из SID (у SUDOL 2J и SUDOL 1F это FL100), потолки SID его ограничивают.
+
+Дальше всё зависит от того, какие станции загружены.
+
+**Загружена только станция EPKK.** Когда вы прошли первый поворот SID и набираете эшелон, Approach выдаёт срезку:
 
 > Sierra Bravo Charlie, proceed direct Katowice
 
@@ -188,9 +194,7 @@ Approach:
 
 > Direct Katowice, Sierra Bravo Charlie
 
-Дальше всё зависит от того, какие станции загружены.
-
-**Загружена только станция EPKK.** Примерно за 20 NM до EPKT:
+Примерно за 20 NM до EPKT:
 
 > Sierra Bravo Charlie, descend to altitude three thousand feet, QNH one zero one three
 
@@ -216,7 +220,7 @@ Katowice Tower:
 
 На этом полёт 1 закончен: здесь Katowice Tower — граничная станция EPKK, дальнейшего обслуживания у неё нет. Посадка в EPKT в этом случае не моделируется.
 
-**Загружены обе станции (EPKK и EPKT).** За 30 NM до EPKT Approach передаёт вас диспетчеру Approach станции EPKT. Передача всегда объявляется и читается обратно, даже когда частота та же (121.075 у обеих станций); 20-мильного снижения у вылетной станции в этом случае нет, вы на FL100 или ещё набираете его.
+**Загружены обе станции (EPKK и EPKT).** За 30 NM до EPKT Approach передаёт вас диспетчеру Approach станции EPKT. Передача всегда объявляется и читается обратно, даже когда частота та же (121.075 у обеих станций). Срезки `direct Katowice` и 20-мильного снижения у вылетной станции в этом случае нет: передача происходит раньше, и на C172 вы ещё набираете высоту (в записи около 4200 ft).
 
 > Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five
 
@@ -224,9 +228,9 @@ Katowice Tower:
 
 > Approach one two one decimal zero seven five, Sierra Bravo Charlie
 
-Это Approach станции EPKT. Вызовите его (частота та же, переставлять COM1 не нужно):
+Это Approach станции EPKT. Вызовите его (частота та же, переставлять COM1 не нужно), назвав высоту, которую проходите, и разрешённый эшелон:
 
-> Kraków Approach, Sierra Papa Alpha Bravo Charlie, flight level one zero zero, inbound to Katowice
+> Kraków Approach, Sierra Papa Alpha Bravo Charlie, passing four thousand seven hundred feet, climbing flight level one zero zero, inbound to Katowice, information Alpha
 
 Approach EPKT опознаёт борт и ведёт его на заход по данным станции EPKT: STAR или курс, высоту, QNH и `expect ILS approach runway two seven`. В записи полного полёта это `turn right heading three four five, climb altitude five thousand feet` (см. [scenario-ifr-departure.md](scenario-ifr-departure.md)). Если на первый вызов принятого борта нечего ответить, диспетчер говорит `Kraków Approach, roger`, а не `say again`.
 
@@ -326,7 +330,7 @@ Tower:
 
 Ground:
 
-> Sierra Papa Alpha Bravo Charlie, taxi to stand niner romeo via Charlie, Bravo four, Golf, Zulu one, Zulu two, Zulu three
+> Sierra Papa Alpha Bravo Charlie, taxi to stand niner Romeo via Charlie, Bravo four, Golf, Zulu one, Zulu two, Zulu three
 
 Пилот:
 
