@@ -4487,6 +4487,36 @@ mod approach_departure {
         }
     }
 
+    /// Ground says the stand `APRON4 GA` as "apron four Golf Alpha"; the pilot asking for it
+    /// that way and reading the clearance back as it was said is understood.
+    #[test]
+    fn stand_said_as_ground_says_it_is_read_back() {
+        let mut e = engine_with_stands(&[("APRON4 GA", NEAR_GA)]);
+        parked_on_stand_1(&mut e);
+        let out = say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to stand apron four Golf Alpha"),
+        );
+        assert!(
+            matches!(&out[0].message.items[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "APRON4 GA"),
+            "{out:?}"
+        );
+        let text = &out[0].text;
+        assert!(text.contains("stand apron four Golf Alpha"), "{text}");
+        // The clearance read back word for word, the callsign moved to the end.
+        let (_, clearance) = text.split_once(", ").unwrap();
+        let rb = format!("{clearance}, {CS}");
+        let answer = say(&mut e, GND, &rb);
+        assert!(answer.is_empty(), "{rb}: {answer:?}");
+        assert!(
+            e.strip(&Callsign::new("SPTST"))
+                .unwrap()
+                .pending_readback
+                .is_none()
+        );
+    }
+
     /// Of two stands with one name, the nearest free one: not the one another aircraft is on.
     #[test]
     fn duplicate_stand_names_pick_the_nearest_free() {

@@ -295,6 +295,25 @@ fn unable_pl() {
     );
 }
 
+/// Stand names: letter runs of four letters or more are spoken as words, shorter ones and
+/// digits are spelled.
+#[test]
+fn stand_names_with_words_are_spoken_pl() {
+    let taxi = |name: &str| {
+        one(AtcItem::FollowTheFollowMe {
+            to: TaxiTo::Stand { name: name.into() },
+        })
+    };
+    assert_eq!(
+        taxi("APRON4 GA"),
+        "kołuj za samochodem follow me do stanowiska apron cztery Golf Alfa"
+    );
+    assert_eq!(
+        taxi("9R"),
+        "kołuj za samochodem follow me do stanowiska dziewięć Romeo"
+    );
+}
+
 #[test]
 fn follow_me_pl() {
     assert_eq!(

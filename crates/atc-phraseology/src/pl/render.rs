@@ -66,18 +66,37 @@ pub fn runway_words(rwy: &str) -> String {
         .join(", ")
 }
 
-/// A stand name: a word containing a digit is spelled character by character.
+/// A letter run of a name this long or longer is said as a word, a shorter one is spelled.
+const WORD_MIN_LETTERS: usize = 4;
+
+/// A stand name made speakable: each word split into runs of digits and of letters;
+/// digits and runs of up to three letters are spelled (`"9R"` -> "dziewięć Romeo", `"GA"`
+/// -> "Golf Alfa"), longer runs are said as a word (`"APRON4 GA"` -> "apron cztery Golf
+/// Alfa").
 fn name_words(name: &str) -> String {
-    name.split_whitespace()
-        .map(|w| {
-            if w.chars().any(|c| c.is_ascii_digit()) {
-                spell(w)
-            } else {
-                w.to_string()
+    let mut parts = Vec::new();
+    for word in name.split_whitespace() {
+        let mut run = String::new();
+        let flush = |run: &mut String, parts: &mut Vec<String>| {
+            if run.chars().count() >= WORD_MIN_LETTERS
+                && !run.starts_with(|c: char| c.is_ascii_digit())
+            {
+                parts.push(run.to_lowercase());
+            } else if !run.is_empty() {
+                parts.push(spell(run));
             }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+            run.clear();
+        };
+        for c in word.chars() {
+            let digit = c.is_ascii_digit();
+            if run.starts_with(|r: char| r.is_ascii_digit()) != digit {
+                flush(&mut run, &mut parts);
+            }
+            run.push(c);
+        }
+        flush(&mut run, &mut parts);
+    }
+    parts.join(" ")
 }
 
 fn wind_words(w: &Wind) -> String {
