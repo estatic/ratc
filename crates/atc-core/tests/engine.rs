@@ -4282,30 +4282,27 @@ mod approach_departure {
         assert!(f.heard.is_empty(), "{:?}", f.heard);
     }
 
-    #[test]
-    fn departure_beyond_tma_below_acc_goes_to_fis() {
-        let mut e = engine();
-        let mut f = departed(&mut e, "Farland", true);
+    /// Flies the Farland departure up to the hand-off and checks that Approach clears the
+    /// aircraft direct to ALFAX (not to Farland) and then hands it to Zeta Information.
+    fn fly_farland_departure(e: &mut AtcEngine) {
+        let mut f = departed(e, "Farland", true);
         let tower = f.heard.drain(..).next().unwrap();
-        assert!(say(&mut e, TWR, &readback(&tower.message.items, CS_ABBR)).is_empty());
-        assert_eq!(
-            items(&say(&mut e, APP, AIRBORNE)),
-            vec![AtcItem::Identified]
-        );
+        assert!(say(e, TWR, &readback(&tower.message.items, CS_ABBR)).is_empty());
+        assert_eq!(items(&say(e, APP, AIRBORNE)), vec![AtcItem::Identified]);
         // Farland is beyond the TMA: direct to the SID's last fix.
         let any = |h: &[AtcOutput]| !h.is_empty();
-        f.fly_to(&mut e, ZZ002, CLIMB, &any);
+        f.fly_to(e, ZZ002, CLIMB, &any);
         assert_eq!(
             items(&f.heard),
             vec![AtcItem::DirectTo {
                 fix: "ALFAX".into()
             }]
         );
-        assert!(say(&mut e, APP, &format!("direct Alfax, {CS_ABBR}")).is_empty());
+        assert!(say(e, APP, &format!("direct Alfax, {CS_ABBR}")).is_empty());
         f.heard.clear();
-        f.fly_to(&mut e, ALFAX, CLIMB, &any);
+        f.fly_to(e, ALFAX, CLIMB, &any);
         assert!(f.heard.is_empty(), "{:?}", f.heard);
-        f.fly_to(&mut e, FARLAND, CLIMB, &any);
+        f.fly_to(e, FARLAND, CLIMB, &any);
         let home = LatLon {
             lat: 10.0,
             lon: 10.0,
@@ -4330,6 +4327,30 @@ mod approach_departure {
                 .as_deref(),
             Some("Zeta Information")
         );
+    }
+
+    #[test]
+    fn departure_beyond_tma_below_acc_goes_to_fis() {
+        let mut e = engine();
+        fly_farland_departure(&mut e);
+    }
+
+    #[test]
+    fn far_adjacent_tower_does_not_block_the_en_route_hand_off() {
+        // Farland is 80 NM away, beyond the neighbour radius: its tower is not worked.
+        let mut e = engine_with_procs(
+            |p| {
+                p.adjacent.push(AdjacentUnit {
+                    callsign: "Farland Tower".into(),
+                    khz: 118500,
+                    kind: AdjacentKind::Tower,
+                    airport: Some("ZZZF".into()),
+                    min_level_ft: None,
+                });
+            },
+            |_| {},
+        );
+        fly_farland_departure(&mut e);
     }
 
     #[test]

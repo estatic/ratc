@@ -96,10 +96,10 @@ const DEST_TOWER_M: f64 = 10.0 * M_PER_NM;
 /// The destination's Approach (another loaded station) takes the flight this far from the
 /// destination.
 const DEST_APPROACH_M: f64 = 30.0 * M_PER_NM;
-/// The destination's Approach (another loaded station) works the flight only when the
-/// destination's reference point lies within this distance of this station's airport: a
-/// neighbour. A destination farther away gets the usual ACC/FIS hand-off (or release) on
-/// leaving the TMA, as with no destination Approach.
+/// The destination's Approach (another loaded station) or adjacent tower works the flight
+/// only when the destination's reference point lies within this distance of this station's
+/// airport: a neighbour. A destination farther away gets the usual ACC/FIS hand-off (or
+/// release) on leaving the TMA, as with neither unit.
 const NEIGHBOUR_DEST_M: f64 = 60.0 * M_PER_NM;
 
 /// A hand-off due: the unit's callsign (empty for a release), the ICAO code of the airport
@@ -1113,8 +1113,9 @@ impl AtcEngine {
 
     /// The hand-off due at `pos`: to the destination's Approach (another loaded station)
     /// within 30 NM of the destination, else to its tower within 10 NM; with neither, to the
-    /// ACC or FIS (or a release) on leaving the TMA. Nothing farther out from a destination
-    /// with an Approach or a tower.
+    /// ACC or FIS (or a release) on leaving the TMA. Nothing farther out from a neighbouring
+    /// destination with an Approach or a tower; a tower or Approach beyond the neighbour
+    /// radius counts as neither.
     fn hand_off(&self, plan: &FlightPlan, pos: LatLon) -> Option<HandOff> {
         let contact = |u: &AdjacentUnit| AtcItem::Contact {
             station: u.callsign.clone(),
@@ -1170,10 +1171,7 @@ impl AtcEngine {
     /// ([`AtcEngine::set_station_units`]) has one and the destination is a neighbour: within
     /// [`NEIGHBOUR_DEST_M`] of this station's airport.
     fn destination_approach(&self, plan: &FlightPlan) -> Option<&AdjacentUnit> {
-        let dest = self.destination_pos(plan)?;
-        if distance_m(self.airport_ref()?, dest) > NEIGHBOUR_DEST_M {
-            return None;
-        }
+        self.neighbour_destination(plan)?;
         self.station_units.iter().find(|u| {
             u.kind == AdjacentKind::Approach
                 && u.airport
@@ -1182,8 +1180,17 @@ impl AtcEngine {
         })
     }
 
-    /// The adjacent tower of the flight's destination.
+    /// The destination's reference point when it is a neighbour: within
+    /// [`NEIGHBOUR_DEST_M`] of this station's airport.
+    fn neighbour_destination(&self, plan: &FlightPlan) -> Option<LatLon> {
+        let dest = self.destination_pos(plan)?;
+        (distance_m(self.airport_ref()?, dest) <= NEIGHBOUR_DEST_M).then_some(dest)
+    }
+
+    /// The adjacent tower of the flight's destination, when the destination is a neighbour
+    /// ([`NEIGHBOUR_DEST_M`]); a tower farther away is not worked.
     fn destination_tower(&self, plan: &FlightPlan) -> Option<&AdjacentUnit> {
+        self.neighbour_destination(plan)?;
         self.procs.adjacent.iter().find(|u| {
             u.kind == AdjacentKind::Tower
                 && u.airport
