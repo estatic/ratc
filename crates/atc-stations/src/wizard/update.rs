@@ -7,7 +7,6 @@ use std::path::Path;
 use atc_navdata::apt::parse_apt_dat;
 use atc_navdata::model::Airport;
 use atc_navdata::procedures::{PositionDef, Procedures};
-use atc_navdata::xplane::resolve_airport;
 
 use super::{
     APT_DAT, META, Meta, PROCEDURES, Prompt, STATION, StationDir, WizardEnv, combined,
@@ -318,8 +317,8 @@ fn match_positions(old: &[PositionDef], offered: &[PositionDef]) -> Matched {
 
 /// The X-Plane layout of an existing station: from the install, else its own `apt.dat`.
 fn layout_for_update(env: &WizardEnv, id: &str, dir: &Path) -> Result<Airport, String> {
-    if let Some(xp) = &env.xplane_root
-        && let Ok(r) = resolve_airport(xp, id)
+    if let Some(src) = &env.source
+        && let Ok(r) = src.airport_layout(id)
     {
         return r.parse(id).map_err(|e| e.to_string());
     }

@@ -4,8 +4,10 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use atc_navdata::procedures::Procedures;
+use atc_navdata::xplane::XPlaneSource;
 use atc_stations::openaip::{
     ApiError, Endpoint, FakeApi, Listed, OaAirport, OaAirspace, OaFrequency, OaReportingPoint,
     OpenAipApi, Progress,
@@ -81,7 +83,9 @@ fn ctx(tag: &str) -> Ctx {
     std::fs::create_dir_all(&root).unwrap();
     let env = WizardEnv {
         data_dir: root.join("data"),
-        xplane_root: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xp")),
+        source: Some(Arc::new(XPlaneSource::new(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xp"),
+        ))),
         store: Store::at(root.join("store")),
         key_dir: root.join("config"),
         now_utc: now,
@@ -232,7 +236,7 @@ fn no_xplane_layout_creates_nothing() {
 
     // Without an X-Plane install nothing can be created at all.
     let mut c = c;
-    c.env.xplane_root = None;
+    c.env.source = None;
     let out = c.run(&format!("n\n{CREATE_ZZZZ}6\n"));
     assert!(
         out.contains("No X-Plane layout for ZETA INTERNATIONAL"),

@@ -9,8 +9,10 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use atc_geo::LatLon;
+use atc_navdata::source::SimDataSource;
 use serde::{Deserialize, Serialize};
 
 pub use crate::prompt::Prompt;
@@ -52,7 +54,8 @@ const KEY_CHECK_COUNTRY: &str = "PL";
 pub struct WizardEnv {
     /// The server's station directory (`data/airports`).
     pub data_dir: PathBuf,
-    pub xplane_root: Option<PathBuf>,
+    /// The simulator data the layouts are read from; none = no layout, nothing is created.
+    pub source: Option<Arc<dyn SimDataSource>>,
     pub store: Store,
     /// Directory of the key file (`openaip.toml`).
     pub key_dir: PathBuf,
@@ -64,13 +67,13 @@ impl WizardEnv {
     /// An environment on the system clock.
     pub fn new(
         data_dir: PathBuf,
-        xplane_root: Option<PathBuf>,
+        source: Option<Arc<dyn SimDataSource>>,
         store: Store,
         key_dir: PathBuf,
     ) -> Self {
         Self {
             data_dir,
-            xplane_root,
+            source,
             store,
             key_dir,
             now_utc: now_utc_iso,

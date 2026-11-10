@@ -5,7 +5,7 @@ use std::path::Path;
 
 use atc_geo::{M_PER_NM, distance_m};
 use atc_navdata::procedures::{PositionDef, Procedures};
-use atc_navdata::xplane::{ResolvedAirport, load_destinations, resolve_airport};
+use atc_navdata::source::{AirportLayout, SimDataSource};
 
 use super::values::value_screen;
 use super::{
@@ -179,11 +179,7 @@ fn create_one<R: BufRead, W: Write>(
     let no_layout = format!(
         "No X-Plane layout for {name}: install its scenery or check xplane_root; nothing created."
     );
-    let Some((id, resolved)) = env
-        .xplane_root
-        .as_deref()
-        .and_then(|xp| match_layout(xp, ap))
-    else {
+    let Some((id, resolved)) = env.source.as_deref().and_then(|src| match_layout(src, ap)) else {
         p.say(no_layout);
         return;
     };
@@ -192,7 +188,7 @@ fn create_one<R: BufRead, W: Write>(
         Err(e) => {
             p.say(format!(
                 "Cannot read the X-Plane layout of {name} in {}: {e}; nothing created.",
-                resolved.source.display()
+                resolved.origin
             ));
             return;
         }
@@ -299,7 +295,7 @@ fn write_new_station(
     id: &str,
     doc: &StationDoc,
     ov: Option<&Overrides>,
-    resolved: &ResolvedAirport,
+    resolved: &AirportLayout,
     meta: &Meta,
 ) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -315,8 +311,8 @@ fn write_new_station(
 }
 
 /// The apt.dat block as a file `parse_apt_dat(text, id)` reads: header ident set to `id`.
-fn apt_dat_text(resolved: &ResolvedAirport, id: &str) -> String {
-    let mut lines = resolved.text.lines();
+fn apt_dat_text(resolved: &AirportLayout, id: &str) -> String {
+    let mut lines = resolved.apt_dat.lines();
     let header = lines.next().unwrap_or_default();
     let mut tok: Vec<&str> = header.split_whitespace().collect();
     let header = if tok.get(4).is_some_and(|t| *t != id) {
@@ -336,18 +332,18 @@ fn apt_dat_text(resolved: &ResolvedAirport, id: &str) -> String {
 }
 
 /// Station id and X-Plane block: by ICAO, else the nearest airport within 300 m.
-fn match_layout(xp: &Path, ap: &OaAirport) -> Option<(String, ResolvedAirport)> {
+fn match_layout(source: &dyn SimDataSource, ap: &OaAirport) -> Option<(String, AirportLayout)> {
     if let Some(icao) = ap.icao_code.as_deref().filter(|s| !s.trim().is_empty())
-        && let Ok(r) = resolve_airport(xp, icao)
+        && let Ok(r) = source.airport_layout(icao)
     {
         return Some((icao.to_string(), r));
     }
     let at = lat_lon(ap);
-    let near = load_destinations(xp, at, MATCH_M / M_PER_NM, &[]).ok()?;
+    let near = source.airports(at, MATCH_M / M_PER_NM).ok()?;
     let nearest = near
         .iter()
         .min_by(|a, b| distance_m(at, a.pos).total_cmp(&distance_m(at, b.pos)))?;
-    let r = resolve_airport(xp, &nearest.icao).ok()?;
+    let r = source.airport_layout(&nearest.icao).ok()?;
     Some((r.ident.clone(), r))
 }
 
@@ -430,7 +426,6 @@ mod tests {
     use super::*;
 
     use atc_navdata::apt::parse_apt_dat;
-    use std::path::PathBuf;
 
     #[test]
     fn station_ids_are_safe_directory_names() {
@@ -444,10 +439,10 @@ mod tests {
 
     #[test]
     fn apt_dat_header_takes_the_station_id() {
-        let r = ResolvedAirport {
-            source: PathBuf::new(),
+        let r = AirportLayout {
+            origin: String::new(),
             ident: "XAAA".into(),
-            text: "1 10 0 0 XAAA Alpha\n1302 icao_code AAAA\n100 30.00 1 0 0.25 1 0 1 09 10.0 \
+            apt_dat: "1 10 0 0 XAAA Alpha\n1302 icao_code AAAA\n100 30.00 1 0 0.25 1 0 1 09 10.0 \
                    10.0 0.00 0.00 3 0 0 0 27 10.0 10.02 0.00 0.00 3 0 0 0"
                 .into(),
         };

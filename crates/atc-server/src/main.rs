@@ -90,7 +90,14 @@ fn run_wizard(config: &Path) -> Result<()> {
     let store =
         Store::default_location().context("no home directory for the OpenAIP data store")?;
     let key_dir = config_dir().context("no home directory for the OpenAIP key")?;
-    let env = WizardEnv::new(cfg.data_dir, cfg.xplane_root, store, key_dir);
+    let env = WizardEnv::new(
+        cfg.data_dir,
+        cfg.xplane_root
+            .clone()
+            .map(|r| atc_navdata::source::SimDataConfig::from_legacy_root(r).open()),
+        store,
+        key_dir,
+    );
     let stdin = std::io::stdin();
     let mut prompt = Prompt::new(stdin.lock(), std::io::stdout());
     run(&env, |key| Box::new(HttpApi::new(key)), &mut prompt)?;
