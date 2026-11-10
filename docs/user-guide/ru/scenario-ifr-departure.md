@@ -2,7 +2,7 @@
 
 **Русский** · [English](../en/scenario-ifr-departure.md)
 
-Полный полёт на Cessna 172 G1000: от стоянки в Кракове до стоянки в Катовице. Вылет по SID SUDOL 2J, прилёт по STAR BAREX 2D, дальше векторение на ILS 27. Позывной — SP-ABC, сокращённо Sierra Bravo Charlie. Подробное руководство — `ifr-and-vfr-points.md`.
+Полный полёт на Cessna 172 G1000: от стоянки в Кракове до стоянки в Катовице. Вылет по SID SUDOL 2J, заход ILS 27 по векторам. Позывной — SP-ABC, сокращённо Sierra Bravo Charlie. Подробное руководство — `ifr-and-vfr-points.md`.
 
 Реплики диспетчеров записаны с сервера: две станции EPKK и EPKT, схема аэропортов из X-Plane 11 (default scenery), процедуры из CIFP X-Plane, погода — ветер 250°/8 kt, QNH 1013, лето, 10:00 UTC. Твои курсы, дистанции, высоты и QNH могут отличаться: повторяй то, что услышал.
 
@@ -37,7 +37,7 @@ target/release/atc-client     # окно 2
 
 ## План в G1000 и высоты
 
-**FPL**: EPKK → EPKT. **PROC → Select Departure → SUDOL 2J** (ВПП 25; для ВПП 07 — SUDOL 1F). Прилёт и заход выберешь, когда Approach EPKT их назовёт: **PROC → Select Arrival → BAREX 2D** (ВПП 27), **PROC → Select Approach → ILS 27**, переход **Vectors**. NAV1: IKTO 109.90, курс 265°.
+**FPL**: EPKK → EPKT. **PROC → Select Departure → SUDOL 2J** (ВПП 25; для ВПП 07 — SUDOL 1F). **PROC → Select Approach → ILS 27**, переход **Vectors**. NAV1: IKTO 109.90, курс 265°.
 
 Переходная высота на обоих аэродромах 6500 ft. Выше неё (на эшелоне) ставь в альтиметр 1013 (STD), ниже — QNH.
 
@@ -49,8 +49,8 @@ target/release/atc-client     # окно 2
 | KK599, первая точка SID | не ниже 3000 ft | CIFP, SUDOL 2J |
 | KK602, KK604 | не ниже 6000 ft и FL100 | CIFP, SUDOL 2J |
 | Передача Approach EPKT (30 NM до EPKT) | ещё набираешь; в записи ~4200 ft | правило передачи |
-| Первый вызов Approach EPKT | диспетчер останавливает набор: «maintain altitude» на высоте, которую ты назвал (в записи 4700 ft) | Approach EPKT |
-| STAR BAREX 2D | заданная высота (в записи 4700 ft) | Approach EPKT |
+| Первый вызов Approach EPKT | набор до 5000 ft («climb altitude five thousand feet») | `ifr.cruise_ft` станции EPKT |
+| ~15 NM до точки входа в курсовой | снижение до 3000 ft | Approach EPKT |
 | Векторение на ILS | 3000 ft, ниже не снижайся | высота FAF в CIFP |
 | KT537 (IF, 9.3 NM по DME IKTO) | 3000 ft | CIFP, ILS 27 |
 | KT536 (FAF, 7.8 NM по DME IKTO) | 3000 ft, вход в глиссаду 3.0° | CIFP, ILS 27 |
@@ -129,35 +129,25 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 
 Частота та же, COM1 не трогай. Это передача диспетчеру Approach станции EPKT. Продолжай лететь по SID и набирать высоту, пока он не задаст маршрут. «Direct Katowice» и 20-мильного снижения от Approach Кракова в этом полёте нет: передача происходит раньше.
 
-## Kraków Approach 121.075: прилёт в Катовице
+## Kraków Approach 121.075: прилёт и заход ILS 27
 
-Перед вызовом послушай ATIS Катовице на COM2, 120.230 (в записи: information Alpha, runway in use two seven). На это уходит около минуты, за неё ты подходишь ближе к Катовице. Затем вызови Approach. Назови высоту, которую проходишь, и разрешённый эшелон:
+Перед вызовом послушай ATIS Катовице на COM2, 120.230 (в записи: information Alpha, runway in use two seven). Затем вызови Approach. Назови высоту, которую проходишь, и разрешённый эшелон:
 
 | Кто | Фраза |
 |---|---|
 | Ты | Kraków Approach, Sierra Papa Alpha Bravo Charlie, passing four thousand seven hundred feet, climbing flight level one zero zero, inbound to Katowice, information Alpha |
-| Approach | Sierra Papa Alpha Bravo Charlie, identified, BAREX two Delta arrival, maintain altitude four thousand seven hundred feet, QNH one zero one three, expect ILS approach runway two seven |
-| Ты | BAREX two Delta arrival, maintain four thousand seven hundred feet, QNH one zero one three, expect ILS approach runway two seven, Sierra Bravo Charlie |
-| Approach (~20 с спустя) | Sierra Bravo Charlie, you are three zero miles off track, check position |
-
-Набор прекрати и держи названную высоту. В G1000: **PROC → Select Arrival → BAREX 2D** (переход RW27), **Load**, затем **Direct-to** BAREX.
-
-> **Известная проблема.** Сервер выбирает BAREX 2D, хотя BAREX лежит на северо-западе от Катовице, а ты подлетаешь с юго-востока. Сразу после назначения Approach говорит «you are three zero miles off track, check position»: самолёт ещё далеко от линии STAR. Полёт по всему STAR (BAREX, XONRA, ASTUD, KT568, KT567, KT566, KT561) занимает около часа. В записи после «check position» до конца STAR диспетчер молчит. Это ошибка выбора STAR в движке, а не ошибка пилота.
-
-## Kraków Approach 121.075: заход ILS 27
-
-После последней точки STAR (KT561, севернее Катовице) начинается векторение:
-
-| Кто | Фраза |
-|---|---|
-| Approach (у KT561) | Sierra Bravo Charlie, turn right heading one eight five, descend to altitude three thousand feet |
-| Ты | Right heading one eight five, descend three thousand feet, Sierra Bravo Charlie |
-| Approach | Sierra Bravo Charlie, turn right heading two zero five |
-| Ты | Right heading two zero five, Sierra Bravo Charlie |
-| Approach (~11 NM от порога) | Sierra Bravo Charlie, turn right heading two three five, one one miles from touchdown, cleared ILS approach runway two seven, report established |
-| Ты | Right heading two three five, cleared ILS approach runway two seven, wilco, Sierra Bravo Charlie |
+| Approach | Sierra Papa Alpha Bravo Charlie, identified, turn right heading three four five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two seven |
+| Ты | Right heading three four five, climb five thousand feet, QNH one zero one three, expect ILS approach runway two seven, Sierra Bravo Charlie |
+| Approach (~15 NM до точки входа в курсовой) | Sierra Bravo Charlie, descend to altitude three thousand feet |
+| Ты | Descend three thousand feet, Sierra Bravo Charlie |
+| Approach | Sierra Bravo Charlie, turn right heading zero zero five |
+| Ты | Right heading zero zero five, Sierra Bravo Charlie |
+| Approach (~10 NM от порога) | Sierra Bravo Charlie, turn left heading two niner five, one zero miles from touchdown, cleared ILS approach runway two seven, report established |
+| Ты | Left heading two niner five, cleared ILS approach runway two seven, wilco, Sierra Bravo Charlie |
 | Approach (на курсовом, внутри FAF) | Sierra Bravo Charlie, contact Katowice Tower one two niner decimal two five five |
 | Ты | Tower one two niner decimal two five five, Sierra Bravo Charlie |
+
+Это векторение: STAR нет. Курс 345 ведёт тебя на север, восточнее Катовице; затем 005 и разворот влево на курсовой ВПП 27 с востока. Набор останови на 5000 ft: это высота прилёта станции EPKT. Если на вызове ты уже выше 5000 ft, услышишь «descend to altitude five thousand feet». Если ты уже близко к точке входа в курсовой, сразу дадут 3000 ft.
 
 Курсы задавай в режиме HDG. Повтори курс сразу: без квитанции через ~20 с Approach скажет «read back heading…», а если не повернёшь, то «check heading, fly heading …».
 
@@ -188,16 +178,16 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 | Ты | Katowice Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi |
 | Ground | Sierra Papa Alpha Bravo Charlie, say stand |
 | Ты | Katowice Ground, Sierra Bravo Charlie, request taxi to stand apron four golf alpha |
-| Ground | Sierra Bravo Charlie, taxi to stand Alpha Papa Romeo Oscar November four GA via Sierra, Hotel |
-| Ты | Taxi to stand apron four golf alpha via Sierra, Hotel, Sierra Bravo Charlie |
+| Ground | Sierra Bravo Charlie, taxi to stand apron four Golf Alpha via Sierra, Hotel |
+| Ты | Taxi to stand apron four Golf Alpha via Sierra, Hotel, Sierra Bravo Charlie |
 | Ты (на стоянке, ~5 мин руления) | Sierra Bravo Charlie, on stand apron four golf alpha |
 | Ground | Sierra Bravo Charlie, good day |
 
 Стоянку можно назвать сразу: «runway vacated, request taxi to stand apron four GA» — ответ тот же, без «say stand». Без названной стоянки Ground ведёт тебя на твою (если она известна) или спрашивает «say stand». Руление после посадки — всегда к стоянке, без QNH и кода.
 
-Имена стоянок из сценария сравниваются по буквам и цифрам: «APRON4 GA» можно назвать как «apron four GA» или «apron four golf alpha». Стоянок с этим именем несколько, Ground выбирает ближайшую свободную. Ground произносит имя по буквам («Alpha Papa Romeo Oscar November four GA»); в повторе можно сказать «apron four golf alpha».
+Имена стоянок из сценария сравниваются по буквам и цифрам: «APRON4 GA» можно назвать как «apron four GA» или «apron four golf alpha». Стоянок с этим именем несколько, Ground выбирает ближайшую свободную. Ground произносит имя так: «apron four Golf Alpha».
 
-Полёт окончен: выключи транспондер (STBY) и двигатель. В записи от запроса разрешения до стоянки прошло ~87 минут, из них около часа — STAR.
+Полёт окончен: выключи транспондер (STBY) и двигатель. В записи от запроса разрешения до стоянки прошло ~40 минут: взлёт на 3-й минуте, посадка на 34-й.
 
 ## На что обратить внимание
 

@@ -2,7 +2,7 @@
 
 [Русский](../ru/scenario-ifr-departure.md) · **English**
 
-A complete flight in a Cessna 172 G1000, from a stand in Kraków to a stand in Katowice: the SUDOL 2J departure, the BAREX 2D arrival, then radar vectors to the ILS for runway 27. Callsign SP-ABC, abbreviated Sierra Bravo Charlie. The full reference (in Russian) is `../ru/ifr-and-vfr-points.md`.
+A complete flight in a Cessna 172 G1000, from a stand in Kraków to a stand in Katowice: the SUDOL 2J departure and radar vectors to the ILS for runway 27. Callsign SP-ABC, abbreviated Sierra Bravo Charlie. The full reference (in Russian) is `../ru/ifr-and-vfr-points.md`.
 
 The controller lines below were recorded from the server running two stations, EPKK and EPKT, with the airport layouts from X-Plane 11 (default scenery), procedures from the X-Plane CIFP and this weather: wind 250°/8 kt, QNH 1013, summer, 10:00 UTC. Your headings, distances, altitudes and QNH may differ: read back what you actually hear.
 
@@ -37,7 +37,7 @@ Before engine start:
 
 ## G1000 plan and altitudes
 
-**FPL**: EPKK → EPKT. **PROC → Select Departure → SUDOL 2J** (runway 25; SUDOL 1F for runway 07). Load the arrival and approach once EPKT Approach names them: **PROC → Select Arrival → BAREX 2D** (runway 27), **PROC → Select Approach → ILS 27**, transition **Vectors**. NAV1: IKTO 109.90, course 265°.
+**FPL**: EPKK → EPKT. **PROC → Select Departure → SUDOL 2J** (runway 25; SUDOL 1F for runway 07). **PROC → Select Approach → ILS 27**, transition **Vectors**. NAV1: IKTO 109.90, course 265°.
 
 The transition altitude is 6500 ft at both airports. Above it (on a flight level) set 1013 (STD), below it the QNH.
 
@@ -49,8 +49,8 @@ The transition altitude is 6500 ft at both airports. Above it (on a flight level
 | KK599, first SID fix | at or above 3000 ft | CIFP, SUDOL 2J |
 | KK602, KK604 | at or above 6000 ft and FL100 | CIFP, SUDOL 2J |
 | Hand-off to EPKT Approach (30 NM from EPKT) | still climbing; about 4200 ft in the recording | hand-off rule |
-| First call to EPKT Approach | the controller stops the climb: "maintain altitude" at the level you report (4700 ft in the recording) | EPKT Approach |
-| BAREX 2D arrival | the assigned altitude (4700 ft in the recording) | EPKT Approach |
+| First call to EPKT Approach | climb to 5000 ft ("climb altitude five thousand feet") | EPKT station `ifr.cruise_ft` |
+| About 15 NM from the intercept point | descend to 3000 ft | EPKT Approach |
 | Vectors to the ILS | 3000 ft, no lower | FAF altitude in the CIFP |
 | KT537 (IF, 9.3 NM IKTO DME) | 3000 ft | CIFP, ILS 27 |
 | KT536 (FAF, 7.8 NM IKTO DME) | 3000 ft, 3.0° glideslope intercept | CIFP, ILS 27 |
@@ -129,35 +129,25 @@ On the first call say the altitude you are actually passing.
 
 The frequency does not change, so leave COM1 alone: this is the hand-off to the EPKT station's Approach. Keep flying the SID and climbing until that controller gives you a route. On this flight you do not get "direct Katowice" or a 20 NM descent from the Kraków Approach: the hand-off comes first.
 
-## Kraków Approach 121.075: arrival at Katowice
+## Kraków Approach 121.075: arrival and ILS 27
 
-Before calling, listen to the Katowice ATIS on COM2, 120.230 (in the recording: information Alpha, runway in use two seven). It takes about a minute, and you get a little closer to Katowice meanwhile. Then call Approach with the altitude you are passing and your cleared level:
+Before calling, listen to the Katowice ATIS on COM2, 120.230 (in the recording: information Alpha, runway in use two seven). Then call Approach with the altitude you are passing and your cleared level:
 
 | Who | Phrase |
 |---|---|
 | You | Kraków Approach, Sierra Papa Alpha Bravo Charlie, passing four thousand seven hundred feet, climbing flight level one zero zero, inbound to Katowice, information Alpha |
-| Approach | Sierra Papa Alpha Bravo Charlie, identified, BAREX two Delta arrival, maintain altitude four thousand seven hundred feet, QNH one zero one three, expect ILS approach runway two seven |
-| You | BAREX two Delta arrival, maintain four thousand seven hundred feet, QNH one zero one three, expect ILS approach runway two seven, Sierra Bravo Charlie |
-| Approach (about 20 s later) | Sierra Bravo Charlie, you are three zero miles off track, check position |
-
-Stop the climb and hold the altitude you were given. In the G1000: **PROC → Select Arrival → BAREX 2D** (transition RW27), **Load**, then **Direct-to** BAREX.
-
-> **Known issue.** The server picks BAREX 2D although BAREX lies north-west of Katowice and you are arriving from the south-east. Right after assigning it, Approach says "you are three zero miles off track, check position", because the aircraft is still far from the arrival's track. Flying the whole arrival (BAREX, XONRA, ASTUD, KT568, KT567, KT566, KT561) takes about an hour, and in the recording the controller says nothing more until its end. This is the engine choosing the wrong arrival, not a pilot error.
-
-## Kraków Approach 121.075: ILS 27
-
-Vectoring starts after the last fix of the arrival (KT561, north of Katowice):
-
-| Who | Phrase |
-|---|---|
-| Approach (at KT561) | Sierra Bravo Charlie, turn right heading one eight five, descend to altitude three thousand feet |
-| You | Right heading one eight five, descend three thousand feet, Sierra Bravo Charlie |
-| Approach | Sierra Bravo Charlie, turn right heading two zero five |
-| You | Right heading two zero five, Sierra Bravo Charlie |
-| Approach (about 11 NM from the threshold) | Sierra Bravo Charlie, turn right heading two three five, one one miles from touchdown, cleared ILS approach runway two seven, report established |
-| You | Right heading two three five, cleared ILS approach runway two seven, wilco, Sierra Bravo Charlie |
+| Approach | Sierra Papa Alpha Bravo Charlie, identified, turn right heading three four five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two seven |
+| You | Right heading three four five, climb five thousand feet, QNH one zero one three, expect ILS approach runway two seven, Sierra Bravo Charlie |
+| Approach (about 15 NM from the localizer intercept point) | Sierra Bravo Charlie, descend to altitude three thousand feet |
+| You | Descend three thousand feet, Sierra Bravo Charlie |
+| Approach | Sierra Bravo Charlie, turn right heading zero zero five |
+| You | Right heading zero zero five, Sierra Bravo Charlie |
+| Approach (about 10 NM from the threshold) | Sierra Bravo Charlie, turn left heading two niner five, one zero miles from touchdown, cleared ILS approach runway two seven, report established |
+| You | Left heading two niner five, cleared ILS approach runway two seven, wilco, Sierra Bravo Charlie |
 | Approach (on the localizer, inside the FAF) | Sierra Bravo Charlie, contact Katowice Tower one two niner decimal two five five |
 | You | Tower one two niner decimal two five five, Sierra Bravo Charlie |
+
+This is radar vectoring, with no arrival procedure. Heading 345 takes you north, east of Katowice; then 005, and a left turn onto the runway 27 localizer from the east. Level off at 5000 ft, the EPKT station's arrival altitude. If you are already above 5000 ft when you call, you hear "descend to altitude five thousand feet" instead; if you are already close to the intercept point, you get 3000 ft straight away.
 
 Fly the headings in HDG mode. Read a heading back straight away: without a readback Approach says "read back heading…" after about 20 s, and if you do not turn, "check heading, fly heading …".
 
@@ -188,16 +178,16 @@ Vacate the runway and stop past the holding line.
 | You | Katowice Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi |
 | Ground | Sierra Papa Alpha Bravo Charlie, say stand |
 | You | Katowice Ground, Sierra Bravo Charlie, request taxi to stand apron four golf alpha |
-| Ground | Sierra Bravo Charlie, taxi to stand Alpha Papa Romeo Oscar November four GA via Sierra, Hotel |
-| You | Taxi to stand apron four golf alpha via Sierra, Hotel, Sierra Bravo Charlie |
+| Ground | Sierra Bravo Charlie, taxi to stand apron four Golf Alpha via Sierra, Hotel |
+| You | Taxi to stand apron four Golf Alpha via Sierra, Hotel, Sierra Bravo Charlie |
 | You (on the stand, about 5 min of taxiing) | Sierra Bravo Charlie, on stand apron four golf alpha |
 | Ground | Sierra Bravo Charlie, good day |
 
 You can name the stand straight away: "runway vacated, request taxi to stand apron four GA" gets the same clearance without "say stand". Without a stand, Ground sends you to your own stand if it knows one, otherwise it asks "say stand". After landing the taxi clearance always goes to a stand, with no QNH or squawk.
 
-Stand names from the scenery are matched on their letters and digits, so "APRON4 GA" can be said as "apron four GA" or "apron four golf alpha". Several stands share that name; Ground picks the nearest free one. Ground spells the name out ("Alpha Papa Romeo Oscar November four GA"); in your readback "apron four golf alpha" is accepted.
+Stand names from the scenery are matched on their letters and digits, so "APRON4 GA" can be said as "apron four GA" or "apron four golf alpha". Several stands share that name; Ground picks the nearest free one. Ground says it as "apron four Golf Alpha".
 
-That is the end of the flight: transponder to STBY, shut down. In the recording it took about 87 minutes from the clearance request to the stand, about an hour of it on the arrival.
+That is the end of the flight: transponder to STBY, shut down. In the recording it took about 40 minutes from the clearance request to the stand: take-off in minute 3, landing in minute 34.
 
 ## Things to watch
 
