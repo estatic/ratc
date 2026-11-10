@@ -2,7 +2,7 @@
 
 [Русский](../ru/scenario-ifr-departure.md) · **English**
 
-A complete flight in a Cessna 172 G1000, from a stand in Kraków to a stand in Katowice: the SUDOL 2J departure and radar vectors to the ILS for runway 27. Callsign SP-ABC, abbreviated Sierra Bravo Charlie. The full reference (in Russian) is `../ru/ifr-and-vfr-points.md`.
+A complete flight in a Cessna 172 G1000, from a stand in Kraków to a stand in Katowice: the SUDOL 2J departure and radar vectors to the ILS for runway 27. Callsign SP-ABC, abbreviated Sierra Bravo Charlie. The full reference is [ifr-and-vfr-points.md](ifr-and-vfr-points.md).
 
 The controller lines below were recorded from the server running two stations, EPKK and EPKT, with the airport layouts from X-Plane 11 (default scenery), procedures from the X-Plane CIFP and this weather: wind 250°/8 kt, QNH 1013, summer, 10:00 UTC. Your headings, distances, altitudes and QNH may differ: read back what you actually hear.
 
