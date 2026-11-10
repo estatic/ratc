@@ -220,6 +220,10 @@ pub struct Strip {
     /// The arrival went around or flew a missed approach; Tower hands it back to Approach,
     /// which vectors it again once it calls.
     pub missed_approach: bool,
+    /// The aircraft is still climbing to the published missed-approach altitude: the
+    /// descent to the intercept altitude waits until it is reached (or the intercept).
+    #[serde(default)]
+    pub missed_climb: bool,
     /// The Approach frequency the aircraft last called on (the unit has several); Approach
     /// answers on it.
     pub approach_khz: Option<u32>,
@@ -316,6 +320,7 @@ impl Strip {
             adjacent_identified: false,
             radio_failure: false,
             missed_approach: false,
+            missed_climb: false,
             approach_khz: None,
             vfr: None,
             vfr_exit: None,
@@ -363,6 +368,7 @@ impl Strip {
         self.identified = false;
         self.adjacent_identified = false;
         self.missed_approach = false;
+        self.missed_climb = false;
         self.approach_khz = None;
         self.vfr = None;
         self.vfr_exit = None;

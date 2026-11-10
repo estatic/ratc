@@ -5852,6 +5852,39 @@ mod approach_arrival {
         assert!(!p.heard_item(|i| matches!(i, AtcItem::Heading { .. })));
     }
 
+    /// ZZZZ ILS 27 flown to a missed approach and called in to Approach: the vectors and the
+    /// climb are read back, the pilot flies on at its current altitude.
+    fn missed_approach_called(e: &mut AtcEngine) -> Pilot {
+        let (mut p, _) = inbound(e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        let n = p.f.heard.len();
+        p.until(e, 200, |p| p.f.heard.len() > n);
+        p.call(
+            e,
+            TWR,
+            "Zeta Tower, Sierra Sierra Tango, ILS runway two seven, final",
+        );
+        p.target = 500.0;
+        p.until(e, 200, |p| distance_m(p.f.pos, THR_27) < 200.0);
+        p.to = Some(END_27);
+        p.target = 3000.0;
+        let n = p.f.heard.len();
+        p.until(e, 100, |p| p.f.heard.len() > n);
+        p.call(
+            e,
+            APP,
+            "Zeta Approach, Sierra Sierra Tango, missed approach, climbing four thousand feet",
+        );
+        p
+    }
+
     /// Vectored, cleared, flown down the final without a report: transferred to Tower
     /// inside the FAF (5 NM); cleared to land, overflies the runway and climbs: Tower hands
     /// it back to Approach, which vectors it again.
@@ -5898,20 +5931,96 @@ mod approach_arrival {
         let out = p.call(
             &mut e,
             APP,
-            "Zeta Approach, Sierra Sierra Tango, missed approach, climbing three thousand feet",
+            "Zeta Approach, Sierra Sierra Tango, missed approach, climbing four thousand feet",
         );
         assert!(
             matches!(
                 items(&out).as_slice(),
                 [
                     AtcItem::Heading { .. },
-                    AtcItem::ClimbTo(Level::Altitude(3000))
+                    AtcItem::ClimbTo(Level::Altitude(4000))
                 ]
             ),
             "{out:?}"
         );
         assert_eq!(out[0].freq_khz, APP);
         assert!(e.strip(&cs()).unwrap().identified);
+        assert_eq!(
+            e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+            4000
+        );
+    }
+
+    /// The missed approach is flown to the published altitude (4000 ft): the descent to the
+    /// intercept altitude (3000 ft) waits until it is reached, or comes with the intercept.
+    #[test]
+    fn descent_after_missed_approach_waits_for_the_missed_altitude() {
+        // Stays at 3000 ft: no descent is heard before the approach clearance, which brings
+        // the level down.
+        let mut e = engine();
+        let mut p = missed_approach_called(&mut e);
+        p.target = 3000.0;
+        let n = p.f.heard.len();
+        p.until(&mut e, 300, |p| {
+            p.f.heard[n..].iter().any(|o| {
+                o.message
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+            })
+        });
+        let heard = &p.f.heard[n..];
+        let last = heard.last().unwrap();
+        assert!(
+            last.message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::ClearedApproach { .. })),
+            "{heard:?}"
+        );
+        for o in &heard[..heard.len() - 1] {
+            assert!(
+                !o.message
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::DescendTo(_))),
+                "{heard:?}"
+            );
+        }
+        assert!(
+            last.message.items.iter().any(|i| matches!(
+                i,
+                AtcItem::DescendTo(Level::Altitude(3000))
+                    | AtcItem::MaintainLevel(Level::Altitude(3000))
+            )),
+            "{last:?}"
+        );
+        assert_eq!(
+            e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+            3000
+        );
+
+        // Reaches 4000 ft: the descent to 3000 ft comes before the approach clearance.
+        let mut e = engine();
+        let mut p = missed_approach_called(&mut e);
+        p.target = 4000.0;
+        let n = p.f.heard.len();
+        let descend = |o: &AtcOutput| {
+            o.message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::DescendTo(Level::Altitude(3000))))
+        };
+        p.until(&mut e, 300, |p| p.f.heard[n..].iter().any(descend));
+        assert!(
+            !p.f.heard[n..].iter().any(|o| o
+                .message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::ClearedApproach { .. }))),
+            "{:?}",
+            &p.f.heard[n..]
+        );
     }
 
     /// Spec 3.6: an IFR departure handed off to the adjacent tower turns back and calls

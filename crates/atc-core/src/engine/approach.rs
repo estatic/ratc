@@ -466,7 +466,9 @@ impl AtcEngine {
     }
 
     /// The first call after a missed approach (or the first sample after one while Approach
-    /// still had the flight): identified again and vectored. The published missed-approach
+    /// still had the flight): identified again and vectored. The first vectors keep the
+    /// published missed-approach altitude; the descent to the intercept altitude waits
+    /// until the aircraft has reached it. The published missed-approach
     /// track is not monitored: a missed approach is Tower's go-around and Approach's vectors.
     fn after_missed_approach(&mut self, i: usize) -> Vec<AtcItem> {
         let strip = &mut self.strips[i];
@@ -673,8 +675,14 @@ impl AtcEngine {
             || plan.heading.is_none_or(|h| {
                 heading_gap(h, v.heading_deg) >= REVECTOR_DEG && (!near_lead || at_intercept)
             });
-        let descend = plan.cleared_ft > intercept_ft && to_point <= DESCENT_M;
         let intercept = at_intercept && (leg.is_some() || changed || to_point <= NEAR_INTERCEPT_M);
+        // After a missed approach the published altitude is kept until the aircraft is
+        // there (or the intercept is given).
+        if intercept || (s.alt_ft_msl - f64::from(plan.cleared_ft)).abs() <= LEVEL_TOLERANCE_FT {
+            self.strips[i].missed_climb = false;
+        }
+        let descend =
+            !self.strips[i].missed_climb && plan.cleared_ft > intercept_ft && to_point <= DESCENT_M;
         if !(changed || descend || intercept) {
             return Vec::new();
         }
@@ -864,6 +872,7 @@ impl AtcEngine {
         let missed_ft = self.missed_alt_ft(&runway, kind);
         let strip = &mut self.strips[i];
         strip.missed_approach = true;
+        strip.missed_climb = true;
         // Back to Approach, to be identified again; a Tower-kept arrival stays identified.
         if (strip.owner == Role::Tower || strip.handoff_to == Some(Role::Tower))
             && !strip.tower_inbound
