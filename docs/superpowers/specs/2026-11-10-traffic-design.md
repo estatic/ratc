@@ -100,8 +100,8 @@ The pilot is at the holding point of the active runway at EPKK and reports ready
    - **Tower:** landing traffic vs a departure on one runway: hold short ("landing traffic"),
      line up and wait, take-off once the landing traffic has vacated (my call; or landed and
      clear, if the engine's runway rules allow it), landing clearance only with a free runway.
-     Conditional clearances ("behind the landing A320, line up and wait behind") are not in this
-     project (my call).
+     Conditional clearances ("behind the landing A320, line up and wait behind") come in a later
+     phase (see Phases), not in the first delivery.
    - **Approach/Tower sequencing of several arrivals:** landing order, speed control, vectors for
      spacing, "number two, follow the A320 on final", standard IFR spacing on final. The real
      schedule is replayed as is; the controller, not the spawner, resolves bunching.
@@ -109,11 +109,20 @@ The pilot is at the holding point of the active runway at EPKK and reports ready
      conflict prediction (`crates/atc-core/src/conflict.rs`) is the starting point.
    - Separation minima and spacing values come from ICAO Doc 4444 (and the Polish AIP where it
      differs); cite the sources in the code/docs.
-10. **Scenario bots for tests and debugging (not user-facing).** A scenario file / debug command
-    spawns a bot in a given state ("arrival, 8 NM final runway 25, now"), so the acceptance scene
-    and phases 2–4 can be tested before the schedule exists. It is not exposed to users, so no
-    invented traffic reaches normal use.
-11. **Multi-simulator by design.** Everything simulator-specific sits behind one adapter interface:
+10. **Traffic settings and practice bots (user's decision).**
+    - Traffic can be switched on and off, and the number of bots is limited by a setting (maximum
+      simultaneous bots; the schedule is thinned to that limit, nearest-to-pilots first).
+    - Besides the schedule, the user can enable practice bots: a scenario file / command spawns a
+      bot in a given state ("arrival, 8 NM final runway 25, now"). The same mechanism is used in
+      tests and debugging, and lets phases 2–4 be tested before the schedule exists.
+    - Sources can be combined or used alone: schedule only, practice bots only, both, none.
+11. **Departure after departure (wake turbulence).** Tower also clears the pilot for take-off after a
+    departing bot is airborne and the runway is free, holding the time interval the wake
+    turbulence category pair requires (ICAO Doc 4444 departure minima, e.g. 2 min for LIGHT/MEDIUM
+    behind HEAVY; RECAT-EU where the Polish AIP applies it). Wake category comes from the ICAO type.
+    The same minima apply to arrivals behind arrivals (distance on final) and departures behind
+    arrivals where relevant.
+12. **Multi-simulator by design.** Everything simulator-specific sits behind one adapter interface:
     read own-aircraft state (position, radios, transponder, type), report visibility and sim
     clock, draw bots, show on-screen text and the follow-me car, and (where a sim stores it)
     provide airport layout and procedures. The server and engine never know which simulator is
@@ -121,12 +130,18 @@ The pilot is at the holding point of the active runway at EPKK and reports ready
     MSFS 2020/2024 (SimConnect: AI objects created then released from AI control, positioned by
     the client; layout/procedures from the sim's data) fit without server changes. Prepar3D is
     in the same family as MSFS.
-12. **README and docs.** README gets a section on getting OpenSky API access and downloading a
+13. **README and docs.** README gets a section on getting OpenSky API access and downloading a
     schedule, with OpenSky attribution and a note that the data is for personal use under
     OpenSky's terms (check their terms and cite them). RUNNING.md and the user guides (EN + RU)
     describe traffic.
 
 ## Phases (my call; each phase ends with something the user can try)
+
+Every option the user asked for is planned (user's decision: "the plan must exist, we can build
+later"). Phases 1–7 are the first delivery; phases 8–14 are planned and built later, each with its
+own implementation plan when its turn comes.
+
+**First delivery**
 
 1. **Adapter boundary.** Move today's X-Plane-specific parts (client UDP datarefs, overlay plugin
    messages, the server reading apt.dat/CIFP from `xplane_root`) behind the adapter interface,
@@ -135,27 +150,43 @@ The pilot is at the holding point of the active runway at EPKK and reports ready
    performance model; flight along taxi graph/STAR/vectors/ILS; bot pilot "brain" that turns ATC
    items into actions and produces its own calls and readbacks; bot voices and telephony
    callsigns; UTC world clock. Verified with scenario bots (goal 10) in tests and replay.
-3. **Tower: landing traffic vs departure** (the acceptance scene), ground de-confliction for a
-   taxiing-in bot.
+3. **Tower: landing traffic vs departure** (the acceptance scene), departure after a departing
+   bot with wake turbulence intervals (goal 11), ground de-confliction for a taxiing-in bot,
+   traffic settings and practice bots (goal 10).
 4. **Arrival sequencing** for several arrivals (goal 9, Approach/Tower). Possibly split into its own
    plan; it is the largest engine change.
 5. **Drawing in X-Plane 11.** Plugin side: AI slots taken from X-Plane (built-in AI disabled for
    them), models picked from installed aircraft by type, smooth motion (as done for the follow-me
    car), gear/flaps/lights; visibility range from the sim; pause/acceleration prevention and clock
    sync.
-6. **Schedule.** OpenSky download tool, schedule file format, spawning and dropping by the rules of
-   goal 7, sim-clock replay. README section.
-   Arrivals first (the scene); departing bots (push, taxi, take-off, SID, hand-off) follow in the
-   same phase or the next, builder's split.
+6. **Schedule (arrivals).** OpenSky download tool, schedule file format, spawning and dropping by
+   the rules of goal 7, UTC replay, bot-count limit. README section.
+7. **Departing bots.** Start-up, push, taxi, take-off, SID, hand-off and drop, from the schedule and
+   as practice bots.
+
+**Planned, built later**
+
+8. **Conditional clearances** ("behind the landing A320, line up and wait behind"): engine items,
+   parsing and readback checks for humans (EN + PL), bot handling.
+9. **Bots in the local language.** Polish for local airlines and especially general aviation at
+   Polish stations (per-bot language from goal 4): Polish bot phrases and voices.
+10. **X-Plane 12 adapter.**
+11. **MSFS 2020/2024 adapter** (SimConnect telemetry, AI objects released from AI control and
+    positioned by the client, layout/procedures from the sim's data).
+12. **Prepar3D adapter** (SimConnect family; after MSFS).
+13. **Exchange analysis, by report.** Periodic analysis of recorded controller/pilot/bot exchanges:
+    phraseology errors, odd replies, needless "say again"s; a report fixed by hand.
+14. **AI-assisted tuning.** AI proposes and applies corrections to phraseology, style and humour,
+    which pass the same tests and review; vulgar or obscene content is always excluded by an
+    explicit filter, not only by model behaviour.
 
 ## Non-goals
 
 - Using a simulator's own AI to fly bots.
 - Shipping schedule data in the repo.
-- X-Plane 12 / MSFS / Prepar3D adapters (only the interface and a written fit check).
 - Helicopters (separate project), the fictional GA airline (roadmap item 3), immediate-landing
   scenario (item 4).
-- Bots making mistakes, bots talking to each other, controller AI tuning.
+- Bots making mistakes, bots talking to each other.
 - Pilots seeing each other is not part of this project unless it falls out of the bot drawing path
   for free (my call).
 
@@ -187,7 +218,7 @@ The pilot is at the holding point of the active runway at EPKK and reports ready
   commands; waypoint changes reported unreliable. `AIReleaseControl` hands the object to the
   client, which then positions it (same model as X-Plane).
 
-## Future (roadmap entry, not this project)
+## Exchange analysis (phases 13–14)
 
 Periodic analysis of recorded exchanges between the controller and pilots/bots to find
 phraseology errors, odd replies and needless "say again"s: first as a report fixed by hand, later
