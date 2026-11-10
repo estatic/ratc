@@ -10,7 +10,7 @@
 
 ### Голоса
 
-Для Delivery, Approach и радарных станций (Warszawa Radar, Kraków Information, Katowice Tower) добавлены три новых английских голоса. Один раз, до запуска сервера:
+Delivery, Approach и юниты, которые эмулирует станция EPKK (Warszawa Radar, Kraków Information, а также Katowice Tower, пока станция EPKT не загружена), используют три дополнительных английских голоса. Когда EPKT загружена, Katowice Tower — полноценная станция, как Kraków Tower. Один раз, до запуска сервера:
 
 ```
 tools/fetch-piper.sh
@@ -463,7 +463,7 @@ Approach:
 
 > Sierra Bravo Charlie, going around
 
-Tower: `Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five`. Пилот читает обратно, переставляет COM1 на 121.075:
+Tower: `Sierra Bravo Charlie, follow published missed approach, contact Kraków Approach one two one decimal zero seven five`. Пилот читает обратно (`Follow published missed approach, Approach one two one decimal zero seven five, Sierra Bravo Charlie`), переставляет COM1 на 121.075:
 
 > Krakow Approach, Sierra Papa Alpha Bravo Charlie, missed approach runway zero seven, climbing four thousand feet
 

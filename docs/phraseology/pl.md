@@ -45,6 +45,7 @@ Urgent instructions (runway incursion, take-off or landing without clearance, al
 | `Contact` | `łączność z Kraków Wieża sto dwadzieścia trzy kropka dwa pięć pięć` | 4.5, 4.9 |
 | `HoldPosition` | `stój` | 4.5 |
 | `GoAround` | `przejdź na drugi krąg` | 4.8 |
+| `FollowMissedApproach` | `wykonuj opublikowaną procedurę nieudanego podejścia` | project wording |
 | `Negative` | `nieprawidłowo` | Appendix 1 |
 | `ReadBack(items)` | `powtórz ` + items joined by " i ": Runway `pas`, HoldShort `instrukcję oczekiwania przed pasem`, Route `drogę kołowania`, Kind `zezwolenie` (HoldPosition `instrukcję stój`), Altitude `wysokość`, Heading `kurs`, Frequency `częstotliwość`, Qnh `QNH`, Squawk `skłok` | 2.6 (POWTÓRZ) |
 | `SayAgainCallsign` | `wołający Kraków Wieża, powtórz znak wywoławczy` (no callsign prefix) | 2.8.1.5 |

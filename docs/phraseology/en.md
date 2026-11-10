@@ -66,7 +66,8 @@ Entries marked *project wording* have no counterpart in these documents (or only
 | Hand-off to Katowice Tower | `contact Katowice Tower one two niner decimal two five five` | Doc 4444 ch. 12 (CONTACT ...) |
 | Hand-off to Kraków Information | `contact Kraków Information one one niner decimal two seven five` | Doc 4444 ch. 12 (CONTACT ...) |
 | Missed approach (pilot) | `going around`, then `missed approach runway zero seven, climbing four thousand feet` | Doc 4444 ch. 12 (pilot report) / CAP 413 |
-| Missed approach (controller) | `turn left heading two seven zero, climb altitude four thousand feet` | Doc 4444 ch. 12 (missed approach instruction) |
+| `FollowMissedApproach` | `follow published missed approach` (after a go-around, before `contact ...`) | Doc 4444 ch. 12 (missed approach) |
+| Missed approach (controller) | `follow published missed approach, contact Kraków Approach one two one decimal zero seven five` from Tower after the go-around, then `turn left heading two seven zero, climb altitude four thousand feet` from Approach | Doc 4444 ch. 12 (missed approach instruction) |
 | Pilot readback of an approach clearance | `cleared ILS approach runway two five, wilco` after the heading | Doc 4444 ch. 12 / CAP 413 (read-back; `wilco` for `report established`) |
 | Pilot reports | `established ILS runway two five`; `established VOR DME approach runway zero seven` | Doc 4444 ch. 12 (REPORT ESTABLISHED) |
 | Pilot first call (IFR departure) | `Sudol two Juliett departure, passing one thousand five hundred feet, climbing five thousand feet` | CAP 413 (initial call to Approach) |
