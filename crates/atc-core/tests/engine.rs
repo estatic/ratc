@@ -5346,6 +5346,144 @@ mod approach_arrival {
         );
     }
 
+    /// 17 NM south-east of the field: farther out than ALFAX, the start of the only STAR,
+    /// but on the opposite side of the airport from it.
+    const FAR_SIDE: LatLon = LatLon {
+        lat: 9.8,
+        lon: 10.2,
+    };
+
+    /// SPTST, an IFR flight to ZZZZ cleared to FL100 by the unit it comes from, handed in.
+    fn hand_in(e: &mut AtcEngine) {
+        e.import_flight(atc_core::handover::FlightHandover {
+            callsign: cs(),
+            aircraft_type: "C172".into(),
+            plan: Some(atc_core::strip::FlightPlan {
+                ifr: true,
+                destination: "ZZZZ".into(),
+                dest_name: "Zeta".into(),
+                cruise_ft: 10000,
+                sid: Some("OTHER1A".into()),
+                dep_runway: Some("25".into()),
+                star: None,
+                approach: None,
+                vectors: false,
+                cleared_ft: 10000,
+                direct: None,
+                heading: None,
+                approach_cleared: false,
+                pattern: None,
+                established_check: false,
+            }),
+            squawk: Some(4601),
+            cleared_ft: Some(10000),
+            rules: Some(atc_phraseology::FlightRules::Ifr),
+            callsign_misses: 0,
+        });
+    }
+
+    /// The first call of the EPKK -> EPKT flight, handed in climbing to FL100.
+    const CLIMBING_FL100: &str = "Zeta Approach, Sierra Papa Tango Sierra Tango, passing four \
+                                  thousand seven hundred feet, climbing flight level one zero \
+                                  zero, inbound to Zeta, information Alpha";
+
+    /// A flight handed in from the side opposite the only STAR still ahead of it is
+    /// vectored to the final, not sent around the field to that STAR, and is never told
+    /// it is off track.
+    #[test]
+    fn handed_in_from_the_far_side_gets_vectors() {
+        let mut e = engine();
+        hand_in(&mut e);
+        let (mut p, out) = inbound(&mut e, FAR_SIDE, 4700.0, 300.0, CLIMBING_FL100);
+        let got = items(&out);
+        assert!(
+            matches!(
+                got.as_slice(),
+                [
+                    AtcItem::Identified,
+                    AtcItem::Heading { .. },
+                    ..,
+                    AtcItem::ExpectApproach {
+                        kind: ApproachKind::Ils,
+                        ..
+                    }
+                ]
+            ),
+            "{got:?}"
+        );
+        assert!(
+            !got.iter().any(|i| matches!(i, AtcItem::Star { .. })),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!(plan.star, None);
+        assert!(plan.vectors);
+        p.until(&mut e, 1500, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        assert!(
+            !p.heard_item(|i| matches!(i, AtcItem::OffTrack { .. })),
+            "{:?}",
+            p.f.heard
+        );
+    }
+
+    /// "Passing four thousand seven hundred feet, climbing flight level one zero zero" from
+    /// a handed-in flight: the passing altitude is not the level; Approach knows the flight
+    /// was cleared to FL100 and gives its arrival altitude, a round value.
+    #[test]
+    fn handed_in_climbing_call_is_not_held_at_the_passing_altitude() {
+        let mut e = engine();
+        hand_in(&mut e);
+        // 30 NM south-east, as at the EPKT hand-off: beyond the 15 NM of the intercept descent.
+        let pos = destination(
+            LatLon {
+                lat: 10.0,
+                lon: 10.0,
+            },
+            135.0,
+            30.0 * M_PER_NM,
+        );
+        let (_, out) = inbound(&mut e, pos, 4700.0, 300.0, CLIMBING_FL100);
+        let got = items(&out);
+        let mentions_4700 = |i: &AtcItem| {
+            matches!(
+                i,
+                AtcItem::MaintainLevel(Level::Altitude(4700))
+                    | AtcItem::ClimbTo(Level::Altitude(4700))
+                    | AtcItem::DescendTo(Level::Altitude(4700))
+            )
+        };
+        assert!(!got.iter().any(mentions_4700), "{got:?}");
+        // The ZZZZ arrival level (procedures.toml ifr.cruise_ft), above the aircraft.
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!(plan.cleared_ft, 5000);
+        assert_eq!(plan.cruise_ft, 10000);
+    }
+
+    /// Without a hand-over, the level a climbing pilot reports as a flight level is the one
+    /// it climbs to, not the altitude it is passing.
+    #[test]
+    fn inbound_climbing_to_a_flight_level_reports_that_level() {
+        let mut e = engine();
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, passing four thousand \
+                    seven hundred feet, climbing flight level one zero zero, inbound";
+        let (_, out) = inbound(&mut e, WEST, 4700.0, 90.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        assert_eq!(
+            e.strip(&cs()).unwrap().plan.as_ref().unwrap().cruise_ft,
+            10000
+        );
+    }
+
     #[test]
     fn star_from_beyond_the_start_fix() {
         let mut e = engine();

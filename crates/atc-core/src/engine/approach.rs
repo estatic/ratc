@@ -32,11 +32,15 @@
 //! a VFR one is not Approach's.
 //!
 //! Arrivals (spec 3.3): an airborne aircraft without a flight plan calling Approach inbound
-//! (or asking for an approach) gets an IFR plan to this airport (level: the one it reports,
-//! the last said when it reports passing one and climbing to another, else its altitude); a VFR one (it says VFR, or names a VFR point without saying IFR) is
+//! (or asking for an approach) gets an IFR plan to this airport (level: for a flight handed
+//! in, the one the previous unit cleared it to; else the one it reports, the one farthest
+//! from its altitude when it reports passing one and climbing to another; else its
+//! altitude); a VFR one (it says VFR, or names a VFR point without saying IFR) is
 //! sent to Tower.
 //! The first reply: "identified", then the STAR chosen by [`choose_star`] when the aircraft is
-//! still outside its start fix (never for a VOR/DME approach: AIP AD 2.22, VOR approaches are
+//! still outside its start fix and on its side of the field (the start fix within 90 degrees
+//! of the aircraft, seen from the airport; a STAR on the far side would be a detour around
+//! the field) (never for a VOR/DME approach: AIP AD 2.22, VOR approaches are
 //! not linked to STARs), otherwise direct to the IAF (full procedure, on request) or a
 //! radar vector (default); the level (the IFR default level, or the intercept altitude when
 //! already within 15 NM of the intercept point, never above the present level), the QNH and
@@ -184,11 +188,11 @@ impl AtcEngine {
                 }
                 Some(FlightRules::Vfr) => Vec::new(),
             },
-            PilotIntent::ReportInbound { .. } if new => self.inbound(i, msg, None, false),
+            PilotIntent::ReportInbound { .. } if new => self.inbound(i, msg, None, false, None),
             PilotIntent::RequestApproach {
                 kind,
                 full_procedure,
-            } if new => self.inbound(i, msg, *kind, *full_procedure),
+            } if new => self.inbound(i, msg, *kind, *full_procedure, None),
             PilotIntent::RequestApproach {
                 kind,
                 full_procedure,
@@ -219,6 +223,8 @@ impl AtcEngine {
         if plan.as_ref().is_some_and(|p| !p.ifr) {
             return self.redirect(i, Role::Tower);
         }
+        // The level the previous unit cleared it to, kept as the level it reports.
+        let cleared_ft = plan.as_ref().map(|p| p.cleared_ft);
         self.strips[i].plan = None;
         let (kind, full) = match msg.intent {
             PilotIntent::RequestApproach {
@@ -227,7 +233,7 @@ impl AtcEngine {
             } => (kind, full_procedure),
             _ => (None, false),
         };
-        let items = self.inbound(i, msg, kind, full);
+        let items = self.inbound(i, msg, kind, full, cleared_ft);
         if items.is_empty() {
             // No telemetry yet: still the flight handed over, served on its next call.
             let strip = &mut self.strips[i];
@@ -247,13 +253,15 @@ impl AtcEngine {
 
     /// The first call of an airborne aircraft without a flight plan: a VFR flight is sent to
     /// Tower; an IFR flight gets a plan to this airport and the route to its approach (see
-    /// the module docs). `kind` / `full`: as requested.
+    /// the module docs). `kind` / `full`: as requested; `cleared_ft`: the level a handed-in
+    /// flight was cleared to by the previous unit.
     fn inbound(
         &mut self,
         i: usize,
         msg: &PilotMessage,
         kind: Option<ApproachKind>,
         full: bool,
+        cleared_ft: Option<i32>,
     ) -> Vec<AtcItem> {
         if !self.strips[i].phase.is_airborne() {
             return Vec::new();
@@ -282,10 +290,12 @@ impl AtcEngine {
         let Some((thr, course)) = self.final_geometry(&runway) else {
             return vec![AtcItem::Unable(UnableReason::NoIfrData)];
         };
-        // The level it reports: the last one said ("passing four thousand climbing five
-        // thousand" reports five thousand), else its altitude.
+        // The level it is cleared to: the one the previous unit cleared it to, else the one
+        // it reports ([`reported_level_ft`]), else its altitude.
         let actual_ft = ((s.alt_ft_msl / 100.0).round() as i32) * 100;
-        let present_ft = msg.items.altitudes_ft.last().copied().unwrap_or(actual_ft);
+        let present_ft = cleared_ft
+            .or_else(|| reported_level_ft(msg, s.alt_ft_msl))
+            .unwrap_or(actual_ft);
         // AIP AD 2.22: VOR approaches are not linked to STARs.
         let star = self
             .airport_ref()
@@ -329,9 +339,10 @@ impl AtcEngine {
                 pattern = leg;
             }
         }
-        // Climb, descent or maintain from where it is now.
+        // Climb, descent or maintain from where it is now (a flight climbing through the
+        // level to a higher one is stopped there with "maintain").
         let now = s.alt_ft_msl - f64::from(level_ft);
-        items.push(if level_ft < present_ft || now > LEVEL_TOLERANCE_FT {
+        items.push(if now > LEVEL_TOLERANCE_FT {
             AtcItem::DescendTo(self.level(level_ft))
         } else if now < -LEVEL_TOLERANCE_FT {
             AtcItem::ClimbTo(self.level(level_ft))
@@ -1386,6 +1397,24 @@ fn is_ifr_inbound(unit: &AdjacentUnit, msg: &PilotMessage) -> bool {
             PilotIntent::ReportInbound { .. } | PilotIntent::RequestApproach { .. }
         )
         && !says(&msg.raw, "vfr")
+}
+
+/// The level an inbound call reports, the aircraft at `alt_ft`: the altitudes and flight
+/// levels said, the one farthest from where it is ("passing four thousand seven hundred feet,
+/// climbing flight level one zero zero" reports FL100, not the altitude it is passing).
+/// `None` when no level is said.
+fn reported_level_ft(msg: &PilotMessage, alt_ft: f64) -> Option<i32> {
+    let items = &msg.items;
+    items
+        .altitudes_ft
+        .iter()
+        .copied()
+        .chain(items.flight_levels.iter().map(|&fl| i32::from(fl) * 100))
+        .max_by(|a, b| {
+            (f64::from(*a) - alt_ft)
+                .abs()
+                .total_cmp(&(f64::from(*b) - alt_ft).abs())
+        })
 }
 
 /// The point `INTERCEPT_NM` out on the final to the threshold `thr` (final course `course`).
