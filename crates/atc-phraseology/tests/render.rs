@@ -276,6 +276,36 @@ fn non_runway_alphanumerics_are_spelled() {
     );
 }
 
+/// Stand names: letter runs of four letters or more are spoken as words, shorter ones and
+/// digits are spelled.
+#[test]
+fn stand_names_with_words_are_spoken() {
+    let stand = |name: &str| {
+        render(
+            &msg(
+                None,
+                "x",
+                vec![AtcItem::Taxi {
+                    to: TaxiTo::Stand { name: name.into() },
+                    via: vec![],
+                    crossings: vec![],
+                }],
+            ),
+            false,
+        )
+    };
+    assert_eq!(stand("APRON4 GA"), "taxi to stand apron four Golf Alpha");
+    assert_eq!(stand("9R"), "taxi to stand niner Romeo");
+    assert_eq!(stand("35"), "taxi to stand three five");
+    assert_eq!(stand("Z4"), "taxi to stand Zulu four");
+    assert_eq!(stand("GA12"), "taxi to stand Golf Alpha one two");
+    assert_eq!(stand("Hangar"), "taxi to stand hangar");
+    // Punctuation separates runs and is not said.
+    assert_eq!(stand("APRON-4"), "taxi to stand apron four");
+    assert_eq!(stand("GA/1"), "taxi to stand Golf Alpha one");
+    assert_eq!(stand("A-B-"), "taxi to stand Alpha Bravo");
+}
+
 #[test]
 fn squawk_text() {
     let m = ground(vec![AtcItem::Qnh(1013), AtcItem::Squawk(4201)]);
@@ -346,7 +376,7 @@ fn typed_items_render_as_before() {
                 metres: 10,
                 side: Side::Behind,
             },
-            "stand GA is ten metres behind you",
+            "stand Golf Alpha is ten metres behind you",
         ),
         (
             AtcItem::TakenOffWithoutClearance,

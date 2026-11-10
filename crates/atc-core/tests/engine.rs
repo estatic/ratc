@@ -3923,6 +3923,16 @@ mod approach_departure {
         edit_procs: impl FnOnce(&mut Procedures),
         edit: impl FnOnce(&mut ProcedureSet),
     ) -> AtcEngine {
+        engine_airport_cfg(EngineConfig::new(strictness), edit_ap, edit_procs, edit)
+    }
+
+    /// [`engine_airport`] with the engine configuration `cfg`.
+    pub(super) fn engine_airport_cfg(
+        cfg: EngineConfig,
+        edit_ap: impl FnOnce(&mut Airport),
+        edit_procs: impl FnOnce(&mut Procedures),
+        edit: impl FnOnce(&mut ProcedureSet),
+    ) -> AtcEngine {
         let mut ap = resolve_airport(&root(), "ZZZZ")
             .unwrap()
             .parse("ZZZZ")
@@ -3976,7 +3986,7 @@ mod approach_departure {
         });
         let mut set = load_procedure_set(&root(), "ZZZZ").unwrap();
         edit(&mut set);
-        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(strictness))
+        let mut e = AtcEngine::new(ap, procs, cfg)
             .with_procedure_set(set)
             .with_destinations(dests);
         e.register_pilot(PilotProfile {
@@ -4485,6 +4495,36 @@ mod approach_departure {
                 "{said}: {out:?}"
             );
         }
+    }
+
+    /// Ground says the stand `APRON4 GA` as "apron four Golf Alpha"; the pilot asking for it
+    /// that way and reading the clearance back as it was said is understood.
+    #[test]
+    fn stand_said_as_ground_says_it_is_read_back() {
+        let mut e = engine_with_stands(&[("APRON4 GA", NEAR_GA)]);
+        parked_on_stand_1(&mut e);
+        let out = say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to stand apron four Golf Alpha"),
+        );
+        assert!(
+            matches!(&out[0].message.items[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "APRON4 GA"),
+            "{out:?}"
+        );
+        let text = &out[0].text;
+        assert!(text.contains("stand apron four Golf Alpha"), "{text}");
+        // The clearance read back word for word, the callsign moved to the end.
+        let (_, clearance) = text.split_once(", ").unwrap();
+        let rb = format!("{clearance}, {CS}");
+        let answer = say(&mut e, GND, &rb);
+        assert!(answer.is_empty(), "{rb}: {answer:?}");
+        assert!(
+            e.strip(&Callsign::new("SPTST"))
+                .unwrap()
+                .pending_readback
+                .is_none()
+        );
     }
 
     /// Of two stands with one name, the nearest free one: not the one another aircraft is on.
@@ -5343,6 +5383,254 @@ mod approach_arrival {
         assert_eq!(
             e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
             5000
+        );
+    }
+
+    /// 17 NM south-east of the field: farther out than ALFAX, the start of the only STAR,
+    /// but on the opposite side of the airport from it.
+    const FAR_SIDE: LatLon = LatLon {
+        lat: 9.8,
+        lon: 10.2,
+    };
+
+    /// SPTST, an IFR flight to ZZZZ cleared to FL100 by the unit it comes from, handed in.
+    fn hand_in(e: &mut AtcEngine) {
+        hand_in_at(e, 10000);
+    }
+
+    /// [`hand_in`] with the plan cleared to `cleared_ft` (0: never cleared, as
+    /// `export_flight` hands such a plan over: no separate cleared level).
+    fn hand_in_at(e: &mut AtcEngine, cleared_ft: i32) {
+        e.import_flight(atc_core::handover::FlightHandover {
+            callsign: cs(),
+            aircraft_type: "C172".into(),
+            plan: Some(atc_core::strip::FlightPlan {
+                ifr: true,
+                destination: "ZZZZ".into(),
+                dest_name: "Zeta".into(),
+                cruise_ft: 10000,
+                sid: Some("OTHER1A".into()),
+                dep_runway: Some("25".into()),
+                star: None,
+                approach: None,
+                vectors: false,
+                cleared_ft,
+                direct: None,
+                heading: None,
+                approach_cleared: false,
+                pattern: None,
+                established_check: false,
+            }),
+            squawk: Some(4601),
+            cleared_ft: Some(cleared_ft).filter(|&ft| ft > 0),
+            rules: Some(atc_phraseology::FlightRules::Ifr),
+            callsign_misses: 0,
+        });
+    }
+
+    /// The first call of the EPKK -> EPKT flight, handed in climbing to FL100.
+    const CLIMBING_FL100: &str = "Zeta Approach, Sierra Papa Tango Sierra Tango, passing four \
+                                  thousand seven hundred feet, climbing flight level one zero \
+                                  zero, inbound to Zeta, information Alpha";
+
+    /// A flight handed in from the side opposite the only STAR still ahead of it is
+    /// vectored to the final, not sent around the field to that STAR, and is never told
+    /// it is off track.
+    #[test]
+    fn handed_in_from_the_far_side_gets_vectors() {
+        let mut e = engine();
+        hand_in(&mut e);
+        let (mut p, out) = inbound(&mut e, FAR_SIDE, 4700.0, 300.0, CLIMBING_FL100);
+        let got = items(&out);
+        assert!(
+            matches!(
+                got.as_slice(),
+                [
+                    AtcItem::Identified,
+                    AtcItem::Heading { .. },
+                    ..,
+                    AtcItem::ExpectApproach {
+                        kind: ApproachKind::Ils,
+                        ..
+                    }
+                ]
+            ),
+            "{got:?}"
+        );
+        assert!(
+            !got.iter().any(|i| matches!(i, AtcItem::Star { .. })),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!(plan.star, None);
+        assert!(plan.vectors);
+        p.until(&mut e, 1500, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        assert!(
+            !p.heard_item(|i| matches!(i, AtcItem::OffTrack { .. })),
+            "{:?}",
+            p.f.heard
+        );
+    }
+
+    /// "Passing four thousand seven hundred feet, climbing flight level one zero zero" from
+    /// a handed-in flight: the passing altitude is not the level; Approach knows the flight
+    /// was cleared to FL100 and gives its arrival altitude, a round value.
+    #[test]
+    fn handed_in_climbing_call_is_not_held_at_the_passing_altitude() {
+        let mut e = engine();
+        hand_in(&mut e);
+        // 30 NM south-east, as at the EPKT hand-off: beyond the 15 NM of the intercept descent.
+        let pos = destination(
+            LatLon {
+                lat: 10.0,
+                lon: 10.0,
+            },
+            135.0,
+            30.0 * M_PER_NM,
+        );
+        let (_, out) = inbound(&mut e, pos, 4700.0, 300.0, CLIMBING_FL100);
+        let got = items(&out);
+        let mentions_4700 = |i: &AtcItem| {
+            matches!(
+                i,
+                AtcItem::MaintainLevel(Level::Altitude(4700))
+                    | AtcItem::ClimbTo(Level::Altitude(4700))
+                    | AtcItem::DescendTo(Level::Altitude(4700))
+            )
+        };
+        assert!(!got.iter().any(mentions_4700), "{got:?}");
+        // The ZZZZ arrival level (procedures.toml ifr.cruise_ft), above the aircraft.
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!(plan.cleared_ft, 5000);
+        assert_eq!(plan.cruise_ft, 10000);
+    }
+
+    /// A handed-in flight reporting only the altitude it is passing: the level it was cleared
+    /// to comes from the hand-over (FL100), not from the call.
+    #[test]
+    fn handed_in_level_comes_from_the_hand_over() {
+        let mut e = engine();
+        hand_in(&mut e);
+        let pos = destination(
+            LatLon {
+                lat: 10.0,
+                lon: 10.0,
+            },
+            135.0,
+            30.0 * M_PER_NM,
+        );
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, passing four thousand seven \
+                    hundred feet, inbound to Zeta, information Alpha";
+        let (_, out) = inbound(&mut e, pos, 4700.0, 300.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (10000, 5000));
+    }
+
+    /// "Passing four thousand seven hundred, climbing five thousand", heard when the aircraft
+    /// is already at 4900 ft: the level is the one it climbs to, never the passing one.
+    #[test]
+    fn passing_level_is_never_the_target_late_in_the_climb() {
+        let mut e = engine();
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, passing four thousand \
+                    seven hundred feet climbing five thousand feet, inbound";
+        let (_, out) = inbound(&mut e, WEST, 4900.0, 90.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::MaintainLevel(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (5000, 5000));
+    }
+
+    /// "Passing four thousand seven hundred" alone reports no level: the arrival altitude is
+    /// given, the passing altitude is not echoed back.
+    #[test]
+    fn passing_only_gets_the_arrival_altitude() {
+        let mut e = engine();
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, passing four thousand \
+                    seven hundred feet, inbound";
+        let (_, out) = inbound(&mut e, WEST, 4700.0, 90.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+    }
+
+    /// A handed-in plan never cleared (level 0) is ignored: the level comes from the call.
+    #[test]
+    fn handed_in_zero_level_is_ignored() {
+        let mut e = engine();
+        hand_in_at(&mut e, 0);
+        let pos = destination(
+            LatLon {
+                lat: 10.0,
+                lon: 10.0,
+            },
+            135.0,
+            30.0 * M_PER_NM,
+        );
+        let (_, out) = inbound(&mut e, pos, 4700.0, 300.0, CLIMBING_FL100);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+    }
+
+    /// A Polish inbound call climbing to 5000 ft: the level is read from the Polish words
+    /// ("wznoszenie na pięć tysięcy stóp"), not left at the altitude it is passing.
+    #[test]
+    fn polish_inbound_climbing_reports_the_level_it_climbs_to() {
+        let mut cfg = EngineConfig::new(Strictness::Standard);
+        cfg.language = LanguageMode::Fixed(Lang::Pl);
+        let mut e = super::approach_departure::engine_airport_cfg(cfg, |_| {}, |_| {}, |_| {});
+        let mut p = Pilot::new(WEST, 4000.0, 90.0);
+        p.tick(&mut e);
+        let out = say_in(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, wznoszenie na pięć tysięcy \
+             stóp, zbliżam się",
+            Lang::Pl,
+        );
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (5000, 5000));
+    }
+
+    /// Without a hand-over, the level a climbing pilot reports as a flight level is the one
+    /// it climbs to, not the altitude it is passing.
+    #[test]
+    fn inbound_climbing_to_a_flight_level_reports_that_level() {
+        let mut e = engine();
+        let text = "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, passing four thousand \
+                    seven hundred feet, climbing flight level one zero zero, inbound";
+        let (_, out) = inbound(&mut e, WEST, 4700.0, 90.0, text);
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        assert_eq!(
+            e.strip(&cs()).unwrap().plan.as_ref().unwrap().cruise_ft,
+            10000
         );
     }
 

@@ -186,9 +186,15 @@ pub fn choose_sid<'a>(
         .map(|(_, p)| p)
 }
 
+/// A STAR's start fix more than this many degrees from the aircraft (both seen from the
+/// airport) lies on the far side of the field: flying to it would be a detour.
+const STAR_MAX_GAP_DEG: f64 = 90.0;
+
 /// The STAR of `runway` whose start fix is closest in bearing (from the airport) to the
-/// aircraft, among those whose start fix is still ahead: nearer the airport than the
-/// aircraft is. `None` when the aircraft is already inside every start fix.
+/// aircraft, among those whose start fix is still ahead (nearer the airport than the
+/// aircraft is) and on the aircraft's side of the field (at most 90 degrees from it, seen
+/// from the airport). `None` when there is no such STAR: the aircraft is already inside
+/// every start fix, or the only ones ahead are on the far side (radar vectors instead).
 pub fn choose_star<'a>(
     set: &'a ProcedureSet,
     runway: &str,
@@ -201,8 +207,8 @@ pub fn choose_star<'a>(
         .into_iter()
         .filter_map(|p| {
             let start = first_point(p)?;
-            (distance_m(airport, start) < ac_dist)
-                .then(|| (bearing_gap(bearing_deg(airport, start), ac_bearing), p))
+            let gap = bearing_gap(bearing_deg(airport, start), ac_bearing);
+            (distance_m(airport, start) < ac_dist && gap <= STAR_MAX_GAP_DEG).then_some((gap, p))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, p)| p)

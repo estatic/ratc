@@ -230,7 +230,9 @@ one that does not load is skipped with a warning naming the file. The log starts
   name, else your own, else "say stand"), with no QNH or squawk. Stand names are matched
   ignoring case, spaces and the keyword ("apron four golf alpha" is "APRON4 GA"); among
   duplicates the nearest free stand is taken, and words after the name (such as a callsign)
-  are ignored.
+  are ignored. The controller says a stand name with digits and groups of up to three
+  letters spelled and longer letter groups as a word: "APRON4 GA" is "apron four Golf
+  Alpha", "9R" is "niner Romeo".
 - **FIS and radar from `enroute.toml`.** The wizard writes `data/airports/enroute.toml` (git-ignored)
   after every create or update: one unit per FIS or ACC sector name and frequency of the
   OpenAIP data. A unit answers your first call with "identified, QNH ...", acknowledges what
