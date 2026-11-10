@@ -10,7 +10,7 @@ use atc_client::aircraft::Identity;
 use atc_client::app::{App, Input, spawn_links};
 use atc_client::connection::{Backoff, ConnConfig, Outgoing, ServerEvent, run_connection};
 use atc_client::sim::SimUpdate;
-use atc_client::sim::xplane::XpConfig;
+use atc_client::sim::xplane::{XPlaneReader, XpConfig};
 use atc_proto::{CallsignSource, ClientMsg, PROTOCOL_VERSION, ServerMsg, TelemetryFrame};
 use common::fake_xp::{T, answer, read_subscriptions};
 use common::server::{GROUND, TAXI_REQUEST, parked, start, start_on};
@@ -240,6 +240,7 @@ async fn text_mode_roundtrip() {
     let srv = start().await;
     let fake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let mut xp = XpConfig::new(fake.local_addr().unwrap());
+    let addr = fake.local_addr().unwrap().to_string();
     xp.local_bind = "127.0.0.1:0".parse().unwrap();
     let fake_xp = tokio::spawn(async move {
         let (client, names) = read_subscriptions(&fake).await;
@@ -255,7 +256,7 @@ async fn text_mode_roundtrip() {
     let to_conn = spawn_links(
         conn_cfg(srv.url.clone(), backoff),
         id_rx,
-        xp,
+        Box::new(XPlaneReader::new(xp, addr)),
         inputs.clone(),
     );
     let (lines_tx, mut lines) = mpsc::unbounded_channel::<String>();
@@ -267,6 +268,7 @@ async fn text_mode_roundtrip() {
             p.lock().unwrap().push(s.to_string());
             let _ = lines_tx.send(s.to_string());
         }),
+        atc_client::sim::xplane::info("127.0.0.1:49000"),
     );
     let app = tokio::spawn(app.run(inputs_rx));
 
@@ -305,13 +307,14 @@ async fn xplane_reader_feeds_links() {
     // spawn_links forwards X-Plane updates as inputs even with no server around
     let fake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let mut xp = XpConfig::new(fake.local_addr().unwrap());
+    let addr = fake.local_addr().unwrap().to_string();
     xp.local_bind = "127.0.0.1:0".parse().unwrap();
     let (inputs, mut rx) = mpsc::channel(64);
     let (_id_tx, id_rx) = watch::channel(None);
     let _to_conn = spawn_links(
         conn_cfg("ws://127.0.0.1:9/ws".into(), Backoff::default()),
         id_rx,
-        xp,
+        Box::new(XPlaneReader::new(xp, addr)),
         inputs,
     );
     let (client, names) = read_subscriptions(&fake).await;

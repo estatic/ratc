@@ -7,7 +7,6 @@
 use std::io::Write;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
 use atc_client::aircraft::{Identity, IdentityTracker, UNKNOWN_TYPE};
@@ -17,8 +16,9 @@ use atc_client::config::ClientConfig;
 use atc_client::connection::{Backoff, ConnConfig};
 use atc_client::ptt::{PttInput, parse_key, spawn_joystick, spawn_keyboard};
 use atc_client::record::TrackWriter;
-use atc_client::sim::xplane::XpConfig;
-use atc_client::sim::xplane::overlay::{DEFAULT_ADDR, Overlay};
+use atc_client::sim::SimReader;
+use atc_client::sim::xplane::overlay::DEFAULT_ADDR;
+use atc_client::sim::xplane::{XPlaneDisplay, XPlaneReader, XpConfig};
 use atc_proto::CallsignSource;
 use tokio::sync::{mpsc, watch};
 
@@ -104,32 +104,22 @@ fn forward<T: Send + 'static>(
     });
 }
 
-/// The X-Plane overlay at `addr`; `None`, with a warning, when the address is bad.
-fn overlay(addr: &str) -> Option<Overlay> {
-    let to = match addr.to_socket_addrs().map(|mut a| a.next()) {
-        Ok(Some(to)) => to,
-        _ => {
-            tracing::warn!("overlay address {addr:?} does not resolve; no on-screen text");
-            return None;
-        }
-    };
-    Overlay::new(to)
-        .inspect_err(|e| tracing::warn!("overlay socket: {e}; no on-screen text"))
-        .ok()
-}
-
-/// Prints a console line (`\r\n` in raw mode) and sends it to the overlay.
-fn printer(overlay: Option<Arc<Overlay>>, raw: bool) -> Box<dyn FnMut(&str) + Send> {
+/// Prints a console line (`\r\n` in raw mode).
+fn printer(raw: bool) -> Box<dyn FnMut(&str) + Send> {
     Box::new(move |s| {
         if raw {
             print!("{s}\r\n");
         } else {
             println!("{s}");
         }
-        if let Some(o) = &overlay {
-            o.send(s);
-        }
     })
+}
+
+/// On-screen text and the follow-me car through the X-Plane overlay plugin.
+fn display(cfg: &ClientConfig) -> Box<XPlaneDisplay> {
+    Box::new(XPlaneDisplay::open(
+        cfg.overlay.as_deref().unwrap_or(DEFAULT_ADDR),
+    ))
 }
 
 /// stdin on a plain thread (tokio's stdin would keep the runtime from shutting down).
@@ -162,16 +152,7 @@ async fn main() -> anyhow::Result<()> {
         url: cfg.server.clone(),
         backoff: Backoff::default(),
     };
-    let overlay = overlay(cfg.overlay.as_deref().unwrap_or(DEFAULT_ADDR)).map(Arc::new);
-    // Follow-me car commands go to the plugin on the overlay socket.
-    let plugin = |overlay: &Option<Arc<Overlay>>| -> Box<dyn FnMut(&str) + Send> {
-        let o = overlay.clone();
-        Box::new(move |line| {
-            if let Some(o) = &o {
-                o.send(line);
-            }
-        })
-    };
+    let sim_display = display(&cfg);
     // Text mode with a config callsign connects at once (type ZZZZ until X-Plane reports
     // one); otherwise the connection waits for the aircraft from X-Plane.
     let initial = match (&cfg.callsign, args.text) {
@@ -183,9 +164,11 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
     let (identity_tx, identity_rx) = watch::channel(initial);
-    let tracker = IdentityTracker::new(cfg.callsign.clone(), identity_tx);
+    let reader = XPlaneReader::new(XpConfig::new(xplane), cfg.xplane.clone());
+    let info = reader.info();
+    let tracker = IdentityTracker::new(cfg.callsign.clone(), identity_tx, info.name);
     let (inputs, inputs_rx) = mpsc::channel(1024);
-    let to_conn = spawn_links(conn, identity_rx, XpConfig::new(xplane), inputs.clone());
+    let to_conn = spawn_links(conn, identity_rx, Box::new(reader), inputs.clone());
 
     let recorder = match &args.record {
         Some(path) => {
@@ -198,9 +181,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     if args.text {
-        let mut app = App::new(to_conn, printer(overlay.clone(), false))
-            .with_plugin(plugin(&overlay))
-            .with_identity(tracker, cfg.xplane.clone());
+        let mut app = App::new(to_conn, printer(false), info)
+            .with_sim_display(sim_display)
+            .with_identity(tracker);
         if let Some(r) = recorder {
             app = app.with_recorder(r);
         }
@@ -223,9 +206,9 @@ async fn main() -> anyhow::Result<()> {
     let _raw = spawn_keyboard(ptt_key, ptt_tx)?;
     forward(ptt_rx, inputs, Input::Ptt);
 
-    let mut app = App::new(to_conn, printer(overlay.clone(), true))
-        .with_plugin(plugin(&overlay))
-        .with_identity(tracker, cfg.xplane.clone())
+    let mut app = App::new(to_conn, printer(true), info)
+        .with_sim_display(sim_display)
+        .with_identity(tracker)
         .with_playback(playback);
     if let Some(r) = recorder {
         app = app.with_recorder(r);

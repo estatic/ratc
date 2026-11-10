@@ -41,7 +41,11 @@ fn start() -> Harness {
     let (to_conn, out) = mpsc::channel(64);
     let printed = Arc::new(Mutex::new(Vec::new()));
     let p = printed.clone();
-    let app = App::new(to_conn, Box::new(move |s| p.lock().unwrap().push(s.into())));
+    let app = App::new(
+        to_conn,
+        Box::new(move |s| p.lock().unwrap().push(s.into())),
+        atc_client::sim::xplane::info("127.0.0.1:49000"),
+    );
     let (inputs, rx) = mpsc::channel(64);
     tokio::spawn(app.run(rx));
     Harness {

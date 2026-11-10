@@ -1,13 +1,13 @@
-//! The client's event loop: X-Plane telemetry, server events, typed lines (text mode), PTT
-//! and microphone frames (voice mode) in; messages to the server, console lines, playback
-//! and follow-me car commands for the X-Plane plugin out. No device I/O here — `main`
-//! feeds [`Input`]s and owns the devices.
+//! The client's event loop: sim updates, server events, typed lines (text mode), PTT and
+//! microphone frames (voice mode) in; messages to the server, console lines, playback, and
+//! on-screen text and follow-me car commands for the sim display out. No device I/O here —
+//! `main` feeds [`Input`]s and owns the devices.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atc_proto::{AudioFrame, CallsignSource, ClientMsg, ServerMsg, overlay_command};
+use atc_proto::{AudioFrame, CallsignSource, ClientMsg, ServerMsg};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
@@ -17,8 +17,7 @@ use crate::connection::{ConnConfig, Outgoing, ServerEvent, run_connection};
 use crate::playback::{Playback, should_play};
 use crate::ptt::{PttEvent, PttInput, PttMerger};
 use crate::record::TrackWriter;
-use crate::sim::SimUpdate;
-use crate::sim::xplane::{XpConfig, run_xplane};
+use crate::sim::{SimDisplay, SimInfo, SimReader, SimUpdate, is_follow_me};
 
 /// After stdin ends, keep printing replies to what was typed for this long.
 const LINGER: Duration = Duration::from_secs(3);
@@ -26,7 +25,7 @@ const LINGER: Duration = Duration::from_secs(3);
 /// How often the latest sim aircraft is re-offered to the debounce.
 const IDENTITY_TICK: Duration = Duration::from_millis(500);
 
-/// How often "waiting for X-Plane" is repeated.
+/// How often "waiting for <sim>" is repeated.
 const WAIT_NOTICE: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
@@ -42,12 +41,12 @@ pub enum Input {
     Mic(Vec<i16>),
 }
 
-/// Spawns the server connection and the X-Plane reader, both feeding `inputs`; returns the
+/// Spawns the server connection and the sim reader, both feeding `inputs`; returns the
 /// sender for messages to the server.
 pub fn spawn_links(
     conn: ConnConfig,
     identity: watch::Receiver<Option<Identity>>,
-    xp: XpConfig,
+    sim: Box<dyn SimReader>,
     inputs: mpsc::Sender<Input>,
 ) -> mpsc::Sender<Outgoing> {
     let (out_tx, out_rx) = mpsc::channel(1024);
@@ -57,17 +56,13 @@ pub fn spawn_links(
             tracing::error!("server connection stopped: {e:#}");
         }
     });
-    let (xp_tx, mut xp_rx) = mpsc::channel(64);
-    tokio::spawn(async move {
-        if let Err(e) = run_xplane(xp, xp_tx).await {
-            tracing::error!("X-Plane reader stopped: {e:#}");
-        }
-    });
+    let (sim_tx, mut sim_rx) = mpsc::channel(64);
+    sim.spawn(sim_tx);
     tokio::spawn(async move {
         loop {
             let input = tokio::select! {
                 Some(e) = ev_rx.recv() => Input::Server(e),
-                Some(u) = xp_rx.recv() => Input::Sim(u),
+                Some(u) = sim_rx.recv() => Input::Sim(u),
                 else => return,
             };
             if inputs.send(input).await.is_err() {
@@ -97,7 +92,7 @@ pub fn fmt_khz(khz: u32) -> String {
     format!("{}.{:03}", khz / 1000, khz % 1000)
 }
 
-/// Where lines go: the console (and overlay), or the plugin's vehicle commands.
+/// Where console lines go.
 pub type LineSink = Box<dyn FnMut(&str) + Send>;
 
 struct Transmission {
@@ -111,8 +106,8 @@ struct Transmission {
 pub struct App {
     to_conn: mpsc::Sender<Outgoing>,
     print: LineSink,
-    /// Vehicle commands to the X-Plane plugin (overlay datagrams).
-    plugin: Option<LineSink>,
+    /// On-screen text and the follow-me car in the sim.
+    display: Option<Box<dyn SimDisplay>>,
     playback: Option<Arc<Mutex<Playback>>>,
     recorder: Option<TrackWriter<Box<dyn Write + Send>>>,
     /// The transmit frequency (COM1 or COM2, per the audio panel).
@@ -125,8 +120,8 @@ pub struct App {
     typed_any: bool,
     /// Turns the sim's aircraft into the identity the connection uses.
     identity: Option<IdentityTracker>,
-    /// X-Plane address, named in the "waiting" notice.
-    xplane_addr: String,
+    /// The sim the client reads, named in console lines.
+    sim: SimInfo,
     last_wait_notice: Option<std::time::Instant>,
     /// What the server identified us as, for the refusal line.
     identified: Option<(String, String)>,
@@ -135,11 +130,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(to_conn: mpsc::Sender<Outgoing>, print: LineSink) -> Self {
+    pub fn new(to_conn: mpsc::Sender<Outgoing>, print: LineSink, sim: SimInfo) -> Self {
         App {
             to_conn,
             print,
-            plugin: None,
+            display: None,
             playback: None,
             recorder: None,
             com1: None,
@@ -149,23 +144,22 @@ impl App {
             tx: None,
             typed_any: false,
             identity: None,
-            xplane_addr: String::new(),
+            sim,
             last_wait_notice: None,
             identified: None,
             last_refusal: None,
         }
     }
 
-    /// Takes the aircraft from X-Plane (at `xplane_addr`) and publishes the identity.
-    pub fn with_identity(mut self, tracker: IdentityTracker, xplane_addr: String) -> Self {
+    /// Takes the aircraft from the sim and publishes the identity.
+    pub fn with_identity(mut self, tracker: IdentityTracker) -> Self {
         self.identity = Some(tracker);
-        self.xplane_addr = xplane_addr;
         self
     }
 
-    /// Where `FollowMe` / `FollowMeCancel` go, framed for the plugin.
-    pub fn with_plugin(mut self, send: LineSink) -> Self {
-        self.plugin = Some(send);
+    /// Where console lines are also shown, and where `FollowMe` / `FollowMeCancel` go.
+    pub fn with_sim_display(mut self, d: Box<dyn SimDisplay>) -> Self {
+        self.display = Some(d);
         self
     }
 
@@ -210,7 +204,7 @@ impl App {
                 },
                 Input::Mic(pcm) => self.mic(pcm).await,
                 Input::Line(l) => self.line(&l).await,
-                Input::Sim(u) => self.xp(u).await,
+                Input::Sim(u) => self.sim(u).await,
                 Input::Server(e) => self.server(e),
             }
         }
@@ -218,6 +212,9 @@ impl App {
 
     fn say(&mut self, s: &str) {
         (self.print)(s);
+        if let Some(d) = &mut self.display {
+            d.show_text(s);
+        }
     }
 
     async fn send(&mut self, m: ClientMsg) {
@@ -240,22 +237,23 @@ impl App {
                 .is_none_or(|t| now.duration_since(t) >= WAIT_NOTICE)
         {
             self.last_wait_notice = Some(now);
-            let addr = self.xplane_addr.clone();
-            self.say(&format!(
-                "Waiting for X-Plane at {addr} for the aircraft type…"
-            ));
+            let line = format!(
+                "Waiting for {} at {} for the aircraft type…",
+                self.sim.name, self.sim.address
+            );
+            self.say(&line);
         }
     }
 
-    async fn xp(&mut self, u: SimUpdate) {
+    async fn sim(&mut self, u: SimUpdate) {
         match u {
             SimUpdate::Telemetry(f) => {
                 let heard = f.heard_khz();
                 if self.com1 != Some(f.com1_khz) || self.heard != heard {
                     let prefix = if self.com1.is_none() {
-                        "X-Plane connected, "
+                        format!("{} connected, ", self.sim.name)
                     } else {
-                        ""
+                        String::new()
                     };
                     self.say(&format!("{prefix}{}", radios_line(f.com1_khz, &heard)));
                     self.com1 = Some(f.com1_khz);
@@ -291,7 +289,11 @@ impl App {
             return;
         }
         let Some(freq_khz) = self.com1 else {
-            self.say("no telemetry from X-Plane yet (is it running? check `xplane` in the config) - line dropped");
+            let line = format!(
+                "no telemetry from {} yet (is it running? check `{}` in the config) - line dropped",
+                self.sim.name, self.sim.config_key
+            );
+            self.say(&line);
             return;
         };
         if !self.connected {
@@ -308,8 +310,8 @@ impl App {
 
     async fn ptt_press(&mut self) {
         let reason = match (self.connected, self.com1) {
-            (false, _) => "not connected to the server",
-            (true, None) => "no COM radio from X-Plane yet",
+            (false, _) => "not connected to the server".to_string(),
+            (true, None) => format!("no COM radio from {} yet", self.sim.name),
             (true, Some(freq_khz)) => {
                 self.send(ClientMsg::PttStart { freq_khz }).await;
                 self.tx = Some(Transmission {
@@ -380,8 +382,10 @@ impl App {
     }
 
     fn server_msg(&mut self, m: &ServerMsg) {
-        if let (Some(send), Some(cmd)) = (&mut self.plugin, overlay_command(m)) {
-            send(&cmd);
+        if is_follow_me(m) {
+            if let Some(d) = &mut self.display {
+                d.follow_me(m);
+            }
             return;
         }
         match m {
@@ -415,8 +419,8 @@ impl App {
                 callsign_source,
             } => {
                 let from = match callsign_source {
-                    CallsignSource::Config => "from config",
-                    CallsignSource::Sim => "X-Plane tail number",
+                    CallsignSource::Config => "from config".to_string(),
+                    CallsignSource::Sim => format!("{} tail number", self.sim.name),
                 };
                 let unknown = if aircraft_type == UNKNOWN_TYPE {
                     " (type unknown)"
@@ -452,14 +456,49 @@ impl App {
 mod tests {
     use super::*;
 
-    #[test]
-    fn follow_me_goes_to_the_plugin_only() {
-        let (tx, _rx) = mpsc::channel(1);
+    use crate::sim::xplane::info;
+
+    /// What reached the sim display.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Shown {
+        Text(String),
+        FollowMe(ServerMsg),
+    }
+
+    struct FakeDisplay(Arc<Mutex<Vec<Shown>>>);
+
+    impl SimDisplay for FakeDisplay {
+        fn show_text(&mut self, line: &str) {
+            self.0.lock().unwrap().push(Shown::Text(line.into()));
+        }
+
+        fn follow_me(&mut self, msg: &ServerMsg) {
+            self.0.lock().unwrap().push(Shown::FollowMe(msg.clone()));
+        }
+    }
+
+    fn capture() -> (App, Arc<Mutex<Vec<String>>>, mpsc::Receiver<Outgoing>) {
+        let (tx, rx) = mpsc::channel(8);
         let printed = Arc::new(Mutex::new(Vec::<String>::new()));
-        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let (p, s) = (printed.clone(), sent.clone());
-        let mut app = App::new(tx, Box::new(move |l| p.lock().unwrap().push(l.into())))
-            .with_plugin(Box::new(move |l| s.lock().unwrap().push(l.into())));
+        let p = printed.clone();
+        let app = App::new(
+            tx,
+            Box::new(move |l| p.lock().unwrap().push(l.into())),
+            info("127.0.0.1:49000"),
+        );
+        (app, printed, rx)
+    }
+
+    fn with_display(app: App) -> (App, Arc<Mutex<Vec<Shown>>>) {
+        let shown = Arc::new(Mutex::new(Vec::new()));
+        let app = app.with_sim_display(Box::new(FakeDisplay(shown.clone())));
+        (app, shown)
+    }
+
+    #[test]
+    fn follow_me_goes_to_the_sim_display_only() {
+        let (app, printed, _rx) = capture();
+        let (mut app, shown) = with_display(app);
         let m = ServerMsg::FollowMe {
             id: 3,
             path: vec![[50.0, 19.0], [50.001, 19.0]],
@@ -468,18 +507,21 @@ mod tests {
         };
         app.server_msg(&m);
         app.server_msg(&ServerMsg::FollowMeCancel { id: 3 });
-        let sent = sent.lock().unwrap();
-        assert_eq!(sent.len(), 2);
-        assert_eq!(atc_proto::parse_overlay_command(&sent[0]), Some(m));
+        let shown = shown.lock().unwrap();
+        assert_eq!(shown.len(), 2);
+        assert!(shown.iter().all(|s| matches!(s, Shown::FollowMe(_))));
+        assert_eq!(shown[0], Shown::FollowMe(m));
         assert!(printed.lock().unwrap().is_empty());
     }
 
-    fn capture() -> (App, Arc<Mutex<Vec<String>>>, mpsc::Receiver<Outgoing>) {
-        let (tx, rx) = mpsc::channel(8);
-        let printed = Arc::new(Mutex::new(Vec::<String>::new()));
-        let p = printed.clone();
-        let app = App::new(tx, Box::new(move |l| p.lock().unwrap().push(l.into())));
-        (app, printed, rx)
+    #[test]
+    fn lines_go_to_console_and_sim_text() {
+        let (app, printed, _rx) = capture();
+        let (mut app, shown) = with_display(app);
+        app.server_msg(&ServerMsg::Rejected { reason: "x".into() });
+        let line = "server rejected the connection: x";
+        assert_eq!(*printed.lock().unwrap(), [line]);
+        assert_eq!(*shown.lock().unwrap(), [Shown::Text(line.into())]);
     }
 
     #[test]
@@ -542,7 +584,7 @@ mod tests {
     fn waiting_notice_names_the_address_every_10_s() {
         let (app, printed, _rx) = capture();
         let (tx, _id) = watch::channel(None);
-        let mut app = app.with_identity(IdentityTracker::new(None, tx), "127.0.0.1:49000".into());
+        let mut app = app.with_identity(IdentityTracker::new(None, tx, "X-Plane"));
         let t0 = std::time::Instant::now();
         let s = Duration::from_secs;
         app.identity_tick(t0);
