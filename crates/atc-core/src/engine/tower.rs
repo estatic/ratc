@@ -140,14 +140,30 @@ impl AtcEngine {
     /// The pilot reports going around on his own ("going around"): an IFR arrival has missed
     /// the approach and goes back to Approach at once (contact Approach), or, kept by Tower
     /// (`tower_inbound`), climbs to the published missed-approach altitude; any other
-    /// aircraft is acknowledged ("roger").
+    /// aircraft is acknowledged ("roger"). With published missed-approach legs Tower says
+    /// "follow published missed approach" (`FollowMissedApproach`); otherwise the flight
+    /// climbs to its cleared level as before.
     fn going_around(&mut self, i: usize) -> Vec<AtcItem> {
         if self.arrival(i).is_none() {
             return vec![AtcItem::Roger];
         }
+        let follow = self
+            .arrival(i)
+            .and_then(|p| p.approach.clone())
+            .is_some_and(|(kind, runway)| self.published_missed_ft(&runway, kind).is_some());
         self.set_missed_approach(i);
         if !self.strips[i].tower_inbound {
-            return self.redirect(i, Role::Approach);
+            let mut items = Vec::new();
+            if follow {
+                items.push(AtcItem::FollowMissedApproach);
+            }
+            items.extend(self.redirect(i, Role::Approach));
+            return items;
+        }
+        if follow {
+            let items = vec![AtcItem::FollowMissedApproach];
+            self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
+            return items;
         }
         let Some(ft) = self.strips[i].plan.as_ref().map(|p| p.cleared_ft) else {
             return vec![AtcItem::Roger];
@@ -293,8 +309,12 @@ impl AtcEngine {
         let Some(wind) = self.wind() else {
             return standby();
         };
+        let follow = self
+            .arrival(i)
+            .and_then(|p| p.approach.clone())
+            .is_some_and(|(kind, runway)| self.published_missed_ft(&runway, kind).is_some());
         let strip = &mut self.strips[i];
-        let items = match self.runway.occupy(&strip.callsign, RunwayUse::Land) {
+        let mut items = match self.runway.occupy(&strip.callsign, RunwayUse::Land) {
             Ok(()) => {
                 strip.permissions.may_land = true;
                 let runway = strip.runway.clone();
@@ -306,9 +326,14 @@ impl AtcEngine {
             }
             Err(_) => vec![AtcItem::GoAround],
         };
+        // An IFR arrival sent around flies its published missed approach.
+        let sent_around = published && items == [AtcItem::GoAround];
+        if sent_around && follow {
+            items.push(AtcItem::FollowMissedApproach);
+        }
         strip.expect_readback(&items, self.cfg.strictness, self.now);
         // An IFR arrival sent around goes back to Approach.
-        if published && items == [AtcItem::GoAround] {
+        if sent_around {
             self.set_missed_approach(i);
         }
         items

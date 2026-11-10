@@ -288,6 +288,7 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         AtcItem::GiveWay { traffic } => out.push(format!("give way to {traffic}")),
         AtcItem::Follow { traffic } => out.push(format!("follow {traffic}")),
         AtcItem::GoAround => out.push("go around".into()),
+        AtcItem::FollowMissedApproach => out.push("follow published missed approach".into()),
         AtcItem::Negative => out.push("negative".into()),
         AtcItem::ReadBack(items) => {
             let labels: Vec<&str> = items.iter().map(readback_label).collect();

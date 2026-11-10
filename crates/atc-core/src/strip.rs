@@ -161,6 +161,9 @@ pub struct Strip {
     pub runway: String,
     /// Stand the aircraft started from, the default taxi-in target.
     pub home_stand: Option<String>,
+    /// Position of the home stand: the airport may have several stands of that name.
+    #[serde(default)]
+    pub home_stand_at: Option<LatLon>,
     /// Crossings of the current taxi route not yet completed.
     pub crossings: Vec<RouteCrossing>,
     /// Where the aircraft was last cleared to taxi, until it holds short there, enters a
@@ -220,6 +223,14 @@ pub struct Strip {
     /// The arrival went around or flew a missed approach; Tower hands it back to Approach,
     /// which vectors it again once it calls.
     pub missed_approach: bool,
+    /// The aircraft is still climbing to the published missed-approach altitude: the
+    /// descent to the intercept altitude waits until it is reached (or the intercept).
+    #[serde(default)]
+    pub missed_climb: bool,
+    /// A flight handed in has not yet had an understood call since the hand-in: that call
+    /// is acknowledged as its first contact rather than answered "say again".
+    #[serde(default)]
+    pub first_call_due: bool,
     /// The Approach frequency the aircraft last called on (the unit has several); Approach
     /// answers on it.
     pub approach_khz: Option<u32>,
@@ -295,6 +306,7 @@ impl Strip {
             handoff_to: None,
             runway: runway.to_string(),
             home_stand: None,
+            home_stand_at: None,
             crossings: Vec::new(),
             taxi_target: None,
             uncleared_landing: false,
@@ -316,6 +328,8 @@ impl Strip {
             adjacent_identified: false,
             radio_failure: false,
             missed_approach: false,
+            missed_climb: false,
+            first_call_due: false,
             approach_khz: None,
             vfr: None,
             vfr_exit: None,
@@ -363,6 +377,7 @@ impl Strip {
         self.identified = false;
         self.adjacent_identified = false;
         self.missed_approach = false;
+        self.missed_climb = false;
         self.approach_khz = None;
         self.vfr = None;
         self.vfr_exit = None;
@@ -373,6 +388,7 @@ impl Strip {
         self.handed_off_khz = None;
         self.handed_off_airport = None;
         self.handed_in = false;
+        self.first_call_due = false;
         self.tower_inbound = false;
         self.handoff_acked = false;
     }

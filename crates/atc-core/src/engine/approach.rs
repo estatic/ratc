@@ -96,10 +96,10 @@ const DEST_TOWER_M: f64 = 10.0 * M_PER_NM;
 /// The destination's Approach (another loaded station) takes the flight this far from the
 /// destination.
 const DEST_APPROACH_M: f64 = 30.0 * M_PER_NM;
-/// The destination's Approach (another loaded station) works the flight only when the
-/// destination's reference point lies within this distance of this station's airport: a
-/// neighbour. A destination farther away gets the usual ACC/FIS hand-off (or release) on
-/// leaving the TMA, as with no destination Approach.
+/// The destination's Approach (another loaded station) or adjacent tower works the flight
+/// only when the destination's reference point lies within this distance of this station's
+/// airport: a neighbour. A destination farther away gets the usual ACC/FIS hand-off (or
+/// release) on leaving the TMA, as with neither unit.
 const NEIGHBOUR_DEST_M: f64 = 60.0 * M_PER_NM;
 
 /// A hand-off due: the unit's callsign (empty for a release), the ICAO code of the airport
@@ -466,8 +466,10 @@ impl AtcEngine {
     }
 
     /// The first call after a missed approach (or the first sample after one while Approach
-    /// still had the flight): identified again and vectored. The published missed-approach
-    /// track is not monitored: a missed approach is Tower's go-around and Approach's vectors.
+    /// still had the flight): identified again and vectored. The first vectors keep the
+    /// published missed-approach altitude; the descent to the intercept altitude waits until
+    /// the aircraft has reached it. The published missed-approach track is not monitored: a
+    /// missed approach is Tower's go-around and Approach's vectors.
     fn after_missed_approach(&mut self, i: usize) -> Vec<AtcItem> {
         let strip = &mut self.strips[i];
         strip.missed_approach = false;
@@ -524,9 +526,9 @@ impl AtcEngine {
             .unwrap_or_else(|| approach_alt_ft(Some(self.airport.elevation_ft)))
     }
 
-    /// The published missed-approach altitude: the highest altitude constraint of the
-    /// missed-approach legs, else the intercept altitude.
-    pub(super) fn missed_alt_ft(&self, runway: &str, kind: ApproachKind) -> i32 {
+    /// The highest altitude constraint of the missed-approach legs of the approach, if the
+    /// procedure publishes any.
+    pub(super) fn published_missed_ft(&self, runway: &str, kind: ApproachKind) -> Option<i32> {
         self.procedure_set
             .as_ref()
             .and_then(|set| set.approach(runway, navdata_approach_kind(kind)))
@@ -537,6 +539,11 @@ impl AtcEngine {
                     .filter_map(|l| constraint_floor_ft(l.leg.alt))
                     .max()
             })
+    }
+
+    /// The published missed-approach altitude, else the intercept altitude.
+    pub(super) fn missed_alt_ft(&self, runway: &str, kind: ApproachKind) -> i32 {
+        self.published_missed_ft(runway, kind)
             .unwrap_or_else(|| self.intercept_alt_ft(runway, kind))
     }
 
@@ -673,8 +680,14 @@ impl AtcEngine {
             || plan.heading.is_none_or(|h| {
                 heading_gap(h, v.heading_deg) >= REVECTOR_DEG && (!near_lead || at_intercept)
             });
-        let descend = plan.cleared_ft > intercept_ft && to_point <= DESCENT_M;
         let intercept = at_intercept && (leg.is_some() || changed || to_point <= NEAR_INTERCEPT_M);
+        // After a missed approach the published altitude is kept until the aircraft is
+        // there (or the intercept is given).
+        if intercept || (s.alt_ft_msl - f64::from(plan.cleared_ft)).abs() <= LEVEL_TOLERANCE_FT {
+            self.strips[i].missed_climb = false;
+        }
+        let descend =
+            !self.strips[i].missed_climb && plan.cleared_ft > intercept_ft && to_point <= DESCENT_M;
         if !(changed || descend || intercept) {
             return Vec::new();
         }
@@ -864,6 +877,7 @@ impl AtcEngine {
         let missed_ft = self.missed_alt_ft(&runway, kind);
         let strip = &mut self.strips[i];
         strip.missed_approach = true;
+        strip.missed_climb = true;
         // Back to Approach, to be identified again; a Tower-kept arrival stays identified.
         if (strip.owner == Role::Tower || strip.handoff_to == Some(Role::Tower))
             && !strip.tower_inbound
@@ -1099,8 +1113,9 @@ impl AtcEngine {
 
     /// The hand-off due at `pos`: to the destination's Approach (another loaded station)
     /// within 30 NM of the destination, else to its tower within 10 NM; with neither, to the
-    /// ACC or FIS (or a release) on leaving the TMA. Nothing farther out from a destination
-    /// with an Approach or a tower.
+    /// ACC or FIS (or a release) on leaving the TMA. Nothing farther out from a neighbouring
+    /// destination with an Approach or a tower; a tower or Approach beyond the neighbour
+    /// radius counts as neither.
     fn hand_off(&self, plan: &FlightPlan, pos: LatLon) -> Option<HandOff> {
         let contact = |u: &AdjacentUnit| AtcItem::Contact {
             station: u.callsign.clone(),
@@ -1156,10 +1171,7 @@ impl AtcEngine {
     /// ([`AtcEngine::set_station_units`]) has one and the destination is a neighbour: within
     /// [`NEIGHBOUR_DEST_M`] of this station's airport.
     fn destination_approach(&self, plan: &FlightPlan) -> Option<&AdjacentUnit> {
-        let dest = self.destination_pos(plan)?;
-        if distance_m(self.airport_ref()?, dest) > NEIGHBOUR_DEST_M {
-            return None;
-        }
+        self.neighbour_destination(plan)?;
         self.station_units.iter().find(|u| {
             u.kind == AdjacentKind::Approach
                 && u.airport
@@ -1168,8 +1180,17 @@ impl AtcEngine {
         })
     }
 
-    /// The adjacent tower of the flight's destination.
+    /// The destination's reference point when it is a neighbour: within
+    /// [`NEIGHBOUR_DEST_M`] of this station's airport.
+    fn neighbour_destination(&self, plan: &FlightPlan) -> Option<LatLon> {
+        let dest = self.destination_pos(plan)?;
+        (distance_m(self.airport_ref()?, dest) <= NEIGHBOUR_DEST_M).then_some(dest)
+    }
+
+    /// The adjacent tower of the flight's destination, when the destination is a neighbour
+    /// ([`NEIGHBOUR_DEST_M`]); a tower farther away is not worked.
     fn destination_tower(&self, plan: &FlightPlan) -> Option<&AdjacentUnit> {
+        self.neighbour_destination(plan)?;
         self.procs.adjacent.iter().find(|u| {
             u.kind == AdjacentKind::Tower
                 && u.airport

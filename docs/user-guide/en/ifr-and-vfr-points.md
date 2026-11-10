@@ -10,7 +10,7 @@ The callsign in the examples is SP-ABC (`Sierra Papa Alpha Bravo Charlie`, abbre
 
 ### Voices
 
-Delivery, Approach and the radar stations (Warszawa Radar, Kraków Information, Katowice Tower) use three additional English voices. Once, before starting the server:
+Delivery, Approach and the units the EPKK station emulates (Warszawa Radar, Kraków Information, and Katowice Tower while the EPKT station is not loaded) use the three additional English voices. With EPKT loaded, Katowice Tower is a full station like Kraków Tower. Once, before starting the server:
 
 ```
 tools/fetch-piper.sh
@@ -463,13 +463,17 @@ Going around: tell Tower and answer the hand-off.
 
 > Sierra Bravo Charlie, going around
 
-Tower: `Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five`. The pilot reads back and sets COM1 to 121.075:
+Tower: `Sierra Bravo Charlie, follow published missed approach, contact Kraków Approach one two one decimal zero seven five`. The pilot reads back (`Follow published missed approach, Approach one two one decimal zero seven five, Sierra Bravo Charlie`) and sets COM1 to 121.075:
 
 > Krakow Approach, Sierra Papa Alpha Bravo Charlie, missed approach runway zero seven, climbing four thousand feet
 
 Approach:
 
-> Sierra Bravo Charlie, turn left heading two seven zero, climb altitude three thousand feet
+> Sierra Bravo Charlie, turn left heading two seven zero, climb altitude four thousand feet
+
+Read it back (`Left heading two seven zero, climb four thousand feet, Sierra Bravo Charlie`). After a missed approach Approach keeps you at the published missed-approach altitude (4000 ft on VOR/DME 07) and clears the descent to 3000 ft later:
+
+> Sierra Bravo Charlie, descend to altitude three thousand feet
 
 Approach then vectors you back and gives you a second approach.
 

@@ -92,7 +92,8 @@ impl AtcEngine {
     }
 
     /// No other tracked aircraft is on stand `k`, and no other strip is headed for it or
-    /// started from it.
+    /// started from it. A stand named without a position (an old strip) stands for the
+    /// first stand of that name.
     fn stand_is_free(&self, i: usize, k: usize) -> bool {
         let st = &self.airport.stands[k];
         let me = &self.strips[i].callsign;
@@ -118,10 +119,13 @@ impl AtcEngine {
                         *name == st.name && first_of_name(name)
                     }
                     _ => false,
-                } || s
-                    .home_stand
-                    .as_deref()
-                    .is_some_and(|h| h == st.name && first_of_name(h)))
+                } || s.home_stand.as_deref().is_some_and(|h| {
+                    h == st.name
+                        && match s.home_stand_at {
+                            Some(p) => distance_m(p, st.pos) < 1.0,
+                            None => first_of_name(h),
+                        }
+                }))
         });
         !occupied && !claimed
     }

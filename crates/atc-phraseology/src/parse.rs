@@ -296,6 +296,16 @@ fn is_place(w: &str) -> bool {
     matches!(w, "krakow" | "kraków" | "cracow")
 }
 
+/// The letter of a parallel stand said as a side: "nine right" is 9R.
+fn side_letter(w: &str) -> Option<&'static str> {
+    match w {
+        "left" => Some("L"),
+        "right" => Some("R"),
+        "centre" | "center" => Some("C"),
+        _ => None,
+    }
+}
+
 /// A word that can be part of a stand name: a stand keyword, a name with a digit
 /// (`apron4`), or a short word (`ga`), but not a preposition or conjunction.
 fn is_stand_word(w: &str) -> bool {
@@ -1310,10 +1320,19 @@ impl<'a> Scan<'a> {
             }
             if let Some(keyword @ ("stand" | "parking" | "apron")) = self.w(s) {
                 let mut parts = vec![keyword.to_string()];
-                for t in self.toks[s + 1..n.min(s + 11)].iter() {
-                    match t {
+                // The pilot's callsign (already taken) ends the stand; "left" / "right" /
+                // "centre" right after a number is the stand's letter ("nine right" is 9R).
+                for j in s + 1..n.min(s + 11) {
+                    if self.used.get(j).copied().unwrap_or(false) {
+                        break;
+                    }
+                    let after_number = matches!(self.toks[j - 1], Token::Number(_));
+                    match &self.toks[j] {
                         Token::Letter(c) => parts.push(c.to_string()),
                         Token::Number(d) => parts.push(d.clone()),
+                        Token::Word(w) if after_number && side_letter(w).is_some() => {
+                            parts.extend(side_letter(w).map(String::from));
+                        }
                         Token::Word(w) if is_stand_word(w) => parts.push(w.clone()),
                         Token::Word(_) | Token::Break => break,
                     }

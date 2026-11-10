@@ -778,3 +778,24 @@ fn no_flight_plan_say_intentions() {
     );
     assert_eq!(render(&m, false), "no flight plan, say intentions");
 }
+
+#[test]
+fn follow_missed_approach_renders() {
+    let m = msg(
+        None,
+        "Zeta Tower",
+        vec![
+            AtcItem::FollowMissedApproach,
+            AtcItem::Contact {
+                station: "Kraków Approach".into(),
+                khz: 121075,
+            },
+        ],
+    );
+    assert!(
+        render(&m, true)
+            .contains("follow published missed approach, contact Kraków Approach one two one decimal zero seven five"),
+        "{}",
+        render(&m, true)
+    );
+}

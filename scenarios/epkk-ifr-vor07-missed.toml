@@ -23,8 +23,8 @@ waypoints = [
   { lat = 50.06831, lon = 19.71731, alt = 1400, kt = 80 },
   { lat = 50.07185, lon = 19.74267, alt = 1350, kt = 80 },
   { hdg = 72, nm = 0.3, alt = 1450, kt = 75 },
-  { hdg = 270, nm = 3, alt = 3000, kt = 90 },
-  { hdg = 270, nm = 7.9, alt = 3000, kt = 90 },
+  { hdg = 270, nm = 3, alt = 4000, kt = 90 },
+  { hdg = 270, nm = 7.9, alt = 4000, kt = 90 },
   { hdg = 250, nm = 0.85, alt = 3000, kt = 90 },
   { hdg = 160, nm = 2.1, alt = 3000, kt = 90 },
   { hdg = 100, nm = 3.4, alt = 3000, kt = 90 },
@@ -80,7 +80,7 @@ text = "Sierra Bravo Charlie, going around"
 [[say]]
 at = "heard:contact kraków approach"
 freq = "tower"
-text = "Approach one two one decimal zero seven five, Sierra Bravo Charlie"
+text = "Follow published missed approach, Approach one two one decimal zero seven five, Sierra Bravo Charlie"
 
 [[say]]
 t = 1255.0
@@ -90,8 +90,12 @@ text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, missed approach runway
 [[say]]
 at = "heard:heading two seven zero"
 freq = "approach"
-text = "Left heading two seven zero, climb three thousand feet, Sierra Bravo Charlie"
+text = "Left heading two seven zero, climb four thousand feet, Sierra Bravo Charlie"
 
+[[say]]
+at = "heard:descend"
+freq = "approach"
+text = "Descend three thousand feet, Sierra Bravo Charlie"
 
 [[say]]
 at = "heard:heading two five zero"

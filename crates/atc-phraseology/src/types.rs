@@ -338,6 +338,8 @@ pub enum UnableReason {
 /// One instruction or piece of information in an ATC transmission.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AtcItem {
+    /// After a go-around: fly the published missed-approach procedure (no read-back element).
+    FollowMissedApproach,
     Taxi {
         to: TaxiTo,
         via: Vec<String>,

@@ -112,6 +112,20 @@ fn initial_climb_respects_floors_and_ceilings() {
 }
 
 #[test]
+fn sid_target_keeps_a_floor_after_a_ceiling() {
+    let set = zzzz();
+    let sid = choose_sid(&set, "27", AIRPORT, ll(20.0, 10.0)).unwrap();
+    let mut path = procedure_path(sid);
+    path.constraints[0].1 = AltConstraint::AtOrBelow(4000);
+    path.constraints[1].1 = AltConstraint::AtOrAbove(6000);
+    assert_eq!(initial_climb_ft(&path, 5000), 4000);
+    assert_eq!(sid_target_ft(&path, 5000), 6000);
+    assert_eq!(sid_target_ft(&path, 10000), 10000);
+    path.constraints[1].1 = AltConstraint::AtOrAbove(6100);
+    assert_eq!(sid_target_ft(&path, 5000), 7000);
+}
+
+#[test]
 fn cross_track() {
     let set = zzzz();
     let sid = choose_sid(&set, "27", AIRPORT, ll(20.0, 10.0)).unwrap();

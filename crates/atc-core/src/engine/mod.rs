@@ -413,6 +413,7 @@ impl AtcEngine {
         strip.squawk = h.squawk;
         strip.callsign_misses = h.callsign_misses;
         strip.handed_in = true;
+        strip.first_call_due = true;
     }
 
     /// The frequency (kHz) of the adjacent unit flight `cs` was handed off to, once the
@@ -614,11 +615,11 @@ impl AtcEngine {
                 .airport
                 .stands
                 .iter()
-                .find(|st| distance_m(st.pos, s.pos) < HOME_STAND_M)
-                .map(|st| st.name.clone());
+                .find(|st| distance_m(st.pos, s.pos) < HOME_STAND_M);
             let strip = &mut self.strips[i];
             strip.runway = runway;
-            strip.home_stand = home;
+            strip.home_stand = home.map(|st| st.name.clone());
+            strip.home_stand_at = home.map(|st| st.pos);
             self.tracks.insert(s.callsign.clone(), sv);
         }
         let clearance = self.ifr_clearance(i);
@@ -801,7 +802,9 @@ impl AtcEngine {
         t: SimTime,
     ) -> Vec<AtcOutput> {
         self.strips[i].heard += 1;
+        let first_call_now = self.strips[i].first_call_due && understood(&msg);
         if understood(&msg) {
+            self.strips[i].first_call_due = false;
             self.understood_in(i, heard_lang);
             // The pilot has answered after its hand-off (read back, or acknowledged where no
             // readback is required).
@@ -844,9 +847,9 @@ impl AtcEngine {
         // A flight handed in is answered as handed over by Approach, or by Tower when it is
         // an IFR arrival here; elsewhere its call is served as it is.
         let was_handed_in = strip.handed_in;
-        // The literal first call since the hand-in (an Approach still waiting for telemetry
-        // keeps `handed_in` for the next one).
-        let first_call = was_handed_in && strip.heard == 1;
+        // The first understood call since the hand-in (an Approach still waiting for
+        // telemetry keeps `handed_in` for the next one); a garbled one does not use it up.
+        let first_call = first_call_now;
         if role != Role::Approach {
             strip.handed_in = false;
         }

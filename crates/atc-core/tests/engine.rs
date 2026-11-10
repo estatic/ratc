@@ -3084,6 +3084,42 @@ mod delivery {
         );
     }
 
+    /// A SID floor after an earlier ceiling: the clearance stops at the ceiling, the plan
+    /// keeps the floor as the cruise level.
+    #[test]
+    fn ifr_clearance_cruise_respects_a_floor_after_a_ceiling() {
+        let (ap, procs) = zzzz();
+        let mut set = load_procedure_set(&root(), "ZZZZ").unwrap();
+        for p in set
+            .procedures
+            .iter_mut()
+            .filter(|p| p.procedure.ident == "ALFA1A")
+        {
+            p.legs[0].leg.alt = AltConstraint::AtOrBelow(4000);
+            p.legs[1].leg.alt = AltConstraint::AtOrAbove(6000);
+        }
+        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(Strictness::Standard))
+            .with_procedure_set(set)
+            .with_destinations(destinations());
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new("SPTST"),
+            aircraft_type: "C172".into(),
+        });
+        e.on_weather(weather(1013));
+        let out = say(&mut e, DEL, REQUEST);
+        assert!(
+            items(&out).contains(&AtcItem::ClimbTo(Level::Altitude(4000))),
+            "{out:?}"
+        );
+        let plan = e
+            .strip(&Callsign::new("SPTST"))
+            .unwrap()
+            .plan
+            .clone()
+            .unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (6000, 4000));
+    }
+
     /// A sample without time after one at 23:00 UTC keeps the last time: still closed.
     #[test]
     fn sample_without_time_keeps_the_clock() {
@@ -4282,30 +4318,27 @@ mod approach_departure {
         assert!(f.heard.is_empty(), "{:?}", f.heard);
     }
 
-    #[test]
-    fn departure_beyond_tma_below_acc_goes_to_fis() {
-        let mut e = engine();
-        let mut f = departed(&mut e, "Farland", true);
+    /// Flies the Farland departure up to the hand-off and checks that Approach clears the
+    /// aircraft direct to ALFAX (not to Farland) and then hands it to Zeta Information.
+    fn fly_farland_departure(e: &mut AtcEngine) {
+        let mut f = departed(e, "Farland", true);
         let tower = f.heard.drain(..).next().unwrap();
-        assert!(say(&mut e, TWR, &readback(&tower.message.items, CS_ABBR)).is_empty());
-        assert_eq!(
-            items(&say(&mut e, APP, AIRBORNE)),
-            vec![AtcItem::Identified]
-        );
+        assert!(say(e, TWR, &readback(&tower.message.items, CS_ABBR)).is_empty());
+        assert_eq!(items(&say(e, APP, AIRBORNE)), vec![AtcItem::Identified]);
         // Farland is beyond the TMA: direct to the SID's last fix.
         let any = |h: &[AtcOutput]| !h.is_empty();
-        f.fly_to(&mut e, ZZ002, CLIMB, &any);
+        f.fly_to(e, ZZ002, CLIMB, &any);
         assert_eq!(
             items(&f.heard),
             vec![AtcItem::DirectTo {
                 fix: "ALFAX".into()
             }]
         );
-        assert!(say(&mut e, APP, &format!("direct Alfax, {CS_ABBR}")).is_empty());
+        assert!(say(e, APP, &format!("direct Alfax, {CS_ABBR}")).is_empty());
         f.heard.clear();
-        f.fly_to(&mut e, ALFAX, CLIMB, &any);
+        f.fly_to(e, ALFAX, CLIMB, &any);
         assert!(f.heard.is_empty(), "{:?}", f.heard);
-        f.fly_to(&mut e, FARLAND, CLIMB, &any);
+        f.fly_to(e, FARLAND, CLIMB, &any);
         let home = LatLon {
             lat: 10.0,
             lon: 10.0,
@@ -4330,6 +4363,30 @@ mod approach_departure {
                 .as_deref(),
             Some("Zeta Information")
         );
+    }
+
+    #[test]
+    fn departure_beyond_tma_below_acc_goes_to_fis() {
+        let mut e = engine();
+        fly_farland_departure(&mut e);
+    }
+
+    #[test]
+    fn far_adjacent_tower_does_not_block_the_en_route_hand_off() {
+        // Farland is 80 NM away, beyond the neighbour radius: its tower is not worked.
+        let mut e = engine_with_procs(
+            |p| {
+                p.adjacent.push(AdjacentUnit {
+                    callsign: "Farland Tower".into(),
+                    khz: 118500,
+                    kind: AdjacentKind::Tower,
+                    airport: Some("ZZZF".into()),
+                    min_level_ft: None,
+                });
+            },
+            |_| {},
+        );
+        fly_farland_departure(&mut e);
     }
 
     #[test]
@@ -4374,7 +4431,7 @@ mod approach_departure {
     }
 
     /// A SID ceiling below the cruise level: Approach clears the climb to cruise with the
-    /// identification.
+    /// identification; the cruise level is the SID's later floor, FL080.
     #[test]
     fn identification_clears_the_climb_to_cruise() {
         let mut e = engine_with(|set| {
@@ -4392,7 +4449,10 @@ mod approach_departure {
         let out = say(&mut e, APP, AIRBORNE);
         assert_eq!(
             items(&out),
-            vec![AtcItem::Identified, AtcItem::ClimbTo(Level::Altitude(5000))]
+            vec![
+                AtcItem::Identified,
+                AtcItem::ClimbTo(Level::FlightLevel(80))
+            ]
         );
         assert_eq!(
             e.strip(&Callsign::new("SPTST"))
@@ -4401,7 +4461,7 @@ mod approach_departure {
                 .as_ref()
                 .unwrap()
                 .cleared_ft,
-            5000
+            8000
         );
     }
 
@@ -4593,6 +4653,38 @@ mod approach_departure {
         ));
         assert!(
             matches!(&out[0], AtcItem::Unable(atc_phraseology::UnableReason::UnknownStand { stand }) if stand == "99"),
+            "{out:?}"
+        );
+    }
+
+    /// The pilot's callsign after the stand is not part of the stand named in the refusal.
+    #[test]
+    fn unknown_stand_with_trailing_callsign_names_only_the_stand() {
+        let mut e = engine();
+        parked_on_stand_1(&mut e);
+        let out = items(&say(
+            &mut e,
+            GND,
+            "Zeta Ground, request taxi to stand nine nine Sierra Papa Tango Sierra Tango",
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Unable(atc_phraseology::UnableReason::UnknownStand { stand }) if stand == "99"),
+            "{out:?}"
+        );
+    }
+
+    /// "Stand nine right" is stand 9R.
+    #[test]
+    fn stand_nine_right_matches_stand_9r() {
+        let mut e = engine_with_stands(&[("9R", NEAR_GA)]);
+        parked_on_stand_1(&mut e);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("Zeta Ground, {CS}, request taxi to stand nine right"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "9R"),
             "{out:?}"
         );
     }
@@ -4836,6 +4928,44 @@ mod approach_departure {
         );
     }
 
+    /// The home stand is the one the aircraft started from, even when another stand of the
+    /// same name comes first in the airport data.
+    #[test]
+    fn home_stand_is_the_one_the_aircraft_started_from() {
+        let mut e = engine_airport(
+            Strictness::Standard,
+            |ap| {
+                ap.stands.insert(
+                    0,
+                    Stand {
+                        name: "Stand 1".into(),
+                        pos: FAR_GA,
+                        heading_deg: 0.0,
+                    },
+                )
+            },
+            |_| {},
+            |_| {},
+        );
+        taxiing_in_near_stand_1(&mut e, true);
+        let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+        let home = strip.home_stand_at.expect("home stand position");
+        assert!(distance_m(home, STAND_1) < 1.0, "{home:?}");
+        let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "Stand 1"),
+            "{out:?}"
+        );
+        let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+        match &strip.taxi_target {
+            Some(atc_core::taxi::TaxiTarget::Stand { name, at: Some(p) }) => {
+                assert_eq!(name, "Stand 1");
+                assert!(distance_m(*p, STAND_1) < 1.0, "{p:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// Without a home stand, "request taxi" after landing asks which stand.
     #[test]
     fn request_taxi_after_landing_without_a_stand_says_stand() {
@@ -4878,15 +5008,14 @@ mod approach_departure {
         assert_eq!(strip.phase, FlightPhase::TaxiIn);
         assert_eq!(strip.taxi_target, None);
         let stand = strip.home_stand.clone().expect("home stand");
+        let at = strip.home_stand_at;
+        assert!(at.is_some());
         let out = items(&say(&mut e, GND, &format!("{CS}, request follow me")));
         assert!(matches!(out[0], AtcItem::Taxi { .. }), "{out:?}");
         assert!(e.take_vehicle_orders().is_empty());
         assert_eq!(
             e.strip(&cs).unwrap().taxi_target,
-            Some(atc_core::taxi::TaxiTarget::Stand {
-                name: stand,
-                at: None
-            })
+            Some(atc_core::taxi::TaxiTarget::Stand { name: stand, at })
         );
     }
 
@@ -5615,6 +5744,33 @@ mod approach_arrival {
         assert_eq!((plan.cruise_ft, plan.cleared_ft), (5000, 5000));
     }
 
+    /// "Mijam cztery tysiące stóp" is "passing 4000 ft": the altitude passed is not the level
+    /// to hold; the arrival altitude above it is given.
+    #[test]
+    fn polish_passing_only_gets_the_arrival_altitude() {
+        let mut cfg = EngineConfig::new(Strictness::Standard);
+        cfg.language = LanguageMode::Fixed(Lang::Pl);
+        let mut e = super::approach_departure::engine_airport_cfg(cfg, |_| {}, |_| {}, |_| {});
+        let mut p = Pilot::new(WEST, 4000.0, 90.0);
+        p.tick(&mut e);
+        let out = say_in(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, mijam cztery tysiące stóp, \
+             zbliżam się",
+            Lang::Pl,
+        );
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        assert!(
+            !got.contains(&AtcItem::MaintainLevel(Level::Altitude(4000))),
+            "{got:?}"
+        );
+    }
+
     /// Without a hand-over, the level a climbing pilot reports as a flight level is the one
     /// it climbs to, not the altitude it is passing.
     #[test]
@@ -5852,6 +6008,39 @@ mod approach_arrival {
         assert!(!p.heard_item(|i| matches!(i, AtcItem::Heading { .. })));
     }
 
+    /// ZZZZ ILS 27 flown to a missed approach and called in to Approach: the vectors and the
+    /// climb are read back, the pilot flies on at its current altitude.
+    fn missed_approach_called(e: &mut AtcEngine) -> Pilot {
+        let (mut p, _) = inbound(e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        let n = p.f.heard.len();
+        p.until(e, 200, |p| p.f.heard.len() > n);
+        p.call(
+            e,
+            TWR,
+            "Zeta Tower, Sierra Sierra Tango, ILS runway two seven, final",
+        );
+        p.target = 500.0;
+        p.until(e, 200, |p| distance_m(p.f.pos, THR_27) < 200.0);
+        p.to = Some(END_27);
+        p.target = 3000.0;
+        let n = p.f.heard.len();
+        p.until(e, 100, |p| p.f.heard.len() > n);
+        p.call(
+            e,
+            APP,
+            "Zeta Approach, Sierra Sierra Tango, missed approach, climbing four thousand feet",
+        );
+        p
+    }
+
     /// Vectored, cleared, flown down the final without a report: transferred to Tower
     /// inside the FAF (5 NM); cleared to land, overflies the runway and climbs: Tower hands
     /// it back to Approach, which vectors it again.
@@ -5898,20 +6087,96 @@ mod approach_arrival {
         let out = p.call(
             &mut e,
             APP,
-            "Zeta Approach, Sierra Sierra Tango, missed approach, climbing three thousand feet",
+            "Zeta Approach, Sierra Sierra Tango, missed approach, climbing four thousand feet",
         );
         assert!(
             matches!(
                 items(&out).as_slice(),
                 [
                     AtcItem::Heading { .. },
-                    AtcItem::ClimbTo(Level::Altitude(3000))
+                    AtcItem::ClimbTo(Level::Altitude(4000))
                 ]
             ),
             "{out:?}"
         );
         assert_eq!(out[0].freq_khz, APP);
         assert!(e.strip(&cs()).unwrap().identified);
+        assert_eq!(
+            e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+            4000
+        );
+    }
+
+    /// The missed approach is flown to the published altitude (4000 ft): the descent to the
+    /// intercept altitude (3000 ft) waits until it is reached, or comes with the intercept.
+    #[test]
+    fn descent_after_missed_approach_waits_for_the_missed_altitude() {
+        // Stays at 3000 ft: no descent is heard before the approach clearance, which brings
+        // the level down.
+        let mut e = engine();
+        let mut p = missed_approach_called(&mut e);
+        p.target = 3000.0;
+        let n = p.f.heard.len();
+        p.until(&mut e, 300, |p| {
+            p.f.heard[n..].iter().any(|o| {
+                o.message
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+            })
+        });
+        let heard = &p.f.heard[n..];
+        let last = heard.last().unwrap();
+        assert!(
+            last.message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::ClearedApproach { .. })),
+            "{heard:?}"
+        );
+        for o in &heard[..heard.len() - 1] {
+            assert!(
+                !o.message
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::DescendTo(_))),
+                "{heard:?}"
+            );
+        }
+        assert!(
+            last.message.items.iter().any(|i| matches!(
+                i,
+                AtcItem::DescendTo(Level::Altitude(3000))
+                    | AtcItem::MaintainLevel(Level::Altitude(3000))
+            )),
+            "{last:?}"
+        );
+        assert_eq!(
+            e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+            3000
+        );
+
+        // Reaches 4000 ft: the descent to 3000 ft comes before the approach clearance.
+        let mut e = engine();
+        let mut p = missed_approach_called(&mut e);
+        p.target = 4000.0;
+        let n = p.f.heard.len();
+        let descend = |o: &AtcOutput| {
+            o.message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::DescendTo(Level::Altitude(3000))))
+        };
+        p.until(&mut e, 300, |p| p.f.heard[n..].iter().any(descend));
+        assert!(
+            !p.f.heard[n..].iter().any(|o| o
+                .message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::ClearedApproach { .. }))),
+            "{:?}",
+            &p.f.heard[n..]
+        );
     }
 
     /// Spec 3.6: an IFR departure handed off to the adjacent tower turns back and calls
@@ -6458,7 +6723,10 @@ mod approach_arrival {
             TWR,
             "Zeta Tower, Sierra Sierra Tango, ILS runway two seven, final",
         );
-        assert_eq!(items(&out), vec![AtcItem::GoAround]);
+        assert_eq!(
+            items(&out),
+            vec![AtcItem::GoAround, AtcItem::FollowMissedApproach]
+        );
         assert!(e.strip(&cs()).unwrap().missed_approach);
         p.target = 3000.0;
         let n = p.f.heard.len();
@@ -6515,13 +6783,61 @@ mod approach_arrival {
         );
         let out = say(&mut e, TWR, "Sierra Sierra Tango, going around");
         assert_eq!(
-            out.iter().filter_map(contact_of).collect::<Vec<_>>(),
-            vec![("Zeta Approach".to_string(), APP)],
+            items(&out),
+            [
+                AtcItem::FollowMissedApproach,
+                AtcItem::Contact {
+                    station: "Zeta Approach".into(),
+                    khz: APP
+                }
+            ],
             "{out:?}"
         );
         assert_eq!(out[0].freq_khz, TWR);
         assert!(e.strip(&cs()).unwrap().missed_approach);
         assert!(!e.strip(&cs()).unwrap().permissions.may_land);
+    }
+
+    /// Without published missed-approach legs the go-around reply is the plain hand-over.
+    #[test]
+    fn going_around_without_published_missed_legs_is_unchanged() {
+        let mut e = super::approach_departure::engine_with(|set| {
+            for p in &mut set.procedures {
+                p.legs.retain(|l| !l.leg.missed)
+            }
+        });
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        p.until(&mut e, 300, |p| {
+            p.f.heard.iter().any(|o| contact_of(o).is_some())
+        });
+        let out = p.call(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, ILS runway two seven, established",
+        );
+        assert!(
+            items(&out)
+                .iter()
+                .any(|i| matches!(i, AtcItem::ClearedLand { .. })),
+            "{out:?}"
+        );
+        let out = say(&mut e, TWR, "Sierra Sierra Tango, going around");
+        assert_eq!(
+            items(&out),
+            [AtcItem::Contact {
+                station: "Zeta Approach".into(),
+                khz: APP
+            }],
+            "{out:?}"
+        );
     }
 }
 
@@ -7246,6 +7562,49 @@ mod handover {
         (f, items(&out))
     }
 
+    /// A Polish call to a Tower-only station gets the expect-approach and report-established
+    /// instructions in Polish, not English.
+    #[test]
+    fn polish_tower_only_inbound_speaks_polish() {
+        let mut e = super::approach_departure::engine_airport_cfg(
+            EngineConfig {
+                language: LanguageMode::Fixed(Lang::Pl),
+                ..EngineConfig::new(Strictness::Standard)
+            },
+            |_| {},
+            |p| {
+                p.positions
+                    .retain(|p| p.role != atc_navdata::model::FreqKind::Approach)
+            },
+            |_| {},
+        );
+        e.import_flight(handover(ifr_plan("ZZZZ", "Zeta", 3000)));
+        let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
+        let mut f = airborne(&mut e, west, 3000.0, 90.0);
+        f.com1 = TWR;
+        let out = say_in(
+            &mut e,
+            TWR,
+            "Zeta Wieża, Sierra Papa Tango Sierra Tango, trzy tysiące stóp",
+            Lang::Pl,
+        );
+        let o = out.first().expect("a reply");
+        assert!(
+            o.text
+                .contains("spodziewaj się podejścia ILS, pas dwa siedem"),
+            "{}",
+            o.text
+        );
+        assert!(
+            o.text
+                .contains("zgłoś ustalenie na kursie podejścia końcowego"),
+            "{}",
+            o.text
+        );
+        assert!(!o.text.contains("expect"), "{}", o.text);
+        assert_eq!(o.message.lang, Lang::Pl);
+    }
+
     /// Flies `f` 5 samples east: Tower says no contact to Approach.
     fn no_bounce(e: &mut AtcEngine, f: &mut Flight) {
         for _ in 0..5 {
@@ -7316,39 +7675,24 @@ mod handover {
             e.strip(&cs()).unwrap().phase
         );
         assert!(say(&mut e, TWR, &readback(&got, CS_ABBR)).is_empty());
-        // Going around: Tower keeps it and gives the missed-approach climb.
+        // Going around: Tower keeps it and tells it to follow the published missed approach.
         let out = say(
             &mut e,
             TWR,
             "Zeta Tower, Sierra Papa Tango Sierra Tango, going around",
         );
-        let got = items(&out);
-        let Some(AtcItem::ClimbTo(atc_phraseology::Level::Altitude(ft))) = got.first().cloned()
-        else {
-            panic!("{out:?}");
-        };
-        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(items(&out), [AtcItem::FollowMissedApproach], "{out:?}");
         let s = e.strip(&cs()).unwrap();
         assert_eq!(s.owner, Role::Tower);
         assert!(s.identified);
-        let rb = format!(
-            "climb {} feet, Sierra Papa Tango Sierra Tango",
-            spoken(&ft.to_string())
-        );
-        let out = say(&mut e, TWR, &rb);
-        assert!(
-            items(&out).iter().all(|i| !matches!(i, AtcItem::SayAgain)),
-            "{out:?}"
-        );
-        f.heard.clear();
-        f.alt = f64::from(ft);
-        no_bounce(&mut e, &mut f);
-        // The next call: the approach again.
+        assert_eq!(s.plan.as_ref().unwrap().cleared_ft, 4000);
         let out = say(
             &mut e,
             TWR,
-            "Zeta Tower, Sierra Papa Tango Sierra Tango, three thousand feet",
+            "follow published missed approach, Sierra Papa Tango Sierra Tango",
         );
+        // Nothing to read back: the acknowledgement is a call like any other, and Tower
+        // answers it with the approach again, never "say again".
         assert_eq!(
             items(&out),
             vec![
@@ -7360,6 +7704,9 @@ mod handover {
             ],
             "{out:?}"
         );
+        f.heard.clear();
+        f.alt = 4000.0;
+        no_bounce(&mut e, &mut f);
         assert!(e.strip(&cs()).unwrap().identified);
     }
 
@@ -7458,6 +7805,39 @@ mod handover {
             let out = say(&mut e, khz, call);
             assert_eq!(items(&out), vec![AtcItem::SayAgain], "{out:?}");
         }
+    }
+
+    /// A garbled transmission does not use up a handed-in flight's first call.
+    #[test]
+    fn garbled_transmission_does_not_use_up_the_first_call() {
+        let mut e = engine();
+        let mut plan = ifr_plan("ZZZZ", "Zeta", 2000);
+        plan.ifr = false;
+        let mut h = handover(plan);
+        h.rules = Some(FlightRules::Vfr);
+        e.import_flight(h);
+        let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
+        airborne(&mut e, west, 2000.0, 90.0);
+        let out = say(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, blah blah blah",
+        );
+        assert_eq!(items(&out), vec![AtcItem::SayAgain], "{out:?}");
+        let call = "Zeta Tower, Sierra Papa Tango Sierra Tango, two thousand feet";
+        let out = say(&mut e, TWR, call);
+        assert_eq!(
+            items(&out),
+            vec![
+                AtcItem::Station {
+                    station: "Zeta Tower".into()
+                },
+                AtcItem::Roger
+            ],
+            "{out:?}"
+        );
+        let out = say(&mut e, TWR, call);
+        assert_eq!(items(&out), vec![AtcItem::SayAgain], "{out:?}");
     }
 
     /// Approach without telemetry yet keeps a handed-in flight handed in for its next call;

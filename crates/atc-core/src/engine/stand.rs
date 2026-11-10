@@ -49,7 +49,7 @@ impl AtcEngine {
             return Some((name.clone(), *at));
         }
         if let Some(home) = &strip.home_stand {
-            return Some((home.clone(), None));
+            return Some((home.clone(), strip.home_stand_at));
         }
         let pos = self.last_pos(i)?;
         self.airport

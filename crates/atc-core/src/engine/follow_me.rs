@@ -96,7 +96,7 @@ impl AtcEngine {
                 .filter(|_| matches!(strip.phase, FlightPhase::TaxiIn | FlightPhase::Landed))?;
             Some(TaxiTarget::Stand {
                 name: home,
-                at: None,
+                at: strip.home_stand_at,
             })
         });
         let Some(target) = target else {

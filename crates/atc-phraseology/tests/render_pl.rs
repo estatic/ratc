@@ -623,3 +623,11 @@ fn pl_no_flight_plan_say_intentions() {
         "brak planu lotu, podaj zamiary"
     );
 }
+
+#[test]
+fn follow_missed_approach_renders_in_polish() {
+    assert!(
+        one(AtcItem::FollowMissedApproach)
+            .contains("wykonuj opublikowaną procedurę nieudanego podejścia")
+    );
+}
