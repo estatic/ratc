@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use atc_core::engine::LanguageMode;
+use atc_navdata::source::SimDataConfig;
 use atc_phraseology::Lang;
 use serde::Deserialize;
 
@@ -55,18 +56,30 @@ pub struct ServerConfig {
     #[serde(default)]
     pub airport: Option<String>,
     pub data_dir: PathBuf,
-    /// X-Plane install whose scenery supplies the airport layout (apt.dat); `None` = the repo
-    /// copy in `data_dir`.
+    /// The simulator data the airport layout, procedures and destinations come from (`[sim_data]`,
+    /// or the old top-level key, see [`LEGACY_ROOT_KEY`]); `None` = the repo copy in `data_dir`.
     #[serde(default)]
-    pub xplane_root: Option<PathBuf>,
+    pub sim_data: Option<SimDataConfig>,
+    /// The old top-level key; [`load_config`] moves it into `sim_data`.
+    #[serde(default, rename = "xplane_root")] // sim-neutral: legacy config key
+    legacy_root: Option<PathBuf>,
     #[serde(default)]
     pub strictness: StrictnessSetting,
     pub whisper: WhisperConfig,
     pub piper: PiperConfig,
 }
 
+/// The old top-level key that names a simulator data root; still accepted.
+pub const LEGACY_ROOT_KEY: &str = "xplane_root"; // sim-neutral: legacy config key
+
 pub fn load_config(text: &str) -> Result<ServerConfig> {
     let mut cfg: ServerConfig = toml::from_str(text).context("invalid server config")?;
+    if let Some(root) = cfg.legacy_root.take() {
+        if cfg.sim_data.is_some() {
+            bail!("both [sim_data] and {LEGACY_ROOT_KEY} are set; keep only [sim_data]");
+        }
+        cfg.sim_data = Some(SimDataConfig::from_legacy_root(root));
+    }
     cfg.whisper.language_mode()?;
     cfg.piper.bin = executable(&cfg.piper.bin, cfg!(windows));
     Ok(cfg)
@@ -124,7 +137,7 @@ mod tests {
         assert_eq!(c.listen, "127.0.0.1:8740");
         assert_eq!(c.airport.as_deref(), Some("EPKK"));
         assert_eq!(c.data_dir, PathBuf::from("data/airports"));
-        assert_eq!(c.xplane_root, None);
+        assert_eq!(c.sim_data, None);
         assert_eq!(c.strictness, StrictnessSetting::Standard);
         assert_eq!(
             c.whisper.model,
@@ -153,10 +166,10 @@ mod tests {
         assert!(load_config("listen = 1").is_err());
         let without_xp: String = EXAMPLE
             .lines()
-            .filter(|l| !l.starts_with("xplane_root"))
+            .filter(|l| !l.starts_with(LEGACY_ROOT_KEY))
             .map(|l| format!("{l}\n"))
             .collect();
-        assert_eq!(load_config(&without_xp).unwrap().xplane_root, None);
+        assert_eq!(load_config(&without_xp).unwrap().sim_data, None);
     }
 
     #[test]

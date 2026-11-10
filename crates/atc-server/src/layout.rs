@@ -1,6 +1,8 @@
-//! Airport layout (the apt.dat part: runways, taxi network, stands). With `xplane_root` it comes
-//! from the scenery X-Plane itself loads, so taxi routes name taxiways the pilot can see; the
-//! repo copy in `data_dir` is the fallback. Procedures and frequencies always come from the repo.
+//! Airport layout (the apt.dat part: runways, taxi network, stands), from the configured
+//! simulator data source when given, else the repo copy in `data_dir`. From the source it is the
+//! scenery the simulator itself loads, so taxi routes name taxiways the pilot can see. The
+//! source also supplies the CIFP procedures and the destination airports; positions and
+//! frequencies always come from the repo.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -13,9 +15,7 @@ use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::{Airport, Destination, EdgeKind};
 use atc_navdata::parse_apt_dat;
 use atc_navdata::procedures::{AdjacentKind, Procedures};
-use atc_navdata::xplane::{
-    ResolveError, apt_dat_candidates, load_destinations, load_procedure_set, resolve_airport,
-};
+use atc_navdata::source::{SimDataSource, SourceError};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -35,46 +35,52 @@ pub fn taxiway_names(ap: &Airport) -> Vec<String> {
     names.into_iter().collect()
 }
 
-/// The layout for `icao`: from the X-Plane install at `xplane_root` when given and the airport
-/// resolves there, else `repo_dir/apt.dat` (with a warning saying why).
-pub fn load_airport(xplane_root: Option<&Path>, repo_dir: &Path, icao: &str) -> Result<Airport> {
-    if let Some(root) = xplane_root {
-        match from_xplane(root, icao) {
-            Ok((ap, source)) => {
-                log_layout(&ap, &source, "X-Plane scenery");
+/// The layout for `icao`: from `source` when given and the airport resolves there, else
+/// `repo_dir/apt.dat` (with a warning saying why).
+pub fn load_airport(
+    source: Option<&dyn SimDataSource>,
+    repo_dir: &Path,
+    icao: &str,
+) -> Result<Airport> {
+    if let Some(source) = source {
+        match from_source(source, icao) {
+            Ok((ap, origin)) => {
+                log_layout(&ap, &origin, &source.label());
                 return Ok(ap);
             }
             Err(e) => {
                 warn!(
-                    "airport layout: X-Plane scenery unusable ({e:#}); falling back to the repo \
-                     copy, taxi routes may name taxiways that are not in the sim"
+                    "airport layout: {} unusable ({e:#}); falling back to the repo copy, taxi \
+                     routes may name taxiways that are not in the sim",
+                    source.label()
                 );
             }
         }
     } else {
         warn!(
-            "airport layout: xplane_root not set; using the repo copy, taxi routes may not \
-             match the sim scenery"
+            "airport layout: no simulator data source configured ([sim_data] in \
+             config/server.toml); using the repo copy, taxi routes may not match the sim scenery"
         );
     }
     let path = repo_dir.join("apt.dat");
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let ap = parse_apt_dat(&text, icao).with_context(|| format!("parse {}", path.display()))?;
-    log_layout(&ap, &path, "repo copy");
+    log_layout(&ap, &path.display().to_string(), "repo copy");
     Ok(ap)
 }
 
-fn from_xplane(root: &Path, icao: &str) -> Result<(Airport, PathBuf)> {
-    let resolved = resolve_airport(root, icao)
-        .with_context(|| format!("resolve {icao} in {}", root.display()))?;
-    let ap = resolved
+fn from_source(source: &dyn SimDataSource, icao: &str) -> Result<(Airport, String)> {
+    let layout = source
+        .airport_layout(icao)
+        .with_context(|| format!("resolve {icao}"))?;
+    let ap = layout
         .parse(icao)
-        .with_context(|| format!("parse {icao} from {}", resolved.source.display()))?;
-    Ok((ap, resolved.source))
+        .with_context(|| format!("parse {icao} from {}", layout.origin))?;
+    Ok((ap, layout.origin))
 }
 
-fn log_layout(ap: &Airport, source: &Path, origin: &str) {
+fn log_layout(ap: &Airport, file: &str, origin: &str) {
     let unnamed = ap
         .taxi
         .edges
@@ -84,7 +90,7 @@ fn log_layout(ap: &Airport, source: &Path, origin: &str) {
     info!(
         "airport layout: {} ({origin}): {} runways, {} taxi nodes, {} taxi edges ({unnamed} \
          unnamed taxiway edges), {} stands; taxiways: {}",
-        source.display(),
+        file,
         ap.runways.len(),
         ap.taxi.nodes.len(),
         ap.taxi.edges.len(),
@@ -134,8 +140,9 @@ struct DestinationCache {
     destinations: Vec<CachedDestination>,
 }
 
-fn sources_of(xplane_root: &Path) -> Vec<Source> {
-    apt_dat_candidates(xplane_root)
+fn sources_of(source: &dyn SimDataSource) -> Vec<Source> {
+    source
+        .cache_inputs()
         .into_iter()
         .map(|path| {
             let meta = std::fs::metadata(&path).ok();
@@ -172,20 +179,21 @@ fn write_cache(path: &Path, cache: &DestinationCache) {
     }
 }
 
-/// Every airport of the apt.dat files of the X-Plane install at `xp_root` (no radius: any
-/// airfield X-Plane knows can be a flight's destination), sorted by ICAO. `names` maps an ICAO
+/// Every airport `source` knows (no radius: any airfield of the simulator can be a flight's
+/// destination), sorted by ICAO. `names` maps an ICAO
 /// to the name it is said with; the other names are the apt.dat ones, title-cased.
 ///
 /// The scan of the whole world takes seconds, so its result is kept in `cache` (JSON) together
-/// with the size and modification time of every apt.dat read, and reused while they match.
+/// with the size and modification time of every file read (the source's `cache_inputs`), and
+/// reused while they match.
 /// Empty (with a warning) when the files cannot be read: every clearance request is then
 /// answered "say again destination".
 pub fn load_all_destinations(
-    xp_root: &Path,
+    source: &dyn SimDataSource,
     cache: &Path,
     names: &[(String, String)],
 ) -> Vec<Destination> {
-    let sources = sources_of(xp_root);
+    let sources = sources_of(source);
     let raw = match read_cache(cache, &sources) {
         Some(cached) => {
             info!(
@@ -197,7 +205,7 @@ pub fn load_all_destinations(
         }
         None => {
             let origin = LatLon { lat: 0.0, lon: 0.0 };
-            let list = match load_destinations(xp_root, origin, f64::INFINITY, &[]) {
+            let list = match source.airports(origin, f64::INFINITY) {
                 Ok(list) => list,
                 Err(e) => {
                     warn!("destinations: {e}; clearances cannot name a destination");
@@ -243,19 +251,22 @@ pub fn load_all_destinations(
         .collect()
 }
 
-/// The CIFP procedures of `icao` from the install at `xplane_root`, or `None` with one
-/// warning when `xplane_root` is unset, the install has no CIFP for the airport, or it cannot
-/// be used. The server then answers IFR clearance requests "unable IFR"; VFR and circuit work
-/// as before.
-pub fn load_procedure_set_for(xplane_root: Option<&Path>, icao: &str) -> Option<ProcedureSet> {
-    let Some(root) = xplane_root else {
+/// The CIFP procedures of `icao` from `source`, or `None` with one warning when no source is
+/// configured, the source has no CIFP for the airport, or it cannot be used. The server then
+/// answers IFR clearance requests "unable IFR"; VFR and circuit work as before.
+pub fn load_procedure_set_for(
+    source: Option<&dyn SimDataSource>,
+    icao: &str,
+) -> Option<ProcedureSet> {
+    let Some(source) = source else {
         warn!(
-            "procedures: xplane_root not set, no CIFP procedures for {icao}; IFR clearances \
-             will be answered \"unable IFR\", VFR and circuit work as before"
+            "procedures: no simulator data source configured ([sim_data] in config/server.toml), \
+             no CIFP procedures for {icao}; IFR clearances will be answered \"unable IFR\", VFR \
+             and circuit work as before"
         );
         return None;
     };
-    match load_procedure_set(root, icao) {
+    match source.procedure_set(icao) {
         Ok(set) => {
             let count = |k| {
                 set.procedures
@@ -264,9 +275,8 @@ pub fn load_procedure_set_for(xplane_root: Option<&Path>, icao: &str) -> Option<
                     .count()
             };
             info!(
-                "procedures: {icao} from CIFP of {}: cycle {}, {} SIDs, {} STARs, {} approaches, \
-                 {} fixes",
-                root.display(),
+                "procedures: {icao} from {}: cycle {}, {} SIDs, {} STARs, {} approaches, {} fixes",
+                source.label(),
                 set.cycle,
                 count(ProcKind::Sid),
                 count(ProcKind::Star),
@@ -275,14 +285,14 @@ pub fn load_procedure_set_for(xplane_root: Option<&Path>, icao: &str) -> Option<
             );
             Some(set)
         }
-        Err(e @ ResolveError::CifpNotFound { .. }) => {
+        Err(e @ SourceError::NotFound(_)) => {
             warn!(
                 "procedures: {e}; IFR clearances will be answered \"unable IFR\", VFR and \
                  circuit work as before"
             );
             None
         }
-        Err(e) => {
+        Err(e @ SourceError::Unusable(_)) => {
             warn!(
                 "procedures: CIFP of {icao} unusable ({e}); IFR clearances will be answered \
                  \"unable IFR\", VFR and circuit work as before"

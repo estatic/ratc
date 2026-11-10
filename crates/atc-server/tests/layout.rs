@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use atc_navdata::procedures::parse_procedures;
+use atc_navdata::source::SimDataSource;
+use atc_navdata::xplane::XPlaneSource;
 use atc_server::layout::{
     adjacent_names, load_airport, load_all_destinations, load_procedure_set_for, taxiway_names,
 };
@@ -13,7 +15,7 @@ const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/airports/EPK
 
 #[test]
 fn layout_comes_from_x_plane_when_configured() {
-    let ap = load_airport(Some(Path::new(XP)), Path::new(REPO), "EPKK").unwrap();
+    let ap = load_airport(Some(&XPlaneSource::new(XP)), Path::new(REPO), "EPKK").unwrap();
     assert_eq!(ap.icao, "EPKK");
     assert_eq!(ap.name, "Global Krakow");
     assert_eq!(taxiway_names(&ap), ["A", "J"]);
@@ -21,7 +23,8 @@ fn layout_comes_from_x_plane_when_configured() {
 
 #[test]
 fn layout_falls_back_to_the_repo() {
-    for xp in [None, Some(Path::new("/nonexistent/X-Plane 11"))] {
+    let missing = XPlaneSource::new("/nonexistent/X-Plane 11");
+    for xp in [None, Some(&missing as &dyn SimDataSource)] {
         let ap = load_airport(xp, Path::new(REPO), "EPKK").unwrap();
         assert_eq!(ap.name, "Krakow-Balice");
         assert!(taxiway_names(&ap).iter().any(|n| n == "W1"));
@@ -40,7 +43,7 @@ const XPLANE: &str = concat!(
 
 #[test]
 fn procedure_set_loads_from_the_install_cifp() {
-    let set = load_procedure_set_for(Some(Path::new(XPLANE)), "ZZZZ").unwrap();
+    let set = load_procedure_set_for(Some(&XPlaneSource::new(XPLANE)), "ZZZZ").unwrap();
     assert_eq!(set.icao, "ZZZZ");
     assert!(!set.procedures.is_empty());
 }
@@ -48,8 +51,11 @@ fn procedure_set_loads_from_the_install_cifp() {
 #[test]
 fn procedure_set_is_none_without_cifp_or_install() {
     // The install has no CIFP for this airport, or there is no install configured.
-    assert!(load_procedure_set_for(Some(Path::new(XPLANE)), "EPKK").is_none());
-    assert!(load_procedure_set_for(Some(Path::new("/nonexistent/X-Plane 11")), "EPKK").is_none());
+    assert!(load_procedure_set_for(Some(&XPlaneSource::new(XPLANE)), "EPKK").is_none());
+    assert!(
+        load_procedure_set_for(Some(&XPlaneSource::new("/nonexistent/X-Plane 11")), "EPKK")
+            .is_none()
+    );
     assert!(load_procedure_set_for(None, "EPKK").is_none());
 }
 
@@ -67,7 +73,7 @@ fn adjacent_towers_give_destination_names() {
 fn destinations_come_from_the_install() {
     let names = [("ZZZY".to_string(), "Testville".to_string())];
     let cache = std::env::temp_dir().join(format!("atc-layout-dest-{}.json", std::process::id()));
-    let list = load_all_destinations(Path::new(XPLANE), &cache, &names);
+    let list = load_all_destinations(&XPlaneSource::new(XPLANE), &cache, &names);
     let _ = std::fs::remove_file(&cache);
     assert!(
         list.iter()

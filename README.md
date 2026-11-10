@@ -183,7 +183,7 @@ On Windows: `copy config\server.example.toml config\server.toml` (and the same f
 
 | Key | Meaning |
 |---|---|
-| `xplane_root` | your X-Plane 11 directory. The airport layout (runways, taxiways, stands) is taken from the scenery X-Plane actually loads, and SID/STAR/approaches from its CIFP. Set it, otherwise taxi routes may name taxiways you don't see and IFR is unavailable. |
+| `[sim_data]` | `sim = "xplane"` and `root` = your X-Plane 11 directory. The airport layout (runways, taxiways, stands) is taken from the scenery X-Plane actually loads, and SID/STAR/approaches from its CIFP. Set it, otherwise taxi routes may name taxiways you don't see and IFR is unavailable. The old top-level `xplane_root = "<dir>"` still works. |
 | `airport` | ICAO code of the airport whose stations run; its data lives in `data/airports/<ICAO>/` |
 | `[whisper] model` | the Whisper model file (see above) |
 | `[whisper] language` | `"en"`, `"pl"`, or remove the line to answer each aircraft in the language it last spoke |
@@ -296,8 +296,8 @@ option: [docs/RUNNING.md](docs/RUNNING.md).
 | the server exits with code 2 | a model is missing: run `tools/fetch-whisper.sh` / `tools/fetch-piper.sh` |
 | `no telemetry from X-Plane yet` | X-Plane is not running, `xplane` in `config/client.toml` is wrong, or a firewall blocks UDP 49000 |
 | cannot read `config/...` or `data/airports/...` | not started from the repository root |
-| Ground names taxiways that are not in the simulator | `xplane_root` not set, or X-Plane not restarted after installing scenery; see `airport layout:` in the server log |
-| "IFR not available, VFR only" | `xplane_root` not set or no CIFP file for the airport |
+| Ground names taxiways that are not in the simulator | `[sim_data]` (or the old `xplane_root`) not set, or X-Plane not restarted after installing scenery; see `airport layout:` in the server log |
+| "IFR not available, VFR only" | `[sim_data]` (or the old `xplane_root`) not set or no CIFP file for the airport |
 
 ## Contributing
 

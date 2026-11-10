@@ -124,6 +124,7 @@ mod multi {
 mod destinations {
     use std::path::{Path, PathBuf};
 
+    use atc_navdata::xplane::XPlaneSource;
     use atc_server::layout::load_all_destinations;
 
     fn tree(name: &str) -> PathBuf {
@@ -163,13 +164,21 @@ mod destinations {
     fn destination_far_away_is_known() {
         let root = tree("far");
         xplane(&root, &[HOME, FAR]);
-        let list = load_all_destinations(&root, &root.join("cache/destinations.json"), &[]);
+        let list = load_all_destinations(
+            &XPlaneSource::new(&root),
+            &root.join("cache/destinations.json"),
+            &[],
+        );
         let far = list.iter().find(|d| d.icao == "ZZZF").expect("far airport");
         assert_eq!(far.name, "Faraway Field");
         assert!((far.pos.lat - 62.5).abs() < 0.01 && (far.pos.lon - 120.25).abs() < 0.1);
         assert!(list.iter().any(|d| d.icao == "ZZZZ"));
         let names = [("ZZZF".to_string(), "Farland".to_string())];
-        let list = load_all_destinations(&root, &root.join("cache/destinations.json"), &names);
+        let list = load_all_destinations(
+            &XPlaneSource::new(&root),
+            &root.join("cache/destinations.json"),
+            &names,
+        );
         assert!(list.iter().any(|d| d.icao == "ZZZF" && d.name == "Farland"));
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -179,27 +188,33 @@ mod destinations {
         let root = tree("cache");
         let apt = xplane(&root, &[HOME]);
         let cache = root.join("cache/destinations.json");
-        assert_eq!(load_all_destinations(&root, &cache, &[]).len(), 1);
+        assert_eq!(
+            load_all_destinations(&XPlaneSource::new(&root), &cache, &[]).len(),
+            1
+        );
         assert!(cache.is_file());
 
         // Unchanged apt.dat: the scan is not repeated (a marker planted in the cache shows).
         let text = std::fs::read_to_string(&cache).unwrap();
         std::fs::write(&cache, text.replace("Zeta International", "Cached Name")).unwrap();
-        let list = load_all_destinations(&root, &cache, &[]);
+        let list = load_all_destinations(&XPlaneSource::new(&root), &cache, &[]);
         assert_eq!(list[0].name, "Cached Name");
 
         // Changed apt.dat (size differs): rebuilt.
         let size = std::fs::metadata(&apt).unwrap().len();
         xplane(&root, &[HOME, FAR]);
         assert_ne!(std::fs::metadata(&apt).unwrap().len(), size);
-        let list = load_all_destinations(&root, &cache, &[]);
+        let list = load_all_destinations(&XPlaneSource::new(&root), &cache, &[]);
         assert_eq!(list.len(), 2);
         let home = list.iter().find(|d| d.icao == "ZZZZ").unwrap();
         assert_eq!(home.name, "Zeta International");
 
         // An unreadable cache is rebuilt too.
         std::fs::write(&cache, "{not json").unwrap();
-        assert_eq!(load_all_destinations(&root, &cache, &[]).len(), 2);
+        assert_eq!(
+            load_all_destinations(&XPlaneSource::new(&root), &cache, &[]).len(),
+            2
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
