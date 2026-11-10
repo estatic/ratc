@@ -24,9 +24,9 @@ pub struct AircraftState {
     pub xpdr_code: Option<u16>,
     /// `None` when unknown.
     pub xpdr_mode: Option<TransponderMode>,
-    /// Sim UTC time of day in seconds (`sim/time/zulu_time_sec`); `None` when unknown.
+    /// UTC time of day in seconds, as the simulator reports it; `None` when unknown.
     pub utc_s: Option<f64>,
-    /// Sim day of the year, 0 = 1 January (`sim/time/local_date_days`); `None` when unknown.
+    /// UTC day of the year, 0 = 1 January; `None` when unknown.
     pub day_of_year: Option<u16>,
 }
 
@@ -34,15 +34,14 @@ pub struct AircraftState {
 pub enum TransponderMode {
     Off,
     Standby,
-    /// Replying; X-Plane has no separate ALT, the ALT knob position reports `On` too.
+    /// Replying; there is no separate ALT, the ALT knob position reports `On` too.
     On,
     Test,
 }
 
 impl TransponderMode {
-    /// The mode of X-Plane 11's `transponder_mode` dataref (0 off, 1 standby, 2 on, 3 test,
-    /// as in `DataRefs.txt`); `None` for other values.
-    pub fn from_xplane(mode: u8) -> Option<Self> {
+    /// The mode of a protocol code (0 off, 1 standby, 2 on, 3 test); `None` for other values.
+    pub fn from_code(mode: u8) -> Option<Self> {
         match mode {
             0 => Some(Self::Off),
             1 => Some(Self::Standby),

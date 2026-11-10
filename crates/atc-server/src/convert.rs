@@ -77,7 +77,7 @@ pub(crate) fn aircraft_state(callsign: &Callsign, f: &TelemetryFrame) -> Aircraf
         on_ground: f.on_ground,
         com1_khz: f.com1_khz,
         xpdr_code: f.xpdr_code,
-        xpdr_mode: f.xpdr_mode.and_then(TransponderMode::from_xplane),
+        xpdr_mode: f.xpdr_mode.and_then(TransponderMode::from_code),
         utc_s: f.utc_s,
         day_of_year: f.day_of_year,
     }
