@@ -53,6 +53,39 @@ fn request_taxi_to_stand_stops_at_via() {
     );
 }
 
+/// "left" / "right" / "centre" right after a number is the stand's letter.
+#[test]
+fn stand_said_with_right_is_the_letter() {
+    assert_eq!(
+        heard_stand("Ground, Sierra Bravo Charlie, request taxi to stand nine right"),
+        "stand 9 R"
+    );
+    assert_eq!(
+        heard_stand("Ground, Sierra Bravo Charlie, request taxi to stand niner romeo"),
+        "stand 9 R"
+    );
+    assert_eq!(
+        heard_stand("Ground, Sierra Bravo Charlie, request taxi to stand two left"),
+        "stand 2 L"
+    );
+}
+
+/// The pilot's callsign after the stand is not part of it.
+#[test]
+fn stand_capture_stops_at_the_known_callsign() {
+    let m = parse_pilot_known(
+        "Krakow Ground, request taxi to stand nine nine Sierra Papa Alpha Bravo Charlie",
+        Lang::En,
+        &[Callsign::new("SPABC")],
+    );
+    assert_eq!(
+        m.intent,
+        PilotIntent::RequestTaxiToStand {
+            stand: Some("stand 99".into())
+        }
+    );
+}
+
 fn heard_stand(text: &str) -> String {
     match en(text).intent {
         PilotIntent::RequestTaxiToStand { stand: Some(s) } => s,

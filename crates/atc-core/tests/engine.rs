@@ -4657,6 +4657,38 @@ mod approach_departure {
         );
     }
 
+    /// The pilot's callsign after the stand is not part of the stand named in the refusal.
+    #[test]
+    fn unknown_stand_with_trailing_callsign_names_only_the_stand() {
+        let mut e = engine();
+        parked_on_stand_1(&mut e);
+        let out = items(&say(
+            &mut e,
+            GND,
+            "Zeta Ground, request taxi to stand nine nine Sierra Papa Tango Sierra Tango",
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Unable(atc_phraseology::UnableReason::UnknownStand { stand }) if stand == "99"),
+            "{out:?}"
+        );
+    }
+
+    /// "Stand nine right" is stand 9R.
+    #[test]
+    fn stand_nine_right_matches_stand_9r() {
+        let mut e = engine_with_stands(&[("9R", NEAR_GA)]);
+        parked_on_stand_1(&mut e);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("Zeta Ground, {CS}, request taxi to stand nine right"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "9R"),
+            "{out:?}"
+        );
+    }
+
     /// The IFR departure `f` to Testville, read back throughout: transferred to Approach,
     /// identified, direct to Testville after ZZ002, the descent 20 NM out and the hand-off to
     /// Testville Tower 10 NM out, which identifies it.
@@ -4896,6 +4928,44 @@ mod approach_departure {
         );
     }
 
+    /// The home stand is the one the aircraft started from, even when another stand of the
+    /// same name comes first in the airport data.
+    #[test]
+    fn home_stand_is_the_one_the_aircraft_started_from() {
+        let mut e = engine_airport(
+            Strictness::Standard,
+            |ap| {
+                ap.stands.insert(
+                    0,
+                    Stand {
+                        name: "Stand 1".into(),
+                        pos: FAR_GA,
+                        heading_deg: 0.0,
+                    },
+                )
+            },
+            |_| {},
+            |_| {},
+        );
+        taxiing_in_near_stand_1(&mut e, true);
+        let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+        let home = strip.home_stand_at.expect("home stand position");
+        assert!(distance_m(home, STAND_1) < 1.0, "{home:?}");
+        let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "Stand 1"),
+            "{out:?}"
+        );
+        let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+        match &strip.taxi_target {
+            Some(atc_core::taxi::TaxiTarget::Stand { name, at: Some(p) }) => {
+                assert_eq!(name, "Stand 1");
+                assert!(distance_m(*p, STAND_1) < 1.0, "{p:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// Without a home stand, "request taxi" after landing asks which stand.
     #[test]
     fn request_taxi_after_landing_without_a_stand_says_stand() {
@@ -4938,15 +5008,14 @@ mod approach_departure {
         assert_eq!(strip.phase, FlightPhase::TaxiIn);
         assert_eq!(strip.taxi_target, None);
         let stand = strip.home_stand.clone().expect("home stand");
+        let at = strip.home_stand_at;
+        assert!(at.is_some());
         let out = items(&say(&mut e, GND, &format!("{CS}, request follow me")));
         assert!(matches!(out[0], AtcItem::Taxi { .. }), "{out:?}");
         assert!(e.take_vehicle_orders().is_empty());
         assert_eq!(
             e.strip(&cs).unwrap().taxi_target,
-            Some(atc_core::taxi::TaxiTarget::Stand {
-                name: stand,
-                at: None
-            })
+            Some(atc_core::taxi::TaxiTarget::Stand { name: stand, at })
         );
     }
 

@@ -237,7 +237,7 @@ impl AtcEngine {
                 None => (display_heard(&heard), None),
             },
             None => match self.strips[i].home_stand.clone() {
-                Some(home) => (home, None),
+                Some(home) => (home, self.strips[i].home_stand_at),
                 None => return vec![AtcItem::SayStand],
             },
         };

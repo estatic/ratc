@@ -161,6 +161,9 @@ pub struct Strip {
     pub runway: String,
     /// Stand the aircraft started from, the default taxi-in target.
     pub home_stand: Option<String>,
+    /// Position of the home stand: the airport may have several stands of that name.
+    #[serde(default)]
+    pub home_stand_at: Option<LatLon>,
     /// Crossings of the current taxi route not yet completed.
     pub crossings: Vec<RouteCrossing>,
     /// Where the aircraft was last cleared to taxi, until it holds short there, enters a
@@ -299,6 +302,7 @@ impl Strip {
             handoff_to: None,
             runway: runway.to_string(),
             home_stand: None,
+            home_stand_at: None,
             crossings: Vec::new(),
             taxi_target: None,
             uncleared_landing: false,

@@ -614,11 +614,11 @@ impl AtcEngine {
                 .airport
                 .stands
                 .iter()
-                .find(|st| distance_m(st.pos, s.pos) < HOME_STAND_M)
-                .map(|st| st.name.clone());
+                .find(|st| distance_m(st.pos, s.pos) < HOME_STAND_M);
             let strip = &mut self.strips[i];
             strip.runway = runway;
-            strip.home_stand = home;
+            strip.home_stand = home.map(|st| st.name.clone());
+            strip.home_stand_at = home.map(|st| st.pos);
             self.tracks.insert(s.callsign.clone(), sv);
         }
         let clearance = self.ifr_clearance(i);
