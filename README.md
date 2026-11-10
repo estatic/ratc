@@ -277,8 +277,10 @@ hand-made `data/airports/EPKK/procedures.toml`, used when there is no `station.t
    transmission on X-Plane's audio panel (COM1 or COM2); you hear every radio selected for
    listening. Tune the ATIS frequency of the airport, then call Delivery or Ground.
 
-Step-by-step flights (in Russian for now): [VFR circuit](docs/user-guide/ru/scenario-circuit.md),
-[IFR departure](docs/user-guide/ru/scenario-ifr-departure.md),
+Step-by-step flights: IFR flight EPKK → EPKT
+([English](docs/user-guide/en/scenario-ifr-departure.md),
+[Russian](docs/user-guide/ru/scenario-ifr-departure.md)); in Russian only for now:
+[VFR circuit](docs/user-guide/ru/scenario-circuit.md),
 [IFR and VFR points](docs/user-guide/ru/ifr-and-vfr-points.md),
 [Polish circuit](docs/user-guide/ru/polish-circuit.md). Phraseology the controller understands:
 [English](docs/phraseology/en.md), [Polish](docs/phraseology/pl.md). More detail on every

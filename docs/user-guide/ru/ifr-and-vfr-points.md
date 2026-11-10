@@ -228,9 +228,11 @@ Katowice Tower:
 
 > Kraków Approach, Sierra Papa Alpha Bravo Charlie, flight level one zero zero, inbound to Katowice
 
-Approach EPKT опознаёт борт и ведёт его на заход по данным станции EPKT: курс, `descend altitude five thousand feet`, QNH и `expect ILS approach runway two seven`. Если на первый вызов принятого борта нечего ответить, диспетчер говорит `Kraków Approach, roger`, а не `say again`.
+Approach EPKT опознаёт борт и ведёт его на заход по данным станции EPKT: STAR или курс, высоту, QNH и `expect ILS approach runway two seven`. В записи полного полёта это `turn right heading three four five, climb altitude five thousand feet` (см. [scenario-ifr-departure.md](scenario-ifr-departure.md)). Если на первый вызов принятого борта нечего ответить, диспетчер говорит `Kraków Approach, roger`, а не `say again`.
 
 **Загружена станция EPKT без позиции Approach.** У настоящей EPKT Approach есть (Kraków Approach 121.075), поэтому этот случай относится только к станции, собранной без Approach. Тогда за 10 NM до EPKT вас передают на Tower этой станции. Он опознаёт борт, называет ожидаемый заход («expect ILS approach runway two seven, report established»; без захода по приборам: «expect visual approach runway two seven, report final»), оставляет вас у себя, разрешает посадку и при уходе на второй круг ведёт набор и снова даёт ожидаемый заход.
+
+Полный полёт EPKK → EPKT до стоянки, со всеми репликами и высотами, — в [scenario-ifr-departure.md](scenario-ifr-departure.md).
 
 ### Если уходите вне плана
 
