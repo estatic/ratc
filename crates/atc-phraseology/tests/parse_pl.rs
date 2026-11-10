@@ -143,7 +143,7 @@ fn polish_taxi_to_stand() {
     assert_eq!(
         m.intent,
         PilotIntent::RequestTaxiToStand {
-            stand: Some("5".into())
+            stand: Some("stand 5".into())
         }
     );
 }

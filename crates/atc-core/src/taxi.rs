@@ -8,8 +8,41 @@ use atc_navdata::model::{ActiveZone, Airport, EdgeKind, Stand, TaxiNetwork};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TaxiTarget {
-    HoldingPoint { runway: String },
-    Stand { name: String },
+    HoldingPoint {
+        runway: String,
+    },
+    Stand {
+        name: String,
+        /// Which stand of that name, when several share it: the one nearest here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<LatLon>,
+    },
+}
+
+/// The stand called `name`: the one nearest `at` when given, else the first.
+pub fn find_stand<'a>(airport: &'a Airport, name: &str, at: Option<LatLon>) -> Option<&'a Stand> {
+    let named = airport.stands.iter().filter(|s| s.name == name);
+    match at {
+        Some(p) => named.min_by(|a, b| distance_m(a.pos, p).total_cmp(&distance_m(b.pos, p))),
+        None => named.into_iter().next(),
+    }
+}
+
+#[cfg(test)]
+mod target_serde_tests {
+    use super::*;
+
+    #[test]
+    fn old_stand_target_loads_without_at() {
+        let t: TaxiTarget = serde_json::from_str(r#"{"Stand":{"name":"5"}}"#).unwrap();
+        assert_eq!(
+            t,
+            TaxiTarget::Stand {
+                name: "5".into(),
+                at: None
+            }
+        );
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -297,11 +330,8 @@ impl TaxiGraph {
     ) -> Result<TaxiRoute, RouteError> {
         let (goal_sets, forbidden, hold_short): (Vec<Vec<usize>>, Option<&str>, Option<String>) =
             match to {
-                TaxiTarget::Stand { name } => {
-                    let st: &Stand = airport
-                        .stands
-                        .iter()
-                        .find(|s| &s.name == name)
+                TaxiTarget::Stand { name, at } => {
+                    let st: &Stand = find_stand(airport, name, *at)
                         .ok_or_else(|| RouteError::UnknownStand(name.clone()))?;
                     (vec![self.nearest(st.pos).into_iter().collect()], None, None)
                 }
@@ -642,7 +672,10 @@ mod tests {
         // West taxiways north, east taxiways south: legitimate crossing 1 -> 3.
         let ap = runway_airport([50.001, 50.001, 49.999, 49.999]);
         let g = TaxiGraph::build(&ap.taxi);
-        let s = TaxiTarget::Stand { name: "S".into() };
+        let s = TaxiTarget::Stand {
+            name: "S".into(),
+            at: None,
+        };
         let mut ap2 = ap.clone();
         ap2.stands = vec![stand("S", ap.taxi.nodes[5].pos)];
         let r = g.route(&ap2, ap.taxi.nodes[3].pos, &s).unwrap();
@@ -719,6 +752,7 @@ mod tests {
             from,
             &TaxiTarget::Stand {
                 name: "NORTH".into(),
+                at: None,
             },
         );
         assert_eq!(same, Err(RouteError::Unreachable));
@@ -729,6 +763,7 @@ mod tests {
                 from,
                 &TaxiTarget::Stand {
                     name: "SOUTH".into(),
+                    at: None,
                 },
             )
             .unwrap();
@@ -791,7 +826,10 @@ mod tests {
                     lat: 50.001,
                     lon: 19.0,
                 },
-                &TaxiTarget::Stand { name: "S".into() },
+                &TaxiTarget::Stand {
+                    name: "S".into(),
+                    at: None,
+                },
             )
             .unwrap();
         assert_eq!(r.crossings, vec!["07/25".to_string(), "07/25".to_string()]);
@@ -822,7 +860,10 @@ mod tests {
                     lat: 50.0,
                     lon: 19.0,
                 },
-                &TaxiTarget::Stand { name: "S".into() },
+                &TaxiTarget::Stand {
+                    name: "S".into(),
+                    at: None,
+                },
             )
             .unwrap();
         assert_eq!(r.nodes, vec![0, 1, 2, 3, 4]);
@@ -862,7 +903,10 @@ mod tests {
                     lat: 50.0,
                     lon: 19.001,
                 },
-                &TaxiTarget::Stand { name: "S".into() },
+                &TaxiTarget::Stand {
+                    name: "S".into(),
+                    at: None,
+                },
             )
             .unwrap();
         assert_eq!(r.nodes, vec![1, 2, 0]);
@@ -897,7 +941,10 @@ mod tests {
                 lat: 50.0,
                 lon: 19.0,
             },
-            &TaxiTarget::Stand { name: "S".into() },
+            &TaxiTarget::Stand {
+                name: "S".into(),
+                at: None,
+            },
         );
         assert_eq!(r, Err(RouteError::Unreachable));
     }
@@ -930,7 +977,10 @@ mod tests {
                     lat: 50.0,
                     lon: 19.0,
                 },
-                &TaxiTarget::Stand { name: "S".into() },
+                &TaxiTarget::Stand {
+                    name: "S".into(),
+                    at: None,
+                },
             )
             .unwrap();
         assert_eq!(r.nodes, vec![0, 1]);
@@ -943,7 +993,10 @@ mod tests {
         let r = g.route(
             &ap,
             ap.taxi.nodes[0].pos,
-            &TaxiTarget::Stand { name: "ZZ".into() },
+            &TaxiTarget::Stand {
+                name: "ZZ".into(),
+                at: None,
+            },
         );
         assert_eq!(r, Err(RouteError::UnknownStand("ZZ".into())));
         let r = g.route(

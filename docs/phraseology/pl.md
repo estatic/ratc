@@ -77,7 +77,8 @@ Urgent instructions (runway incursion, take-off or landing without clearance, al
 | `UnableReason::UnknownDestination` / `NoIfrData` / `Closed` | `powtórz miejsce przeznaczenia` / `brak procedur IFR, tylko VFR` / `stanowisko zamknięte` (after `nie mogę`) | project wording |
 | `UnableReason::ApproachNotAvailable` | `podejście niedostępne` (after `nie mogę`; Approach speaks English, so only a fallback) | project wording |
 | New `ReadBack` labels | Sid `odlot`, Star `przylot`, Level `poziom`, Direct `trasę bezpośrednią`, Approach `zezwolenie na podejście`, Destination `miejsce przeznaczenia` | project wording |
-| Approach-only items (`Star`, `DescendTo`, `MaintainLevel`, `Heading`, `DirectTo`, `ExpectApproach`, `ClearedApproach`, `ReportEstablished`, `Identified`, `RadarServiceTerminated`, `OffTrack`, `CheckHeading`, `CheckLevel`, `CheckEstablished`, `DistanceToGo`, `VisualApproachNotAvailable`) | rendered in English even with `lang = Pl` (Approach speaks English only) | spec §3.1 |
+| `ExpectApproach` / `ExpectVisualApproach` / `ReportEstablished` (Tower, to a handed-in IFR inbound) | `spodziewaj się podejścia ILS, pas dwa siedem` / `spodziewaj się podejścia z widocznością, pas dwa pięć` / `zgłoś ustalenie na kursie podejścia końcowego` | project wording |
+| Approach-only items (`Star`, `DescendTo`, `MaintainLevel`, `Heading`, `DirectTo`, `ClearedApproach`, `Identified`, `RadarServiceTerminated`, `OffTrack`, `CheckHeading`, `CheckLevel`, `CheckEstablished`, `DistanceToGo`, `VisualApproachNotAvailable`) | rendered in English even with `lang = Pl` (Approach speaks English only) | spec §3.1 |
 | Runway suffix `L` / `R` / `C` | `lewy` / `prawy` / `środkowy` after the digits | project wording |
 
 ## Pilot phrases

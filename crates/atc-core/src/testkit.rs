@@ -213,6 +213,7 @@ fn roll_out_and_taxi_in(
             exit,
             &TaxiTarget::Stand {
                 name: stand.name.clone(),
+                at: None,
             },
         )
         .expect("route back to the stand");

@@ -4,7 +4,7 @@
 //! ahead" (distance rounded to 10 m; ahead / on your right / behind you / on your left by
 //! the bearing to the stand off the aircraft heading, in 90° sectors).
 
-use atc_geo::{bearing_deg, distance_m};
+use atc_geo::{LatLon, bearing_deg, distance_m};
 use atc_phraseology::{AtcItem, Courtesy, Side};
 
 use super::{AtcEngine, standby};
@@ -23,44 +23,51 @@ impl AtcEngine {
             return standby();
         };
         let target = match &self.strips[i].taxi_target {
-            Some(crate::taxi::TaxiTarget::Stand { name }) => Some(name),
+            Some(crate::taxi::TaxiTarget::Stand { name, at }) => Some((name, *at)),
             _ => None,
         };
         let on_stand = last.gs_kt < STOPPED_KT
             && self.airport.stands.iter().any(|st| {
-                target.is_none_or(|t| *t == st.name) && distance_m(st.pos, last.pos) <= ON_STAND_M
+                target.is_none_or(|(name, at)| {
+                    *name == st.name && at.is_none_or(|p| distance_m(p, st.pos) < 1.0)
+                }) && distance_m(st.pos, last.pos) <= ON_STAND_M
             });
         if on_stand {
             return vec![AtcItem::Courtesy(farewell.unwrap_or(Courtesy::GoodDay))];
         }
         match self.stand_of(i) {
-            Some(name) => self.stand_hint(i, &name).into_iter().collect(),
+            Some((name, at)) => self.stand_hint(i, &name, at).into_iter().collect(),
             None => vec![AtcItem::SayAgain],
         }
     }
 
     /// The stand aircraft `i` is going to: its taxi target, else the stand it started from,
     /// else the nearest one.
-    fn stand_of(&self, i: usize) -> Option<String> {
+    fn stand_of(&self, i: usize) -> Option<(String, Option<LatLon>)> {
         let strip = &self.strips[i];
-        if let Some(crate::taxi::TaxiTarget::Stand { name }) = &strip.taxi_target {
-            return Some(name.clone());
+        if let Some(crate::taxi::TaxiTarget::Stand { name, at }) = &strip.taxi_target {
+            return Some((name.clone(), *at));
         }
         if let Some(home) = &strip.home_stand {
-            return Some(home.clone());
+            return Some((home.clone(), None));
         }
         let pos = self.last_pos(i)?;
         self.airport
             .stands
             .iter()
             .min_by(|a, b| distance_m(a.pos, pos).total_cmp(&distance_m(b.pos, pos)))
-            .map(|st| st.name.clone())
+            .map(|st| (st.name.clone(), Some(st.pos)))
     }
 
     /// Distance to stand `name` from aircraft `i` and "stand <name> is <N> metres <side>".
-    pub(super) fn stand_hint_at(&self, i: usize, name: &str) -> Option<(f64, AtcItem)> {
+    pub(super) fn stand_hint_at(
+        &self,
+        i: usize,
+        name: &str,
+        at: Option<LatLon>,
+    ) -> Option<(f64, AtcItem)> {
         let last = &self.tracks.get(&self.strips[i].callsign)?.last;
-        let st = self.airport.stands.iter().find(|st| st.name == name)?;
+        let st = crate::taxi::find_stand(&self.airport, name, at)?;
         let d = distance_m(last.pos, st.pos);
         let rel = (bearing_deg(last.pos, st.pos) - last.heading_deg).rem_euclid(360.0);
         let item = AtcItem::StandPosition {
@@ -71,8 +78,8 @@ impl AtcEngine {
         Some((d, item))
     }
 
-    fn stand_hint(&self, i: usize, name: &str) -> Option<AtcItem> {
-        self.stand_hint_at(i, name).map(|(_, item)| item)
+    fn stand_hint(&self, i: usize, name: &str, at: Option<LatLon>) -> Option<AtcItem> {
+        self.stand_hint_at(i, name, at).map(|(_, item)| item)
     }
 }
 

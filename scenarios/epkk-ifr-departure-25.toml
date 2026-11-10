@@ -32,12 +32,12 @@ text = "Krakow Delivery, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, 
 at = "heard:cleared to"
 freq = "delivery"
 transponder = { code = 4201 }
-text = "Cleared to Katowice, Sudol one Foxtrot departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie"
+text = "Cleared to Katowice, Sudol one Foxtrot departure, climb flight level one zero zero, squawk four two zero one, Sierra Bravo Charlie"
 
 [[say]]
 at = "heard:negative"
 freq = "delivery"
-text = "Cleared to Katowice, Sudol two Juliett departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie"
+text = "Cleared to Katowice, Sudol two Juliett departure, climb flight level one zero zero, squawk four two zero one, Sierra Bravo Charlie"
 
 [[say]]
 at = "heard:ground"
@@ -83,7 +83,7 @@ text = "Approach one two one decimal zero seven five, Sierra Bravo Charlie"
 [[say]]
 t = 300.0
 freq = "approach"
-text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing five thousand feet"
+text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing flight level one zero zero"
 
 [[say]]
 at = "heard:direct katowice"

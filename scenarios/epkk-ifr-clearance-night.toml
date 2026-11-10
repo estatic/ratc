@@ -32,7 +32,7 @@ text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, stand three five, inform
 at = "heard:cleared to"
 freq = "ground"
 transponder = { code = 4201 }
-text = "Cleared to Katowice, Sudol two Juliett departure, climb five thousand feet, squawk four two zero one, Sierra Bravo Charlie"
+text = "Cleared to Katowice, Sudol two Juliett departure, climb flight level one zero zero, squawk four two zero one, Sierra Bravo Charlie"
 
 [[say]]
 at = "phase:Parked"
@@ -73,4 +73,4 @@ text = "Approach one two one decimal zero seven five, Sierra Bravo Charlie"
 [[say]]
 t = 300.0
 freq = "approach"
-text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing five thousand feet"
+text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing flight level one zero zero"
