@@ -121,11 +121,10 @@ pub fn applicable_constraints(path: &Path, cleared_ft: i32) -> Vec<(usize, AltCo
         .collect()
 }
 
-/// Initial climb of a departure along `path` to `cruise_ft`. The target is the cruise level,
-/// raised to the highest "at or above" floor on the path (rounded up to 1000 ft). The climb
-/// stops at the first ceiling (`At`, `AtOrBelow`, the upper bound of `Between`) at or below
-/// that target; without one it goes to the target.
-pub fn initial_climb_ft(path: &Path, cruise_ft: i32) -> i32 {
+/// The level a departure along `path` is climbed to in the end: `cruise_ft` raised to the
+/// highest "at or above" floor on the path (`AtOrAbove`, the lower bound of `Between`),
+/// rounded up to 1000 ft.
+pub fn sid_target_ft(path: &Path, cruise_ft: i32) -> i32 {
     let floor = path
         .constraints
         .iter()
@@ -135,9 +134,17 @@ pub fn initial_climb_ft(path: &Path, cruise_ft: i32) -> i32 {
             _ => None,
         })
         .max();
-    let target = floor.map_or(cruise_ft, |a| {
+    floor.map_or(cruise_ft, |a| {
         cruise_ft.max((a + 999).div_euclid(1000) * 1000)
-    });
+    })
+}
+
+/// Initial climb of a departure along `path` to `cruise_ft`. The clearance stops at the first
+/// ceiling (`At`, `AtOrBelow`, the upper bound of `Between`) at or below the target
+/// ([`sid_target_ft`]), which is what the flight is later climbed to; without a ceiling it
+/// goes to the target.
+pub fn initial_climb_ft(path: &Path, cruise_ft: i32) -> i32 {
+    let target = sid_target_ft(path, cruise_ft);
     path.constraints
         .iter()
         .find_map(|(_, c)| {

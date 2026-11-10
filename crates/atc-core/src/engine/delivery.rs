@@ -4,8 +4,8 @@
 //! The pilot's request is the flight plan (spec 3.2): destination (one of the airports the
 //! engine was given, [`AtcEngine::with_destinations`]), flight rules and an optional level.
 //! IFR: destination, SID of the departure runway towards the destination, initial climb (the
-//! cruise level, raised to SID floors and lowered to a SID ceiling, [`initial_climb_ft`]) and
-//! squawk. VFR: destination, the VFR exit point towards it, squawk. Unknown destination:
+//! cruise level raised to SID floors, [`sid_target_ft`], stopped at the first SID ceiling,
+//! [`initial_climb_ft`]; the plan keeps the raised level as the cruise level) and squawk. VFR: destination, the VFR exit point towards it, squawk. Unknown destination:
 //! "unable, say again destination"; IFR without a procedure set: "unable, IFR not available,
 //! VFR only".
 
@@ -19,7 +19,7 @@ use atc_phraseology::{
 };
 
 use super::{AtcEngine, fold};
-use crate::ifr::{choose_sid, initial_climb_ft, procedure_path};
+use crate::ifr::{choose_sid, initial_climb_ft, procedure_path, sid_target_ft};
 use crate::strip::{FlightPlan, Role};
 
 /// Summer time (UTC+2 in Poland) as days of the year, 0 = 1 January: about 28 March to
@@ -211,9 +211,10 @@ impl AtcEngine {
     ) -> Option<(Vec<AtcItem>, FlightPlan)> {
         let cruise_ft = level_ft.or(self.procs.ifr.map(|d| d.cruise_ft))?;
         let runway = self.departure_runway(i);
-        let (sid, ident, climb_ft) = self.sid_from(&runway, dest.pos, cruise_ft)?;
-        // Approach compares levels with the plan: the SID floor may exceed the planned level.
-        let cruise_ft = cruise_ft.max(climb_ft);
+        let (sid, ident, climb_ft, target_ft) = self.sid_from(&runway, dest.pos, cruise_ft)?;
+        // Approach compares levels with the plan: a SID floor may exceed the planned level,
+        // also one that comes after a ceiling the clearance stops at.
+        let cruise_ft = target_ft;
         let items = vec![sid, AtcItem::ClimbTo(self.level(climb_ft))];
         let plan = FlightPlan {
             ifr: true,
@@ -235,25 +236,27 @@ impl AtcEngine {
         Some((items, plan))
     }
 
-    /// The SID from `runway` towards `dest` as spoken, its ident and the initial climb for
-    /// `cruise_ft`; `None` without a procedure set or a SID for the runway.
+    /// The SID from `runway` towards `dest` as spoken, its ident, the initial climb for
+    /// `cruise_ft` and the level it leads to; `None` without a procedure set or a SID for the runway.
     fn sid_from(
         &self,
         runway: &str,
         dest: LatLon,
         cruise_ft: i32,
-    ) -> Option<(AtcItem, String, i32)> {
+    ) -> Option<(AtcItem, String, i32, i32)> {
         let set = self.procedure_set.as_ref()?;
         let from = self.threshold(runway).or_else(|| self.airport_ref())?;
         let sid = choose_sid(set, runway, from, dest)?;
-        let climb_ft = initial_climb_ft(&procedure_path(sid), cruise_ft);
+        let path = procedure_path(sid);
+        let climb_ft = initial_climb_ft(&path, cruise_ft);
+        let target_ft = sid_target_ft(&path, cruise_ft);
         let (fix, number, letter) = crate::ifr::spoken_designator(sid);
         let item = AtcItem::Sid {
             fix,
             number,
             letter,
         };
-        Some((item, sid.procedure.ident.clone(), climb_ft))
+        Some((item, sid.procedure.ident.clone(), climb_ft, target_ft))
     }
 
     /// The clearance of aircraft `i` moved to departure `runway`: unchanged without a
@@ -275,7 +278,7 @@ impl AtcEngine {
                 .iter()
                 .find(|d| d.icao == plan.destination)
                 .map(|d| d.pos);
-            let Some((sid, ident, climb_ft)) =
+            let Some((sid, ident, climb_ft, target_ft)) =
                 dest.and_then(|pos| self.sid_from(runway, pos, plan.cruise_ft))
             else {
                 return RunwayChange::NoSid {
@@ -288,7 +291,7 @@ impl AtcEngine {
             }
             plan.sid = Some(ident);
             plan.cleared_ft = climb_ft;
-            plan.cruise_ft = plan.cruise_ft.max(climb_ft);
+            plan.cruise_ft = target_ft;
         }
         plan.dep_runway = Some(runway.to_string());
         RunwayChange::Amended { items, plan }

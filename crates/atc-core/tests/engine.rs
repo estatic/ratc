@@ -3084,6 +3084,42 @@ mod delivery {
         );
     }
 
+    /// A SID floor after an earlier ceiling: the clearance stops at the ceiling, the plan
+    /// keeps the floor as the cruise level.
+    #[test]
+    fn ifr_clearance_cruise_respects_a_floor_after_a_ceiling() {
+        let (ap, procs) = zzzz();
+        let mut set = load_procedure_set(&root(), "ZZZZ").unwrap();
+        for p in set
+            .procedures
+            .iter_mut()
+            .filter(|p| p.procedure.ident == "ALFA1A")
+        {
+            p.legs[0].leg.alt = AltConstraint::AtOrBelow(4000);
+            p.legs[1].leg.alt = AltConstraint::AtOrAbove(6000);
+        }
+        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(Strictness::Standard))
+            .with_procedure_set(set)
+            .with_destinations(destinations());
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new("SPTST"),
+            aircraft_type: "C172".into(),
+        });
+        e.on_weather(weather(1013));
+        let out = say(&mut e, DEL, REQUEST);
+        assert!(
+            items(&out).contains(&AtcItem::ClimbTo(Level::Altitude(4000))),
+            "{out:?}"
+        );
+        let plan = e
+            .strip(&Callsign::new("SPTST"))
+            .unwrap()
+            .plan
+            .clone()
+            .unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (6000, 4000));
+    }
+
     /// A sample without time after one at 23:00 UTC keeps the last time: still closed.
     #[test]
     fn sample_without_time_keeps_the_clock() {
@@ -4395,7 +4431,7 @@ mod approach_departure {
     }
 
     /// A SID ceiling below the cruise level: Approach clears the climb to cruise with the
-    /// identification.
+    /// identification; the cruise level is the SID's later floor, FL080.
     #[test]
     fn identification_clears_the_climb_to_cruise() {
         let mut e = engine_with(|set| {
@@ -4413,7 +4449,10 @@ mod approach_departure {
         let out = say(&mut e, APP, AIRBORNE);
         assert_eq!(
             items(&out),
-            vec![AtcItem::Identified, AtcItem::ClimbTo(Level::Altitude(5000))]
+            vec![
+                AtcItem::Identified,
+                AtcItem::ClimbTo(Level::FlightLevel(80))
+            ]
         );
         assert_eq!(
             e.strip(&Callsign::new("SPTST"))
@@ -4422,7 +4461,7 @@ mod approach_departure {
                 .as_ref()
                 .unwrap()
                 .cleared_ft,
-            5000
+            8000
         );
     }
 
