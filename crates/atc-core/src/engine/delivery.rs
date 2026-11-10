@@ -5,7 +5,8 @@
 //! engine was given, [`AtcEngine::with_destinations`]), flight rules and an optional level.
 //! IFR: destination, SID of the departure runway towards the destination, initial climb (the
 //! cruise level raised to SID floors, [`sid_target_ft`], stopped at the first SID ceiling,
-//! [`initial_climb_ft`]; the plan keeps the raised level as the cruise level) and squawk. VFR: destination, the VFR exit point towards it, squawk. Unknown destination:
+//! [`initial_climb_ft`]; the plan keeps the raised level as the cruise level) and squawk. VFR:
+//! destination, the VFR exit point towards it, squawk. Unknown destination:
 //! "unable, say again destination"; IFR without a procedure set: "unable, IFR not available,
 //! VFR only".
 
@@ -237,7 +238,8 @@ impl AtcEngine {
     }
 
     /// The SID from `runway` towards `dest` as spoken, its ident, the initial climb for
-    /// `cruise_ft` and the level it leads to; `None` without a procedure set or a SID for the runway.
+    /// `cruise_ft` and the level it leads to; `None` without a procedure set or a SID for the
+    /// runway.
     fn sid_from(
         &self,
         runway: &str,

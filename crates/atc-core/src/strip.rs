@@ -388,6 +388,7 @@ impl Strip {
         self.handed_off_khz = None;
         self.handed_off_airport = None;
         self.handed_in = false;
+        self.first_call_due = false;
         self.tower_inbound = false;
         self.handoff_acked = false;
     }

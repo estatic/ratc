@@ -467,9 +467,9 @@ impl AtcEngine {
 
     /// The first call after a missed approach (or the first sample after one while Approach
     /// still had the flight): identified again and vectored. The first vectors keep the
-    /// published missed-approach altitude; the descent to the intercept altitude waits
-    /// until the aircraft has reached it. The published missed-approach
-    /// track is not monitored: a missed approach is Tower's go-around and Approach's vectors.
+    /// published missed-approach altitude; the descent to the intercept altitude waits until
+    /// the aircraft has reached it. The published missed-approach track is not monitored: a
+    /// missed approach is Tower's go-around and Approach's vectors.
     fn after_missed_approach(&mut self, i: usize) -> Vec<AtcItem> {
         let strip = &mut self.strips[i];
         strip.missed_approach = false;

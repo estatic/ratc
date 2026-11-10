@@ -140,7 +140,9 @@ impl AtcEngine {
     /// The pilot reports going around on his own ("going around"): an IFR arrival has missed
     /// the approach and goes back to Approach at once (contact Approach), or, kept by Tower
     /// (`tower_inbound`), climbs to the published missed-approach altitude; any other
-    /// aircraft is acknowledged ("roger").
+    /// aircraft is acknowledged ("roger"). With published missed-approach legs Tower says
+    /// "follow published missed approach" (`FollowMissedApproach`); otherwise the flight
+    /// climbs to its cleared level as before.
     fn going_around(&mut self, i: usize) -> Vec<AtcItem> {
         if self.arrival(i).is_none() {
             return vec![AtcItem::Roger];
