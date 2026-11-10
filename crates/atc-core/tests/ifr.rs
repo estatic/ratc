@@ -42,6 +42,30 @@ fn star_needs_the_start_fix_ahead() {
     assert!(choose_star(&set, "27", ll(10.01, 9.98), AIRPORT).is_none());
 }
 
+/// A STAR whose start fix is ahead but on the far side of the airport (more than 90 degrees
+/// from the aircraft, seen from the airport) is not given: the aircraft gets vectors.
+#[test]
+fn star_on_the_far_side_is_not_chosen() {
+    let set = zzzz();
+    // ALFAX (start of ALFA1B) is 13 NM north-west; the aircraft 17 NM south-east.
+    let se = ll(9.8, 10.2);
+    let alfax = set.fix("ALFAX").unwrap();
+    assert!(distance_m(AIRPORT, alfax) < distance_m(AIRPORT, se));
+    assert!(choose_star(&set, "27", se, AIRPORT).is_none());
+    // Just within 90 degrees of the start fix's bearing (south-west, beyond it): still given.
+    let sw = destination(AIRPORT, bearing_deg(AIRPORT, alfax) - 85.0, 20.0 * M_PER_NM);
+    assert_eq!(
+        choose_star(&set, "27", sw, AIRPORT)
+            .unwrap()
+            .procedure
+            .ident,
+        "ALFA1B"
+    );
+    // Just beyond 90 degrees: not.
+    let s = destination(AIRPORT, bearing_deg(AIRPORT, alfax) - 95.0, 20.0 * M_PER_NM);
+    assert!(choose_star(&set, "27", s, AIRPORT).is_none());
+}
+
 #[test]
 fn constraints_above_cleared_level_dropped() {
     let set = zzzz();
