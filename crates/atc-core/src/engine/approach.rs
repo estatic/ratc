@@ -73,8 +73,8 @@ use atc_geo::{LatLon, M_PER_NM, RunwayFrame, bearing_deg, destination, distance_
 use atc_navdata::procedures::CircuitSide;
 use atc_navdata::procedures::{AdjacentKind, AdjacentUnit};
 use atc_phraseology::{
-    ApproachKind, AtcItem, AtcMessage, FlightRules, Lang, PilotIntent, PilotMessage, Token,
-    UnableReason, normalize, render,
+    ApproachKind, AtcItem, AtcMessage, FlightRules, HeardItems, Lang, PilotIntent, PilotMessage,
+    Token, UnableReason, normalize, render,
 };
 
 use super::delivery::{cleared_to, mentions_ifr};
@@ -318,7 +318,7 @@ impl AtcEngine {
         // it reports ([`reported_level`]), else its altitude; reporting only the altitude it
         // is passing, the arrival level (a passing altitude is never given back as a level).
         let actual_ft = ((s.alt_ft_msl / 100.0).round() as i32) * 100;
-        let reported = reported_level(&msg.raw);
+        let reported = reported_level(&msg.raw, self.strips[i].lang, &msg.items);
         let present_ft = cleared_ft
             .or(reported.level_ft)
             .unwrap_or(if reported.passing { target } else { actual_ft });
@@ -1410,18 +1410,26 @@ struct Reported {
     passing: bool,
 }
 
-/// The level an inbound call reports, by the pilot's words: the levels said (altitudes and
-/// flight levels) other than the one after "passing"; climbing, the highest of them,
-/// descending, the lowest, otherwise the only one ("passing four thousand seven hundred
-/// feet, climbing flight level one zero zero" reports FL100; "passing four thousand seven
-/// hundred" alone reports none).
-fn reported_level(text: &str) -> Reported {
-    let toks = normalize(text);
+/// The level an inbound call in `lang` reports, by the pilot's words: the levels said
+/// (altitudes and flight levels, after a verb, "for" or "to") other than the one after
+/// "passing"; climbing, the highest of them, descending, the lowest, otherwise the last one
+/// ("passing four thousand seven hundred feet, climbing flight level one zero zero" reports
+/// FL100; "passing four thousand seven hundred" alone reports none). When the words give no
+/// level, the levels the parser heard (`items`) except the passing one, picked the same way.
+fn reported_level(text: &str, lang: Lang, items: &HeardItems) -> Reported {
+    let toks = match lang {
+        Lang::En => normalize(text),
+        Lang::Pl => atc_phraseology::pl::normalize::normalize(text),
+    };
     let word = |k: usize, w: &str| matches!(toks.get(k), Some(Token::Word(x)) if x == w);
     // The level starting at `k` ("flight level N", "FL N", "altitude N", "N feet"), with the
     // index after it.
     let level_at = |mut k: usize| -> Option<(i32, usize)> {
-        while matches!(toks.get(k), Some(Token::Break)) || word(k, "through") || word(k, "to") {
+        while matches!(toks.get(k), Some(Token::Break))
+            || word(k, "through")
+            || word(k, "to")
+            || word(k, "for")
+        {
             k += 1;
         }
         let fl = if word(k, "flight") && word(k + 1, "level") {
@@ -1446,7 +1454,7 @@ fn reported_level(text: &str) -> Reported {
         let ft = if fl { v * 100 } else { v };
         (fl && (10..=600).contains(&v) || !fl && ft >= 500).then_some((ft, k + 1))
     };
-    let (mut levels, mut passing) = (Vec::new(), false);
+    let (mut levels, mut passing_ft) = (Vec::new(), None);
     let (mut up, mut down) = (false, false);
     let mut k = 0;
     while k < toks.len() {
@@ -1468,6 +1476,8 @@ fn reported_level(text: &str) -> Reported {
                 | "descending"
                 | "maintain"
                 | "maintaining"
+                | "for"
+                | "to"
         );
         let start = if after_verb { k + 1 } else { k };
         let leading = matches!(w, "flight" | "fl" | "altitude")
@@ -1477,7 +1487,7 @@ fn reported_level(text: &str) -> Reported {
             && let Some((ft, next)) = level_at(start)
         {
             if w == "passing" {
-                passing = true;
+                passing_ft = Some(ft);
             } else {
                 levels.push(ft);
             }
@@ -1486,13 +1496,30 @@ fn reported_level(text: &str) -> Reported {
         }
         k += 1;
     }
+    if levels.is_empty() {
+        // Words the scan does not know: the parser's levels, less the passing one.
+        let mut heard: Vec<i32> = items
+            .altitudes_ft
+            .iter()
+            .copied()
+            .chain(items.flight_levels.iter().map(|&fl| i32::from(fl) * 100))
+            .collect();
+        if let Some(p) = passing_ft
+            && let Some(at) = heard.iter().position(|&ft| ft == p)
+        {
+            heard.remove(at);
+        }
+        levels = heard;
+    }
     let level_ft = match (up, down) {
         (true, false) => levels.iter().copied().max(),
         (false, true) => levels.iter().copied().min(),
-        _ if levels.len() == 1 => levels.first().copied(),
         _ => levels.last().copied(),
     };
-    Reported { level_ft, passing }
+    Reported {
+        level_ft,
+        passing: passing_ft.is_some(),
+    }
 }
 
 /// The point `INTERCEPT_NM` out on the final to the threshold `thr` (final course `course`).
@@ -1545,7 +1572,7 @@ mod tests {
 
     #[test]
     fn reported_level_by_the_pilots_words() {
-        let r = |t: &str| reported_level(t);
+        let r = |t: &str| reported_level(t, Lang::En, &HeardItems::default());
         let lvl = |ft: i32, passing: bool| Reported {
             level_ft: Some(ft),
             passing,
@@ -1581,6 +1608,39 @@ mod tests {
         assert_eq!(
             r("IFR, inbound, squawk four six zero one"),
             Reported::default()
+        );
+        // A level after "for" or "to" is the target.
+        assert_eq!(
+            r("passing four thousand seven hundred feet for five thousand feet"),
+            lvl(5000, true)
+        );
+        assert_eq!(
+            r("passing four thousand seven hundred feet, climbing for five thousand"),
+            lvl(5000, true)
+        );
+        assert_eq!(r("request descent to three thousand"), lvl(3000, false));
+        // Polish words through the Polish tokenizer.
+        let none = HeardItems::default();
+        assert_eq!(
+            reported_level("wznoszenie na pięć tysięcy stóp", Lang::Pl, &none),
+            lvl(5000, false)
+        );
+        // Nothing the scan knows: the parser's levels, less the passing one.
+        let heard = HeardItems {
+            altitudes_ft: vec![4700, 6000],
+            ..HeardItems::default()
+        };
+        assert_eq!(
+            reported_level("passing four thousand seven hundred feet", Lang::En, &heard),
+            lvl(6000, true)
+        );
+        let heard = HeardItems {
+            altitudes_ft: vec![6000],
+            ..HeardItems::default()
+        };
+        assert_eq!(
+            reported_level("six thousand", Lang::En, &heard),
+            lvl(6000, false)
         );
     }
 

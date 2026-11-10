@@ -3923,6 +3923,16 @@ mod approach_departure {
         edit_procs: impl FnOnce(&mut Procedures),
         edit: impl FnOnce(&mut ProcedureSet),
     ) -> AtcEngine {
+        engine_airport_cfg(EngineConfig::new(strictness), edit_ap, edit_procs, edit)
+    }
+
+    /// [`engine_airport`] with the engine configuration `cfg`.
+    pub(super) fn engine_airport_cfg(
+        cfg: EngineConfig,
+        edit_ap: impl FnOnce(&mut Airport),
+        edit_procs: impl FnOnce(&mut Procedures),
+        edit: impl FnOnce(&mut ProcedureSet),
+    ) -> AtcEngine {
         let mut ap = resolve_airport(&root(), "ZZZZ")
             .unwrap()
             .parse("ZZZZ")
@@ -3976,7 +3986,7 @@ mod approach_departure {
         });
         let mut set = load_procedure_set(&root(), "ZZZZ").unwrap();
         edit(&mut set);
-        let mut e = AtcEngine::new(ap, procs, EngineConfig::new(strictness))
+        let mut e = AtcEngine::new(ap, procs, cfg)
             .with_procedure_set(set)
             .with_destinations(dests);
         e.register_pilot(PilotProfile {
@@ -5578,6 +5588,31 @@ mod approach_arrival {
             got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
             "{got:?}"
         );
+    }
+
+    /// A Polish inbound call climbing to 5000 ft: the level is read from the Polish words
+    /// ("wznoszenie na pięć tysięcy stóp"), not left at the altitude it is passing.
+    #[test]
+    fn polish_inbound_climbing_reports_the_level_it_climbs_to() {
+        let mut cfg = EngineConfig::new(Strictness::Standard);
+        cfg.language = LanguageMode::Fixed(Lang::Pl);
+        let mut e = super::approach_departure::engine_airport_cfg(cfg, |_| {}, |_| {}, |_| {});
+        let mut p = Pilot::new(WEST, 4000.0, 90.0);
+        p.tick(&mut e);
+        let out = say_in(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, wznoszenie na pięć tysięcy \
+             stóp, zbliżam się",
+            Lang::Pl,
+        );
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+        assert_eq!((plan.cruise_ft, plan.cleared_ft), (5000, 5000));
     }
 
     /// Without a hand-over, the level a climbing pilot reports as a flight level is the one
