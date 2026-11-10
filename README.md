@@ -209,8 +209,9 @@ On connecting, the client prints how the server identified you, e.g. `Aircraft: 
 EPKK (Kraków) ships ready to use. Any other airfield can be added with the airport wizard,
 which builds its stations (ATIS, Delivery, Ground, Tower, Approach, ...), airspaces and VFR
 points from [OpenAIP](https://www.openaip.net) data and the X-Plane scenery layout. It needs
-`xplane_root` in `config/server.toml` and a free OpenAIP API key: register at openaip.net, then
-Profile -> API clients.
+`[sim_data]` (`sim = "xplane"`, `root = "<X-Plane dir>"`) in `config/server.toml` and a free
+OpenAIP API key: register at openaip.net, then Profile -> API clients. The old top-level
+`xplane_root` still works, but setting it together with `[sim_data]` is a config error.
 
 ```bash
 target/release/atc-server airports        # Windows: atc-server.exe airports
@@ -231,7 +232,7 @@ git-ignored, only the shipped EPKK is tracked):
   file are not kept then;
 - `wizard.toml`: which OpenAIP airfield the station was made from (git-ignored);
 - `apt.dat`: your copy of the airport's X-Plane layout, so the station also runs without
-  `xplane_root`.
+  `[sim_data]` (or the old `xplane_root`).
 
 To fly there, set `airport = "<ID>"` in `config/server.toml` and restart the server.
 

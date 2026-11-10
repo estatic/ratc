@@ -184,6 +184,8 @@ impl XPlaneState {
             xpdr_code: g(Slot::XpdrCode).map(|c| c.round() as u16),
             xpdr_mode: g(Slot::XpdrMode).map(|m| m.round() as u8),
             utc_s: g(Slot::ZuluTime),
+            // Known gap: `local_date_days` is the local date, the wire contract is UTC; fixed in
+            // traffic phase 2 (world clock).
             day_of_year: g(Slot::LocalDateDays).map(|d| d.round() as u16),
             paused: g(Slot::Paused)? > 0.5,
         })

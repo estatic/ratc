@@ -155,7 +155,9 @@ target/release/atc-server airports        # Windows: atc-server.exe airports
 
 Requirements: `[sim_data]` (or the old `xplane_root`) in `config/server.toml` (the wizard
 reads the airport layout from your scenery and refuses to create a station without it) and an
-OpenAIP API key (openaip.net -> register -> Profile -> API clients; free). Menu 5 asks for the key and checks it.
+OpenAIP API key (openaip.net -> register -> Profile -> API clients; free). Menu 5 asks for the
+key and checks it. Set `[sim_data]` with `sim = "xplane"` and `root = "<X-Plane dir>"`; the old
+top-level `xplane_root` still works but must not be set together with `[sim_data]` (config error).
 
 ### Menu
 

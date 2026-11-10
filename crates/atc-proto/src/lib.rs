@@ -199,8 +199,8 @@ pub enum ServerMsg {
 /// takes no more (about 20 KB of JSON, well inside its 64 KiB datagram buffer).
 pub const FOLLOW_ME_MAX_POINTS: usize = 500;
 
-/// Prefix of a vehicle command on the client -> the X-Plane adapter's plugin UDP channel; the rest of the
-/// datagram is the `ServerMsg` as JSON. Every other datagram is an overlay text line.
+/// Prefix of a vehicle command on the client -> the X-Plane adapter's plugin UDP channel; the
+/// rest of the datagram is the `ServerMsg` as JSON. Every other datagram is an overlay text line.
 pub const OVERLAY_COMMAND_PREFIX: &str = "FOLLOWME ";
 
 /// The overlay datagram relaying `msg` to the plugin; `None` for messages it does not take.
