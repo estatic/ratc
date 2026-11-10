@@ -469,7 +469,11 @@ Tower: `Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero 
 
 Approach:
 
-> Sierra Bravo Charlie, turn left heading two seven zero, climb altitude three thousand feet
+> Sierra Bravo Charlie, turn left heading two seven zero, climb altitude four thousand feet
+
+Прочитайте обратно (`Left heading two seven zero, climb four thousand feet, Sierra Bravo Charlie`). После ухода на второй круг Approach держит вас на опубликованной высоте ухода (4000 ft на VOR/DME 07) и позже разрешает снижение до 3000 ft:
+
+> Sierra Bravo Charlie, descend to altitude three thousand feet
 
 После этого Approach снова ведёт вас к заходу векторами и даёт второй заход.
 

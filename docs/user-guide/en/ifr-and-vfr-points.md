@@ -469,7 +469,11 @@ Tower: `Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero 
 
 Approach:
 
-> Sierra Bravo Charlie, turn left heading two seven zero, climb altitude three thousand feet
+> Sierra Bravo Charlie, turn left heading two seven zero, climb altitude four thousand feet
+
+Read it back (`Left heading two seven zero, climb four thousand feet, Sierra Bravo Charlie`). After a missed approach Approach keeps you at the published missed-approach altitude (4000 ft on VOR/DME 07) and clears the descent to 3000 ft later:
+
+> Sierra Bravo Charlie, descend to altitude three thousand feet
 
 Approach then vectors you back and gives you a second approach.
 
