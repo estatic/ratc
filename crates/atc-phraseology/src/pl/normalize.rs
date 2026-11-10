@@ -173,6 +173,10 @@ const RULES: &[(&str, &str, Next)] = &[
     ("stopy", "feet", Next::Any),
     ("nad", "over", Next::Any),
     ("zbliżam się", "inbound", Next::Any),
+    // "Passing" a level. Project wording, no Polish source in the repo; "przelatuję" is
+    // deliberately not mapped.
+    ("mijam", "passing", Next::Any),
+    ("przechodzę", "passing", Next::Number),
     // Numbers.
     ("kropka", "decimal", Next::Any),
     ("przecinek", "decimal", Next::Any),
@@ -405,6 +409,30 @@ mod tests {
 
     fn n(d: &str) -> Token {
         Token::Number(d.into())
+    }
+
+    fn w(s: &str) -> Token {
+        Token::Word(s.into())
+    }
+
+    #[test]
+    fn mijam_is_passing() {
+        assert_eq!(
+            normalize("mijam cztery tysiące stóp"),
+            vec![w("passing"), n("4000"), w("feet")]
+        );
+    }
+
+    #[test]
+    fn przechodze_is_passing_only_before_a_number() {
+        assert_eq!(
+            normalize("przechodzę cztery tysiące"),
+            vec![w("passing"), n("4000")]
+        );
+        assert_eq!(
+            normalize("przechodzę na drugi krąg"),
+            vec![w("going"), w("around")]
+        );
     }
 
     #[test]

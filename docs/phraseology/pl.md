@@ -121,6 +121,7 @@ The parser rewrites Polish pilot words to canonical English tokens; English word
 | `przetnij`, `przecinam`, `przecinamy`, `przetnę` | `cross` |
 | `zajmij`, `zajmuję`, `zajmujemy` | `line up`; `i czekaj`, `i czekam` → `and wait` |
 | `przejdź`/`przechodzę`/`odchodzę na drugi krąg`, `na drugi krąg`, `drugi krąg` | `going around` |
+| `mijam`, `przechodzę` (before a number) | `passing` (project wording; `przelatuję` is not mapped) |
 | `zgłoszę`, `zgłoś` | `report` |
 | `nie zrozumiałem`, `nie zrozumiałam` | `say again` |
 

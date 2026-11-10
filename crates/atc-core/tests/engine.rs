@@ -5744,6 +5744,33 @@ mod approach_arrival {
         assert_eq!((plan.cruise_ft, plan.cleared_ft), (5000, 5000));
     }
 
+    /// "Mijam cztery tysiące stóp" is "passing 4000 ft": the altitude passed is not the level
+    /// to hold; the arrival altitude above it is given.
+    #[test]
+    fn polish_passing_only_gets_the_arrival_altitude() {
+        let mut cfg = EngineConfig::new(Strictness::Standard);
+        cfg.language = LanguageMode::Fixed(Lang::Pl);
+        let mut e = super::approach_departure::engine_airport_cfg(cfg, |_| {}, |_| {}, |_| {});
+        let mut p = Pilot::new(WEST, 4000.0, 90.0);
+        p.tick(&mut e);
+        let out = say_in(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Papa Tango Sierra Tango, IFR, mijam cztery tysiące stóp, \
+             zbliżam się",
+            Lang::Pl,
+        );
+        let got = items(&out);
+        assert!(
+            got.contains(&AtcItem::ClimbTo(Level::Altitude(5000))),
+            "{got:?}"
+        );
+        assert!(
+            !got.contains(&AtcItem::MaintainLevel(Level::Altitude(4000))),
+            "{got:?}"
+        );
+    }
+
     /// Without a hand-over, the level a climbing pilot reports as a flight level is the one
     /// it climbs to, not the altitude it is passing.
     #[test]
@@ -7533,6 +7560,49 @@ mod handover {
             "Zeta Tower, Sierra Papa Tango Sierra Tango, three thousand feet",
         );
         (f, items(&out))
+    }
+
+    /// A Polish call to a Tower-only station gets the expect-approach and report-established
+    /// instructions in Polish, not English.
+    #[test]
+    fn polish_tower_only_inbound_speaks_polish() {
+        let mut e = super::approach_departure::engine_airport_cfg(
+            EngineConfig {
+                language: LanguageMode::Fixed(Lang::Pl),
+                ..EngineConfig::new(Strictness::Standard)
+            },
+            |_| {},
+            |p| {
+                p.positions
+                    .retain(|p| p.role != atc_navdata::model::FreqKind::Approach)
+            },
+            |_| {},
+        );
+        e.import_flight(handover(ifr_plan("ZZZZ", "Zeta", 3000)));
+        let west = destination(HOME, 270.0, 8.0 * M_PER_NM);
+        let mut f = airborne(&mut e, west, 3000.0, 90.0);
+        f.com1 = TWR;
+        let out = say_in(
+            &mut e,
+            TWR,
+            "Zeta Wieża, Sierra Papa Tango Sierra Tango, trzy tysiące stóp",
+            Lang::Pl,
+        );
+        let o = out.first().expect("a reply");
+        assert!(
+            o.text
+                .contains("spodziewaj się podejścia ILS, pas dwa siedem"),
+            "{}",
+            o.text
+        );
+        assert!(
+            o.text
+                .contains("zgłoś ustalenie na kursie podejścia końcowego"),
+            "{}",
+            o.text
+        );
+        assert!(!o.text.contains("expect"), "{}", o.text);
+        assert_eq!(o.message.lang, Lang::Pl);
     }
 
     /// Flies `f` 5 samples east: Tower says no contact to Approach.
