@@ -6567,7 +6567,10 @@ mod approach_arrival {
             TWR,
             "Zeta Tower, Sierra Sierra Tango, ILS runway two seven, final",
         );
-        assert_eq!(items(&out), vec![AtcItem::GoAround]);
+        assert_eq!(
+            items(&out),
+            vec![AtcItem::GoAround, AtcItem::FollowMissedApproach]
+        );
         assert!(e.strip(&cs()).unwrap().missed_approach);
         p.target = 3000.0;
         let n = p.f.heard.len();
@@ -6624,13 +6627,61 @@ mod approach_arrival {
         );
         let out = say(&mut e, TWR, "Sierra Sierra Tango, going around");
         assert_eq!(
-            out.iter().filter_map(contact_of).collect::<Vec<_>>(),
-            vec![("Zeta Approach".to_string(), APP)],
+            items(&out),
+            [
+                AtcItem::FollowMissedApproach,
+                AtcItem::Contact {
+                    station: "Zeta Approach".into(),
+                    khz: APP
+                }
+            ],
             "{out:?}"
         );
         assert_eq!(out[0].freq_khz, TWR);
         assert!(e.strip(&cs()).unwrap().missed_approach);
         assert!(!e.strip(&cs()).unwrap().permissions.may_land);
+    }
+
+    /// Without published missed-approach legs the go-around reply is the plain hand-over.
+    #[test]
+    fn going_around_without_published_missed_legs_is_unchanged() {
+        let mut e = super::approach_departure::engine_with(|set| {
+            for p in &mut set.procedures {
+                p.legs.retain(|l| !l.leg.missed)
+            }
+        });
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        p.until(&mut e, 300, |p| {
+            p.f.heard.iter().any(|o| contact_of(o).is_some())
+        });
+        let out = p.call(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, ILS runway two seven, established",
+        );
+        assert!(
+            items(&out)
+                .iter()
+                .any(|i| matches!(i, AtcItem::ClearedLand { .. })),
+            "{out:?}"
+        );
+        let out = say(&mut e, TWR, "Sierra Sierra Tango, going around");
+        assert_eq!(
+            items(&out),
+            [AtcItem::Contact {
+                station: "Zeta Approach".into(),
+                khz: APP
+            }],
+            "{out:?}"
+        );
     }
 }
 
@@ -7425,39 +7476,24 @@ mod handover {
             e.strip(&cs()).unwrap().phase
         );
         assert!(say(&mut e, TWR, &readback(&got, CS_ABBR)).is_empty());
-        // Going around: Tower keeps it and gives the missed-approach climb.
+        // Going around: Tower keeps it and tells it to follow the published missed approach.
         let out = say(
             &mut e,
             TWR,
             "Zeta Tower, Sierra Papa Tango Sierra Tango, going around",
         );
-        let got = items(&out);
-        let Some(AtcItem::ClimbTo(atc_phraseology::Level::Altitude(ft))) = got.first().cloned()
-        else {
-            panic!("{out:?}");
-        };
-        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(items(&out), [AtcItem::FollowMissedApproach], "{out:?}");
         let s = e.strip(&cs()).unwrap();
         assert_eq!(s.owner, Role::Tower);
         assert!(s.identified);
-        let rb = format!(
-            "climb {} feet, Sierra Papa Tango Sierra Tango",
-            spoken(&ft.to_string())
-        );
-        let out = say(&mut e, TWR, &rb);
-        assert!(
-            items(&out).iter().all(|i| !matches!(i, AtcItem::SayAgain)),
-            "{out:?}"
-        );
-        f.heard.clear();
-        f.alt = f64::from(ft);
-        no_bounce(&mut e, &mut f);
-        // The next call: the approach again.
+        assert_eq!(s.plan.as_ref().unwrap().cleared_ft, 4000);
         let out = say(
             &mut e,
             TWR,
-            "Zeta Tower, Sierra Papa Tango Sierra Tango, three thousand feet",
+            "follow published missed approach, Sierra Papa Tango Sierra Tango",
         );
+        // Nothing to read back: the acknowledgement is a call like any other, and Tower
+        // answers it with the approach again, never "say again".
         assert_eq!(
             items(&out),
             vec![
@@ -7469,6 +7505,9 @@ mod handover {
             ],
             "{out:?}"
         );
+        f.heard.clear();
+        f.alt = 4000.0;
+        no_bounce(&mut e, &mut f);
         assert!(e.strip(&cs()).unwrap().identified);
     }
 

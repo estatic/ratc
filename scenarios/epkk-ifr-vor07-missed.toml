@@ -80,7 +80,7 @@ text = "Sierra Bravo Charlie, going around"
 [[say]]
 at = "heard:contact kraków approach"
 freq = "tower"
-text = "Approach one two one decimal zero seven five, Sierra Bravo Charlie"
+text = "Follow published missed approach, Approach one two one decimal zero seven five, Sierra Bravo Charlie"
 
 [[say]]
 t = 1255.0

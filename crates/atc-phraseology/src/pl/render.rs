@@ -225,6 +225,9 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         AtcItem::GiveWay { traffic } => out.push(format!("ustąp pierwszeństwa {traffic}")),
         AtcItem::Follow { traffic } => out.push(format!("kołuj za {traffic}")),
         AtcItem::GoAround => out.push("przejdź na drugi krąg".into()),
+        AtcItem::FollowMissedApproach => {
+            out.push("wykonuj opublikowaną procedurę nieudanego podejścia".into())
+        }
         AtcItem::Negative => out.push("nieprawidłowo".into()),
         AtcItem::ReadBack(items) => {
             let labels: Vec<&str> = items.iter().map(readback_label).collect();

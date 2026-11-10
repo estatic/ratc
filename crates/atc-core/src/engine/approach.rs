@@ -526,9 +526,9 @@ impl AtcEngine {
             .unwrap_or_else(|| approach_alt_ft(Some(self.airport.elevation_ft)))
     }
 
-    /// The published missed-approach altitude: the highest altitude constraint of the
-    /// missed-approach legs, else the intercept altitude.
-    pub(super) fn missed_alt_ft(&self, runway: &str, kind: ApproachKind) -> i32 {
+    /// The highest altitude constraint of the missed-approach legs of the approach, if the
+    /// procedure publishes any.
+    pub(super) fn published_missed_ft(&self, runway: &str, kind: ApproachKind) -> Option<i32> {
         self.procedure_set
             .as_ref()
             .and_then(|set| set.approach(runway, navdata_approach_kind(kind)))
@@ -539,6 +539,11 @@ impl AtcEngine {
                     .filter_map(|l| constraint_floor_ft(l.leg.alt))
                     .max()
             })
+    }
+
+    /// The published missed-approach altitude, else the intercept altitude.
+    pub(super) fn missed_alt_ft(&self, runway: &str, kind: ApproachKind) -> i32 {
+        self.published_missed_ft(runway, kind)
             .unwrap_or_else(|| self.intercept_alt_ft(runway, kind))
     }
 
