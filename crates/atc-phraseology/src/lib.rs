@@ -16,7 +16,7 @@ pub use render::{
     number_words, render, runway_words, spell_char, stand_spoken, station_name,
 };
 pub use types::{
-    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules,
-    HeardItems, Lang, Level, PilotIntent, PilotMessage, ReadbackItem, Side, TaxiTo, Turn,
-    UnableReason, Wind,
+    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Compass8, Courtesy,
+    FlightRules, HeardItems, Lang, Level, PilotIntent, PilotMessage, ReadbackItem, Side, TaxiTo,
+    Turn, UnableReason, Wind,
 };

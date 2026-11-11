@@ -711,6 +711,7 @@ impl AtcEngine {
         out.extend(self.follow_me_update(i, t));
         out.extend(self.handover(i, gs_kt));
         out.extend(self.tower_call(i));
+        out.extend(self.landing_unprompted(i, prev));
         out.extend(self.vfr_exit_update(i));
         out.extend(self.establish_check(i));
         out.extend(self.approach_update(i));

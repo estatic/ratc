@@ -305,6 +305,37 @@ pub enum Side {
     Left,
 }
 
+/// One of the eight points of the compass (true).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Compass8 {
+    North,
+    NorthEast,
+    East,
+    SouthEast,
+    South,
+    SouthWest,
+    West,
+    NorthWest,
+}
+
+impl Compass8 {
+    /// The compass point nearest to the true bearing `deg`.
+    pub fn from_bearing(deg: f64) -> Self {
+        const POINTS: [Compass8; 8] = [
+            Compass8::North,
+            Compass8::NorthEast,
+            Compass8::East,
+            Compass8::SouthEast,
+            Compass8::South,
+            Compass8::SouthWest,
+            Compass8::West,
+            Compass8::NorthWest,
+        ];
+        let k = (deg.rem_euclid(360.0) / 45.0).round() as usize % 8;
+        POINTS[k]
+    }
+}
+
 /// A greeting, farewell or wish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Courtesy {
@@ -512,6 +543,14 @@ pub enum AtcItem {
     CheckLevel(Level),
     /// Distance to touchdown in nautical miles.
     DistanceToGo(u16),
+    /// "Continue approach": an IFR arrival on the extended centreline not yet on the final.
+    ContinueApproach,
+    /// The aircraft is `nm` nautical miles off the final approach course, to the `side` of
+    /// it (the direction of the aircraft from the course).
+    OffFinal {
+        nm: u16,
+        side: Compass8,
+    },
     /// Cleared for the approach but not established on its final track by the FAF.
     CheckEstablished {
         kind: ApproachKind,

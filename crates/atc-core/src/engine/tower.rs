@@ -1,10 +1,12 @@
 //! Tower position: departure and circuit clearances, and the landing of IFR arrivals
 //! transferred by Approach (a missed approach goes back to Approach).
 
-use atc_phraseology::{AtcItem, CircuitLeg, ClearanceKind, PilotIntent, PilotMessage};
+use atc_geo::{M_PER_NM, bearing_deg, distance_m};
+use atc_phraseology::{AtcItem, CircuitLeg, ClearanceKind, Compass8, PilotIntent, PilotMessage};
 
 use super::{AtcEngine, AtcOutput, standby};
-use crate::phase::FlightPhase;
+use crate::ifr::distance_to_go_nm;
+use crate::phase::{FINAL_HALF_WIDTH_M, FlightPhase};
 use crate::runway::RunwayUse;
 use crate::state::TransponderMode;
 use crate::strip::Role;
@@ -187,6 +189,7 @@ impl AtcEngine {
         {
             return Vec::new();
         }
+        let strip = &self.strips[i];
         let tuned = self.position(Role::Tower).is_some_and(|pos| {
             self.tracks
                 .get(&strip.callsign)
@@ -293,17 +296,19 @@ impl AtcEngine {
     }
 
     /// On final: cleared to land after a full-stop request (always for an IFR arrival), touch
-    /// and go otherwise; go around when the runway is not available. An IFR arrival not on
-    /// the final yet is asked to report final.
+    /// and go otherwise; go around when the runway is not available. An IFR arrival on a
+    /// published approach not on the final yet is told where it is
+    /// ([`AtcEngine::not_on_final`]); one on a visual approach is asked to report final.
     fn landing(&mut self, i: usize) -> Vec<AtcItem> {
         // A Tower-kept IFR arrival is one also on a visual approach.
         let published = self.arrival(i).is_some();
         let arrival = published || self.strips[i].tower_inbound;
         if !matches!(self.strips[i].phase, FlightPhase::Circuit(_)) {
-            return if arrival && self.strips[i].phase == FlightPhase::Airborne {
-                vec![AtcItem::Report(CircuitLeg::Final)]
-            } else {
-                Vec::new()
+            let airborne = self.strips[i].phase == FlightPhase::Airborne;
+            return match self.not_on_final(i) {
+                Some(items) if published && airborne => items,
+                _ if arrival && airborne => vec![AtcItem::Report(CircuitLeg::Final)],
+                _ => Vec::new(),
             };
         }
         let Some(wind) = self.wind() else {
@@ -337,5 +342,73 @@ impl AtcEngine {
             self.set_missed_approach(i);
         }
         items
+    }
+
+    /// An IFR arrival not on the final yet, from its last sample: on the extended centreline
+    /// (within the final's half-width) "continue approach, <N> miles from touchdown"; off it
+    /// "you are <N> miles <side> of the final approach course", `side` the direction of the
+    /// aircraft from the course. `None` without a sample or runway geometry.
+    fn not_on_final(&self, i: usize) -> Option<Vec<AtcItem>> {
+        let strip = &self.strips[i];
+        let pos = self.tracks.get(&strip.callsign)?.last.pos;
+        let (thr, course) = self.final_geometry(&strip.runway)?;
+        // Across the extended centreline, positive to the right of the landing course.
+        let rel = (bearing_deg(thr, pos) - course).to_radians();
+        let right = distance_m(thr, pos) * rel.sin();
+        if right.abs() < FINAL_HALF_WIDTH_M {
+            return Some(vec![
+                AtcItem::ContinueApproach,
+                AtcItem::DistanceToGo(distance_to_go_nm(pos, thr)),
+            ]);
+        }
+        let side = Compass8::from_bearing(course + 90.0_f64.copysign(right));
+        Some(vec![AtcItem::OffFinal {
+            nm: (right.abs() / M_PER_NM).round() as u16,
+            side,
+        }])
+    }
+
+    /// Tower clears an IFR arrival it works to land unprompted on the final: armed when the
+    /// aircraft turns onto the final (`prev` is the phase before this sample) without a
+    /// landing clearance, issued once the runway is free and the aircraft is on the Tower
+    /// frequency, while it stays on the final. Never a "go around": a busy runway only
+    /// delays it; one transmission in all.
+    pub(super) fn landing_unprompted(&mut self, i: usize, prev: FlightPhase) -> Vec<AtcOutput> {
+        let on_final = FlightPhase::Circuit(CircuitLeg::Final);
+        let arrival = self.arrival(i).is_some();
+        let strip = &mut self.strips[i];
+        if strip.phase != on_final {
+            strip.land_unprompted = false;
+            return Vec::new();
+        }
+        if prev != on_final && arrival && strip.owner == Role::Tower {
+            strip.land_unprompted = true;
+        }
+        if !strip.land_unprompted
+            || strip.owner != Role::Tower
+            || strip.permissions.may_land
+            || strip.missed_approach
+            || strip.handoff_to.is_some()
+        {
+            return Vec::new();
+        }
+        let strip = &self.strips[i];
+        let tuned = self.position(Role::Tower).is_some_and(|pos| {
+            self.tracks
+                .get(&strip.callsign)
+                .is_some_and(|sv| atc_proto::same_channel(sv.last.com1_khz, pos.khz))
+        });
+        if !tuned
+            || self.wind().is_none()
+            || self
+                .runway
+                .can_clear(&strip.callsign, RunwayUse::Land)
+                .is_err()
+        {
+            return Vec::new();
+        }
+        self.strips[i].land_unprompted = false;
+        let items = self.landing(i);
+        self.transmit(i, Role::Tower, items)
     }
 }

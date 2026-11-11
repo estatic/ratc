@@ -4,8 +4,8 @@
 use super::numbers::{altitude_ft, cardinal, digit, digits, frequency, plural, qnh, squawk, wind};
 use crate::render::station_name;
 use crate::types::{
-    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, Lang, Level, ReadbackItem,
-    Side, TaxiTo, UnableReason, Wind,
+    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Compass8, Courtesy, Lang, Level,
+    ReadbackItem, Side, TaxiTo, UnableReason, Wind,
 };
 
 const ALPHABET: [&str; 26] = [
@@ -375,6 +375,22 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         AtcItem::ReportEstablished => {
             out.push("zgłoś ustalenie na kursie podejścia końcowego".into())
         }
+        AtcItem::ContinueApproach => out.push("kontynuuj podejście".into()),
+        AtcItem::DistanceToGo(nm) => out.push(format!(
+            "{} {} do przyziemienia",
+            feminine(u32::from(*nm)),
+            plural(u32::from(*nm), "mila", "mile", "mil")
+        )),
+        AtcItem::OffFinal { nm, side } => out.push(format!(
+            "jesteś {} {} {} od kursu podejścia końcowego",
+            if *nm == 1 {
+                "jedną".to_string()
+            } else {
+                feminine(u32::from(*nm))
+            },
+            plural(u32::from(*nm), "milę", "mile", "mil"),
+            compass_words(*side)
+        )),
         // Approach-only items: the engine never asks for Polish, English fallback.
         AtcItem::Star { .. }
         | AtcItem::DescendTo(_)
@@ -388,8 +404,36 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         | AtcItem::CheckHeading(_)
         | AtcItem::CheckLevel(_)
         | AtcItem::CheckEstablished { .. }
-        | AtcItem::DistanceToGo(_)
         | AtcItem::VisualApproachNotAvailable => crate::render::item_parts(item, out),
+    }
+}
+
+/// A cardinal agreeing with a feminine noun ("mila"): "jedna", "dwie", "dwadzieścia dwie".
+fn feminine(n: u32) -> String {
+    let words = cardinal(n);
+    if n % 10 == 2
+        && n % 100 != 12
+        && let Some(stem) = words.strip_suffix("dwa")
+    {
+        return format!("{stem}dwie");
+    }
+    if n == 1 {
+        return "jedna".into();
+    }
+    words
+}
+
+/// Direction from a course: "na północ", "na północny wschód".
+fn compass_words(c: Compass8) -> &'static str {
+    match c {
+        Compass8::North => "na północ",
+        Compass8::NorthEast => "na północny wschód",
+        Compass8::East => "na wschód",
+        Compass8::SouthEast => "na południowy wschód",
+        Compass8::South => "na południe",
+        Compass8::SouthWest => "na południowy zachód",
+        Compass8::West => "na zachód",
+        Compass8::NorthWest => "na północny zachód",
     }
 }
 

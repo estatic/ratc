@@ -287,6 +287,10 @@ pub struct Strip {
     /// taken in that way until Approach has given its arrival instruction unprompted.
     #[serde(default)]
     pub radar_contact_kept: bool,
+    /// An IFR arrival worked by Tower turned onto the final without a landing clearance:
+    /// Tower clears it unprompted as soon as the runway is free, while it stays on the final.
+    #[serde(default)]
+    pub land_unprompted: bool,
     // Every field above that belongs to one flight is reset by `Strip::end_flight`.
     /// Transmissions taken for this aircraft without its callsign (the one aircraft in the
     /// exchange); from the third one the answer reminds the pilot to use it. Kept for the
@@ -359,6 +363,7 @@ impl Strip {
             tower_inbound: false,
             handoff_acked: false,
             radar_contact_kept: false,
+            land_unprompted: false,
             callsign_misses: 0,
             heard: 0,
         }
@@ -411,6 +416,7 @@ impl Strip {
         self.tower_inbound = false;
         self.handoff_acked = false;
         self.radar_contact_kept = false;
+        self.land_unprompted = false;
     }
 
     /// Records a clearance just issued and the readback it requires. A clearance

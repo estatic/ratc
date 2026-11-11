@@ -8270,17 +8270,14 @@ mod handover {
             Some((ApproachKind::Ils, "27".into()))
         );
         no_bounce(&mut e, &mut f);
-        // Established on the ILS 27 final: cleared to land.
+        // On the ILS 27 final: cleared to land with no call (B10).
+        f.heard.clear();
         on_final(&mut e, &mut f);
-        let out = say(
-            &mut e,
-            TWR,
-            "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
-        );
-        let got = items(&out);
+        let got = items(&f.heard);
         assert!(
             matches!(got.as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
-            "{out:?} (phase {:?})",
+            "{:?} (phase {:?})",
+            f.heard,
             e.strip(&cs()).unwrap().phase
         );
         assert!(say(&mut e, TWR, &readback(&got, CS_ABBR)).is_empty());
@@ -8916,6 +8913,183 @@ mod handover {
             let s = e.strip(&cs()).unwrap();
             assert!(s.identified);
             assert_eq!(s.owner, Role::Approach);
+        }
+    }
+
+    /// B10: Tower tells an IFR arrival not yet on the final where it is, and clears it to
+    /// land unprompted once it is on the final.
+    mod tower_ifr_final {
+        use atc_phraseology::Compass8;
+
+        use super::super::approach_departure::{END_27, HOLD_27};
+        use super::*;
+
+        /// The arrival handed in to the Tower-only ZZZZ, its first call answered, at `pos`
+        /// heading 270 (3 samples).
+        fn arrival_at(e: &mut AtcEngine, pos: LatLon, alt: f64) -> Flight {
+            let (mut f, _) = first_call_to_tower(e);
+            no_bounce(e, &mut f);
+            f.heard.clear();
+            f.pos = pos;
+            f.alt = alt;
+            for _ in 0..3 {
+                f.step(e, 270.0, 90.0, 0.0, false);
+            }
+            f
+        }
+
+        fn clearances(f: &Flight) -> usize {
+            f.heard
+                .iter()
+                .filter(|o| {
+                    o.message
+                        .items
+                        .iter()
+                        .any(|i| matches!(i, AtcItem::ClearedLand { .. }))
+                })
+                .count()
+        }
+
+        /// "Established" on the extended centreline 12 NM out, beyond the final: continue
+        /// approach and the distance to touchdown, not "report final".
+        #[test]
+        fn established_beyond_final_zone_continue_approach() {
+            let mut e = tower_only(|_| {});
+            let pos = destination(THR_27, 90.0, 12.0 * M_PER_NM);
+            let f = arrival_at(&mut e, pos, 4000.0);
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            assert!(f.heard.is_empty(), "{:?}", f.heard);
+            let out = say(
+                &mut e,
+                TWR,
+                "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
+            );
+            assert_eq!(
+                items(&out),
+                vec![AtcItem::ContinueApproach, AtcItem::DistanceToGo(12)],
+                "{out:?}"
+            );
+            assert!(
+                out[0]
+                    .text
+                    .contains("continue approach, one two miles from touchdown"),
+                "{}",
+                out[0].text
+            );
+        }
+
+        /// "Final" 4 km north of the centreline 6 NM out: Tower says where the aircraft is.
+        #[test]
+        fn final_call_off_course_gets_position() {
+            let mut e = tower_only(|_| {});
+            let abeam = destination(THR_27, 90.0, 6.0 * M_PER_NM);
+            let pos = destination(abeam, 0.0, 4000.0);
+            let f = arrival_at(&mut e, pos, 2000.0);
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            assert!(f.heard.is_empty(), "{:?}", f.heard);
+            let out = say(
+                &mut e,
+                TWR,
+                "Zeta Tower, Sierra Papa Tango Sierra Tango, final",
+            );
+            assert_eq!(
+                items(&out),
+                vec![AtcItem::OffFinal {
+                    nm: 2,
+                    side: Compass8::North
+                }],
+                "{out:?}"
+            );
+            assert!(
+                out[0]
+                    .text
+                    .contains("you are two miles north of the final approach course"),
+                "{}",
+                out[0].text
+            );
+        }
+
+        /// On the final with the runway free: cleared to land with no call, exactly once.
+        #[test]
+        fn ifr_arrival_cleared_unprompted_on_final() {
+            let mut e = tower_only(|_| {});
+            let (mut f, _) = first_call_to_tower(&mut e);
+            no_bounce(&mut e, &mut f);
+            f.heard.clear();
+            on_final(&mut e, &mut f);
+            assert_eq!(
+                e.strip(&cs()).unwrap().phase,
+                FlightPhase::Circuit(CircuitLeg::Final)
+            );
+            assert_eq!(clearances(&f), 1, "{:?}", f.heard);
+            assert_eq!(f.heard.len(), 1, "{:?}", f.heard);
+            assert_eq!(f.heard[0].freq_khz, TWR);
+            assert!(
+                matches!(f.heard[0].message.items.as_slice(),
+                    [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
+                "{:?}",
+                f.heard
+            );
+            assert!(e.strip(&cs()).unwrap().permissions.may_land);
+            for _ in 0..5 {
+                f.step(&mut e, 270.0, 90.0, -500.0, false);
+            }
+            assert_eq!(clearances(&f), 1, "{:?}", f.heard);
+        }
+
+        /// The runway is occupied as the arrival turns final: no "go around" and nothing at
+        /// all while it stays occupied; once it is free, with the arrival still on the final,
+        /// the landing clearance, once.
+        #[test]
+        fn unprompted_clearance_not_repeated_when_runway_busy() {
+            let mut e = tower_only(|_| {});
+            let (mut f, _) = first_call_to_tower(&mut e);
+            no_bounce(&mut e, &mut f);
+            // Another aircraft is cleared for take-off from the holding point.
+            let other = Callsign::new("SPABC");
+            e.register_pilot(PilotProfile {
+                callsign: other.clone(),
+                aircraft_type: "C172".into(),
+            });
+            let mut ground = f.sample(270.0, 0.0, 0.0, true);
+            ground.callsign = other.clone();
+            ground.pos = HOLD_27;
+            ground.alt_ft_msl = 100.0;
+            ground.com1_khz = TWR;
+            let contact = e.on_telemetry(ground.clone());
+            assert_eq!(contact.len(), 1, "{contact:?}");
+            let rb = readback(&contact[0].message.items, "Sierra Papa Alpha Bravo Charlie");
+            assert!(say(&mut e, GND, &rb).is_empty());
+            ground.t = SimTime(ground.t.0 + 2.0);
+            let takeoff = e.on_telemetry(ground.clone());
+            assert!(is_takeoff_clearance(&items(&takeoff)), "{takeoff:?}");
+            // The arrival turns final: nothing while the runway is occupied.
+            f.heard.clear();
+            on_final(&mut e, &mut f);
+            for _ in 0..5 {
+                f.step(&mut e, 270.0, 90.0, -500.0, false);
+            }
+            assert_eq!(
+                e.strip(&cs()).unwrap().phase,
+                FlightPhase::Circuit(CircuitLeg::Final)
+            );
+            assert!(f.heard.is_empty(), "{:?}", f.heard);
+            assert!(!e.strip(&cs()).unwrap().missed_approach);
+            // The departure gets airborne: the runway is free.
+            ground.pos = END_27;
+            ground.alt_ft_msl = 600.0;
+            ground.on_ground = false;
+            ground.gs_kt = 80.0;
+            for _ in 0..3 {
+                ground.t = SimTime(ground.t.0 + 2.0);
+                e.on_telemetry(ground.clone());
+            }
+            assert!(e.strip(&other).unwrap().phase.is_airborne());
+            for _ in 0..5 {
+                f.step(&mut e, 270.0, 90.0, -500.0, false);
+            }
+            assert_eq!(clearances(&f), 1, "{:?}", f.heard);
+            assert_eq!(f.heard.len(), 1, "{:?}", f.heard);
         }
     }
 }

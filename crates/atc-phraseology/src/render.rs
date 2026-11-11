@@ -2,8 +2,8 @@
 //! (the output is fed to a TTS engine).
 
 use crate::types::{
-    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, Lang, Level,
-    ReadbackItem, Side, TaxiTo, Turn, UnableReason, Wind,
+    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Compass8, Courtesy,
+    Lang, Level, ReadbackItem, Side, TaxiTo, Turn, UnableReason, Wind,
 };
 
 const DIGITS: [&str; 10] = [
@@ -445,6 +445,13 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             digits_words(u32::from(*nm), 1),
             if *nm == 1 { "mile" } else { "miles" }
         )),
+        AtcItem::ContinueApproach => out.push("continue approach".into()),
+        AtcItem::OffFinal { nm, side } => out.push(format!(
+            "you are {} {} {} of the final approach course",
+            digits_words(u32::from(*nm), 1),
+            if *nm == 1 { "mile" } else { "miles" },
+            compass_words(*side)
+        )),
         AtcItem::CheckEstablished { kind, runway } => out.push(format!(
             "check established, report established {} runway {}",
             match kind {
@@ -581,6 +588,20 @@ fn metres_words(n: u32) -> String {
         }
     }
     parts.join(" ")
+}
+
+/// A compass point as spoken: "north", "north east".
+fn compass_words(c: Compass8) -> &'static str {
+    match c {
+        Compass8::North => "north",
+        Compass8::NorthEast => "north east",
+        Compass8::East => "east",
+        Compass8::SouthEast => "south east",
+        Compass8::South => "south",
+        Compass8::SouthWest => "south west",
+        Compass8::West => "west",
+        Compass8::NorthWest => "north west",
+    }
 }
 
 #[cfg(test)]

@@ -635,3 +635,28 @@ fn follow_missed_approach_renders_in_polish() {
             .contains("wykonuj opublikowaną procedurę nieudanego podejścia")
     );
 }
+
+#[test]
+fn tower_final_items_pl() {
+    assert_eq!(one(AtcItem::ContinueApproach), "kontynuuj podejście");
+    assert_eq!(
+        one(AtcItem::DistanceToGo(12)),
+        "dwanaście mil do przyziemienia"
+    );
+    assert_eq!(one(AtcItem::DistanceToGo(2)), "dwie mile do przyziemienia");
+    assert_eq!(one(AtcItem::DistanceToGo(1)), "jedna mila do przyziemienia");
+    assert_eq!(
+        one(AtcItem::OffFinal {
+            nm: 2,
+            side: Compass8::North
+        }),
+        "jesteś dwie mile na północ od kursu podejścia końcowego"
+    );
+    assert_eq!(
+        one(AtcItem::OffFinal {
+            nm: 1,
+            side: Compass8::SouthWest
+        }),
+        "jesteś jedną milę na południowy zachód od kursu podejścia końcowego"
+    );
+}

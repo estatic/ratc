@@ -32,7 +32,7 @@ const CONFIRM_SAMPLES: u8 = 3;
 /// Off the circuit, the extended centreline counts as final up to this far out ...
 const FINAL_MAX_M: f64 = 10.0 * 1852.0;
 /// ... and this far to either side of it.
-const FINAL_HALF_WIDTH_M: f64 = 0.5 * 1852.0;
+pub(crate) const FINAL_HALF_WIDTH_M: f64 = 0.5 * 1852.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FlightPhase {
