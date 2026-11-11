@@ -12,17 +12,23 @@ use crate::taxi::TaxiTarget;
 
 /// ICAO type designator prefixes of light propeller aircraft (props stands).
 const PROPS_TYPES: &[&str] = &[
-    "C1", "C2", "PA", "P28", "P32", "SR2", "DA4", "DA2", "BE3", "BE9", "BE7", "M20", "TB1", "TB2",
+    "C1", "C2", "PA", "P28", "P32", "SR2", "DA4", "DA2", "BE3", "BE95", "BE7", "M20", "TB1", "TB2",
     "DR4", "AA5",
 ];
-/// Prefixes of `PROPS_TYPES` that are not light props: Citation jets, the Hercules.
+/// Prefixes of `PROPS_TYPES` that are not light props: Citation jets, the Hercules. (Of the
+/// BE9 family only the piston Travel Air, BE95, is listed: the King Air turboprops BE99,
+/// BE9L, BE9T are not light props.)
 const NOT_PROPS_TYPES: &[&str] = &["C25", "C13"];
+/// Whole types starting with a `PROPS_TYPES` prefix that are not light props: the
+/// Globemaster (a prefix would take the C172 too).
+const NOT_PROPS_EXACT: &[&str] = &["C17"];
 
 /// The stand category an aircraft of ICAO type `aircraft_type` needs.
 pub(crate) fn stand_category(aircraft_type: &str) -> StandCategory {
     let t = aircraft_type.trim().to_ascii_uppercase();
     if PROPS_TYPES.iter().any(|p| t.starts_with(p))
         && !NOT_PROPS_TYPES.iter().any(|p| t.starts_with(p))
+        && !NOT_PROPS_EXACT.contains(&t.as_str())
     {
         StandCategory::Props
     } else {
@@ -94,11 +100,13 @@ mod tests {
     #[test]
     fn light_props_and_others() {
         for t in [
-            "C172", "c152", "PA28", "P28A", "SR22", "DA40", "DA20", "BE36",
+            "C172", "c152", "PA28", "P28A", "SR22", "DA40", "DA20", "BE36", "BE95",
         ] {
             assert_eq!(stand_category(t), StandCategory::Props, "{t}");
         }
-        for t in ["A320", "B738", "E190", "C25A", "C130", ""] {
+        for t in [
+            "A320", "B738", "E190", "C25A", "C130", "C17", "BE99", "BE9L", "",
+        ] {
             assert_eq!(stand_category(t), StandCategory::Jets, "{t}");
         }
     }
