@@ -66,7 +66,8 @@ use atc_navdata::model::{Airport, Destination};
 use atc_navdata::procedures::{AdjacentUnit, PositionDef, Procedures};
 use atc_phraseology::{
     AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
-    PilotIntent, PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_in, render,
+    PilotIntent, PilotMessage, ReadbackItem, Token, UnableReason, Vocabulary, normalize,
+    parse_pilot_in, render,
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
@@ -260,6 +261,17 @@ fn readback_reminder(
     let items = vec![AtcItem::ReadBack(pending.clone())];
     strip.reminded = true;
     Some((role, items))
+}
+
+/// The words of `text` as heard (normalised, folded), without numbers or letters.
+fn spoken_words(text: &str) -> Vec<String> {
+    normalize(text)
+        .into_iter()
+        .filter_map(|t| match t {
+            Token::Word(w) => Some(fold(&w)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Midpoint of the first runway (latitude, longitude).
@@ -999,14 +1011,20 @@ impl AtcEngine {
             items = self.redirect(i, to);
         }
         // Every call gets an answer, except acknowledgements (also repeated readbacks: only
-        // words it was told); a farewell is returned.
+        // words it was told, or the readback the last clearance asked for); a farewell is
+        // returned.
         if items.is_empty()
             && let Some(negative) = self.clearance_not_given(i, &msg)
         {
             items.push(negative);
         }
         if items.is_empty() {
-            let reply = match self.content(i, &msg) {
+            let content = if self.repeated_readback(role, i, &msg) {
+                Content::Acknowledgement
+            } else {
+                self.content(i, &msg)
+            };
+            let reply = match content {
                 // A handed-in flight's first call is understood as its first contact.
                 Content::Message if first_call => {
                     items.extend(self.position(role).map(|p| AtcItem::Station {
@@ -1222,6 +1240,37 @@ impl AtcEngine {
         alone.intent == PilotIntent::Unknown && is_request(&joined.intent)
     }
 
+    /// `msg` (no request) repeats the readback of the last clearance aircraft `i` was asked
+    /// to read back, already complete: read back again by a pilot who did not hear it
+    /// accepted (the acceptance is silence), it is an acknowledgement, however the
+    /// controller's words since ("read back frequency", "say again") or the station it
+    /// names ("Katowice Tower") make it look. A correct readback is one; so is a garbled
+    /// one ("Conta Katowice-Krácow Tower") naming the other station that clearance sent
+    /// the aircraft to.
+    fn repeated_readback(&self, role: Role, i: usize, msg: &PilotMessage) -> bool {
+        let strip = &self.strips[i];
+        let Some(last) = strip.last_readback.as_ref() else {
+            return false;
+        };
+        if is_request(&msg.intent) {
+            return false;
+        }
+        if check_readback(last, &msg.items) == ReadbackResult::Correct {
+            return true;
+        }
+        let own = self.position(role).map(|p| p.callsign.as_str());
+        let Some(sent_to) = strip.issued.iter().rev().find_map(|item| match item {
+            AtcItem::Contact { station, khz } if last.contains(&ReadbackItem::Frequency(*khz)) => {
+                Some(station.as_str())
+            }
+            _ => None,
+        }) else {
+            return false;
+        };
+        let said = spoken_words(&msg.raw);
+        Some(sent_to) != own && spoken_words(sent_to).iter().all(|w| said.contains(w))
+    }
+
     /// The correction when the pilot reads back a take-off or landing clearance aircraft
     /// `i` does not have.
     fn clearance_not_given(&self, i: usize, msg: &PilotMessage) -> Option<AtcItem> {
@@ -1283,15 +1332,7 @@ impl AtcEngine {
     /// and the last transmission to the aircraft are known only here. In Polish a word
     /// repeats a told word in another form ("kołuję" for "kołuj", see [`inflected`]).
     fn content(&self, i: usize, msg: &PilotMessage) -> Content {
-        let words = |text: &str| -> Vec<String> {
-            normalize(text)
-                .into_iter()
-                .filter_map(|t| match t {
-                    Token::Word(w) => Some(fold(&w)),
-                    _ => None,
-                })
-                .collect()
-        };
+        let words = spoken_words;
         let told = self
             .last_told
             .get(&self.strips[i].callsign)

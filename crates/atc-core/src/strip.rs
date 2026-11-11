@@ -150,6 +150,10 @@ pub struct Strip {
     /// Everything said to this aircraft, in order.
     pub issued: Vec<AtcItem>,
     pub pending_readback: Option<Vec<ReadbackItem>>,
+    /// The readback the last clearance requiring one asked for, kept once it is complete: a
+    /// pilot who did not hear it accepted may read it back again.
+    #[serde(default)]
+    pub last_readback: Option<Vec<ReadbackItem>>,
     pub permissions: Permissions,
     pub first_contact_done: HashSet<Role>,
     pub full_stop_requested: bool,
@@ -313,6 +317,7 @@ impl Strip {
             first_contact_done: HashSet::new(),
             full_stop_requested: false,
             pending_items: Vec::new(),
+            last_readback: None,
             handoff_to: None,
             redirected: false,
             runway: runway.to_string(),
@@ -366,6 +371,7 @@ impl Strip {
     /// the session) and the radio failure (read from every sample).
     pub fn end_flight(&mut self) {
         self.pending_readback = None;
+        self.last_readback = None;
         self.pending_items.clear();
         self.readback_requests = 0;
         self.readback_due_s = None;
@@ -423,6 +429,7 @@ impl Strip {
         if required.is_empty() {
             self.readback_complete();
         } else {
+            self.last_readback = Some(required.clone());
             self.pending_readback = Some(required);
         }
     }

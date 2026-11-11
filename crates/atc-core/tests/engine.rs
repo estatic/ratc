@@ -4916,6 +4916,140 @@ mod approach_departure {
         f.heard.clear();
     }
 
+    /// B9 (flight test 2026-11-11): Approach hands the arrival to the destination's Tower,
+    /// "Katowice Tower" 129.255; the pilot's readbacks of the hand-off, as Whisper wrote them.
+    mod readback_after_garble {
+        use super::*;
+
+        const KTW_TWR: u32 = 129255;
+
+        /// [`engine`] with the destination's tower called "Katowice Tower" on 129.255.
+        fn katowice_engine() -> AtcEngine {
+            engine_with_procs(
+                |p| {
+                    for u in p
+                        .adjacent
+                        .iter_mut()
+                        .filter(|u| u.callsign == "Testville Tower")
+                    {
+                        u.callsign = "Katowice Tower".into();
+                        u.khz = KTW_TWR;
+                    }
+                },
+                |_| {},
+            )
+        }
+
+        /// The IFR flight to Testville up to Approach's "contact Katowice Tower 129.255",
+        /// not yet read back.
+        fn handed_to_katowice(e: &mut AtcEngine) {
+            let mut f = departed(e, "Testville", true);
+            let tower = std::mem::take(&mut f.heard);
+            assert!(say(e, TWR, &readback(&tower[0].message.items, CS_ABBR)).is_empty());
+            let out = say(e, APP, AIRBORNE);
+            assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+            let any = |h: &[AtcOutput]| !h.is_empty();
+            f.fly_to(e, ZZ002, CLIMB, &any);
+            assert!(say(e, APP, &format!("proceed direct Testville, {CS_ABBR}")).is_empty());
+            f.heard.clear();
+            f.fly_to(e, TESTVILLE, CLIMB, &any);
+            let descent = format!(
+                "descend to two thousand five hundred feet, QNH one zero one three, {CS_ABBR}"
+            );
+            assert!(say(e, APP, &descent).is_empty());
+            f.heard.clear();
+            let handed = |h: &[AtcOutput]| h.iter().any(|o| contact_of(o).is_some());
+            f.fly_to(e, TESTVILLE, CLIMB, &handed);
+            assert_eq!(
+                f.heard.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Katowice Tower".to_string(), KTW_TWR)],
+                "{:?}",
+                f.heard
+            );
+        }
+
+        /// Every pilot transmission in order; what Approach said to each.
+        fn replay(e: &mut AtcEngine, calls: &[&str]) -> Vec<(String, Vec<AtcItem>)> {
+            calls
+                .iter()
+                .map(|c| {
+                    let c = c.replace("{CS_ABBR}", CS_ABBR);
+                    let out = items(&say(e, APP, &c));
+                    (c, out)
+                })
+                .collect()
+        }
+
+        fn accepted(e: &AtcEngine, log: &[(String, Vec<AtcItem>)]) {
+            assert!(
+                !log.iter().any(|(_, o)| o.contains(&AtcItem::SayAgain)),
+                "{log:#?}"
+            );
+            let cs = Callsign::new("SPTST");
+            assert!(e.strip(&cs).unwrap().pending_readback.is_none(), "{log:#?}");
+            assert_eq!(e.handoff_target(&cs), Some(KTW_TWR), "{log:#?}");
+        }
+
+        #[test]
+        fn clean_readback_after_garbled_ones_is_accepted() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Contact Katowice Tower one two ninea decimal two five five {CS_ABBR}",
+                    "Contact Katowice Tower 129, decimal 255 {CS_ABBR}",
+                    "Conta Katowice-Krácow Tower",
+                    "Contact Katowice Tower 129, decimal two five five, {CS_ABBR}",
+                    "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                ],
+            );
+            accepted(&e, &log);
+        }
+
+        /// The exchange as it went in flight, before "ninea" and "129, decimal 255" were
+        /// read: two readbacks with the frequency not understood are asked for again, the
+        /// fragment then completes the hand-off (asked for often enough), and the clean
+        /// readbacks after it repeat an accepted readback.
+        #[test]
+        fn clean_readback_after_two_wrong_ones_is_accepted() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Contact Katowice Tower one two nina decimal two five five {CS_ABBR}",
+                    "Contact Katowice Tower 129 dot 255 {CS_ABBR}",
+                ],
+            );
+            let asked = vec![AtcItem::ReadBack(vec![ReadbackItem::Frequency(KTW_TWR)])];
+            assert!(log.iter().all(|(_, o)| *o == asked), "{log:#?}");
+            let log = replay(
+                &mut e,
+                &[
+                    "Conta Katowice-Krácow Tower",
+                    "Contact Katowice Tower 129, decimal two five five, {CS_ABBR}",
+                    "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                ],
+            );
+            accepted(&e, &log);
+        }
+
+        #[test]
+        fn clean_readback_after_fragment_alone() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Conta Katowice-Krácow Tower",
+                    "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                ],
+            );
+            accepted(&e, &log);
+        }
+    }
+
     /// Spec 3.6: a second IFR departure of the same aircraft in the same session, after the
     /// first was handed off to the adjacent tower and the aircraft parked at home again, gets
     /// the full Approach service again.
