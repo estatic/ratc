@@ -156,7 +156,7 @@ About 30 NM from EPKT (about 7 min after take-off, before KK602) the flight pass
 
 ## Kraków Approach 121.075: arrival and ILS 27
 
-Before calling, listen to the Katowice ATIS on COM2, 120.230 (in the recording: information Alpha, runway in use two seven). Do not call: the hand-off from the Kraków Approach unit was silent, so you are already identified. Wait. EPKT Approach calls you once, unprompted, with the heading, the altitude and the expected approach, and you read it back:
+While you wait, listen to the Katowice ATIS on COM2, 120.230 (in the recording: information Alpha, runway in use two seven). Do not call: the hand-off from the Kraków Approach unit was silent, so you are already identified. Wait. EPKT Approach calls you once, unprompted, with the heading, the altitude and the expected approach, and you read it back:
 
 | Who | Phrase |
 |---|---|
