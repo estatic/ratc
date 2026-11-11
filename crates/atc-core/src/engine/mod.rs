@@ -789,7 +789,9 @@ impl AtcEngine {
     }
 
     /// Pilot transmission `text` (heard as `msg` in `heard_lang`) of aircraft `i` on
-    /// `freq_khz`, answered by `role` at sim time `t`.
+    /// `freq_khz`, answered by `role` at sim time `t`. A request naming another open
+    /// position of this airport is served here like any other, and the answer says which
+    /// position this is.
     #[allow(clippy::too_many_arguments)]
     fn answer(
         &mut self,
@@ -801,6 +803,34 @@ impl AtcEngine {
         heard_lang: Lang,
         t: SimTime,
     ) -> Vec<AtcOutput> {
+        let named_elsewhere = is_request(&msg.intent) && self.named_position(role, &msg).is_some();
+        let mut items = self.answer_items(role, freq_khz, text, msg, i, heard_lang, t);
+        if named_elsewhere && !items.is_empty() {
+            items.splice(0..0, self.this_is(role));
+        }
+        self.transmit(i, role, items)
+    }
+
+    /// `ThisIs` the position of `role` (empty when it has none).
+    fn this_is(&self, role: Role) -> Option<AtcItem> {
+        self.position(role).map(|p| AtcItem::ThisIs {
+            station: p.callsign.clone(),
+        })
+    }
+
+    /// What `role` answers to the transmission (see [`AtcEngine::answer`]); empty for no
+    /// answer.
+    #[allow(clippy::too_many_arguments)]
+    fn answer_items(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        msg: PilotMessage,
+        i: usize,
+        heard_lang: Lang,
+        t: SimTime,
+    ) -> Vec<AtcItem> {
         self.strips[i].heard += 1;
         let first_call_now = self.strips[i].first_call_due && understood(&msg);
         if understood(&msg) {
@@ -813,15 +843,9 @@ impl AtcEngine {
             }
         }
         if let Some(to) = self.called_elsewhere(role, &msg) {
-            let mut items: Vec<AtcItem> = self
-                .position(role)
-                .map(|p| AtcItem::ThisIs {
-                    station: p.callsign.clone(),
-                })
-                .into_iter()
-                .collect();
+            let mut items: Vec<AtcItem> = self.this_is(role).into_iter().collect();
             items.extend(self.redirect(i, to));
-            return self.transmit(i, role, items);
+            return items;
         }
         if self.starts_new_flight(i, role, &msg) {
             self.strips[i].end_flight();
@@ -836,6 +860,24 @@ impl AtcEngine {
         }
         if mentions_full_stop(text, heard_lang) {
             strip.full_stop_requested = true;
+        }
+        // A request instead of the readback of a bare "contact X" (a redirect, or a
+        // hand-over without a clearance) drops it: the request is served as it is.
+        if strip.handoff_to.is_some()
+            && is_request(&msg.intent)
+            && !strip.pending_items.is_empty()
+            && strip
+                .pending_items
+                .iter()
+                .all(|item| matches!(item, AtcItem::Contact { .. }))
+        {
+            strip.pending_readback = None;
+            strip.pending_items.clear();
+            strip.readback_requests = 0;
+            strip.readback_due_s = None;
+            strip.readback_role = None;
+            strip.reminded = false;
+            strip.handoff_to = None;
         }
         // Calling the station it was sent to completes the handover; calling a station on
         // the pilot's own initiative makes it the owner.
@@ -856,7 +898,7 @@ impl AtcEngine {
         if role == Role::Tower && was_handed_in && self.is_tower_inbound_call(i) {
             let mut items = self.handed_in_ifr_inbound(i);
             self.greet_back(i, role, msg.greeting, &mut items);
-            return self.transmit(i, role, items);
+            return items;
         }
         let strip = &mut self.strips[i];
         // Taxi help replaces an open taxi clearance with the route from where it is now; a
@@ -885,7 +927,7 @@ impl AtcEngine {
                         items = msg.farewell.into_iter().map(AtcItem::Courtesy).collect();
                     }
                     self.greet_back(i, role, msg.greeting, &mut items);
-                    return self.transmit(i, role, items);
+                    return items;
                 }
             } else {
                 strip.readback_requests += 1;
@@ -902,7 +944,7 @@ impl AtcEngine {
                 };
                 let mut items = items;
                 self.greet_back(i, role, msg.greeting, &mut items);
-                return self.transmit(i, role, items);
+                return items;
             }
         }
         // The readback of a VFR entry or exit instruction is not answered.
@@ -924,6 +966,13 @@ impl AtcEngine {
         // A "ready for departure" after Tower already gave the departure is not answered.
         if items.is_empty() && role == Role::Tower && self.repeated_ready(i, &msg.intent) {
             return Vec::new();
+        }
+        // A request this position does not serve, made to another open position: sent there.
+        if items.is_empty()
+            && is_request(&msg.intent)
+            && let Some(to) = self.named_position(role, &msg)
+        {
+            items = self.redirect(i, to);
         }
         // Every call gets an answer, except acknowledgements (also repeated readbacks: only
         // words it was told); a farewell is returned.
@@ -954,7 +1003,7 @@ impl AtcEngine {
             }
         }
         self.greet_back(i, role, msg.greeting, &mut items);
-        self.transmit(i, role, items)
+        items
     }
 
     /// Spec 3.6: a call to `role` that begins a new flight of aircraft `i`, whose last flight
@@ -1683,10 +1732,20 @@ impl AtcEngine {
         amended
     }
 
-    /// A call naming another open position of this airport ("Krakow Approach, ..." on the
-    /// Tower frequency): that position. A readback naming a station carries its frequency and
-    /// is not a call.
+    /// A call without a request naming another open position of this airport ("Krakow
+    /// Approach, ..." on the Tower frequency): that position. A request is served by the
+    /// position it was made to (its role handler sends on what it does not serve).
     fn called_elsewhere(&self, role: Role, msg: &PilotMessage) -> Option<Role> {
+        if is_request(&msg.intent) {
+            return None;
+        }
+        self.named_position(role, msg)
+    }
+
+    /// Another open position of this airport that the transmission names ("Krakow Approach,
+    /// ..." on the Tower frequency). A readback naming a station carries its frequency and
+    /// is not a call.
+    fn named_position(&self, role: Role, msg: &PilotMessage) -> Option<Role> {
         if !msg.station_called || !msg.items.freqs_khz.is_empty() {
             return None;
         }

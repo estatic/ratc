@@ -3776,6 +3776,105 @@ mod delivery {
             .unwrap();
         assert_eq!(requested_runway(&fresh), None);
     }
+
+    /// Plan 14a B1, B2: a request is answered by the position it was made to, whoever it
+    /// named; only a call without a request is sent to the position it named.
+    mod position_routing {
+        use super::*;
+
+        const NOON: f64 = 12.0 * 3600.0;
+        const NIGHT: f64 = 23.0 * 3600.0;
+
+        fn this_is(station: &str) -> AtcItem {
+            AtcItem::ThisIs {
+                station: station.into(),
+            }
+        }
+
+        fn no_contact(items: &[AtcItem]) {
+            assert!(
+                !items.iter().any(|i| matches!(i, AtcItem::Contact { .. })),
+                "{items:?}"
+            );
+        }
+
+        /// B1: "Zeta Ground, ..., request clearance" on the Delivery frequency is cleared by
+        /// Delivery, which says who it is.
+        #[test]
+        fn request_to_wrong_position_is_served_here() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            let out = say(
+                &mut e,
+                DEL,
+                &format!(
+                    "Zeta Ground, {CS}, Cessna one seven two, information Alpha, IFR to \
+                     Testville, request clearance"
+                ),
+            );
+            assert_eq!(out.len(), 1, "{out:?}");
+            assert_eq!(out[0].freq_khz, DEL);
+            let got = items(&out);
+            let code = code_of(&got);
+            let mut want = vec![this_is("Zeta Delivery")];
+            want.extend(clearance(code));
+            assert_eq!(got, want);
+            no_contact(&got);
+        }
+
+        /// A bare call to another open position is still sent there.
+        #[test]
+        fn bare_call_to_other_position_is_still_redirected() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            let out = say(&mut e, DEL, &format!("Zeta Ground, {CS}"));
+            assert_eq!(
+                items(&out),
+                vec![
+                    this_is("Zeta Delivery"),
+                    AtcItem::Contact {
+                        station: "Zeta Ground".into(),
+                        khz: GND,
+                    },
+                ]
+            );
+        }
+
+        /// B2: a request after a redirect, without the frequency read back, is answered as a
+        /// request; the redirect is dropped.
+        #[test]
+        fn request_after_redirect_is_answered() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            say(&mut e, DEL, &format!("Zeta Ground, {CS}"));
+            let out = say(&mut e, DEL, REQUEST);
+            let got = items(&out);
+            let code = code_of(&got);
+            assert_eq!(got, clearance(code));
+            let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+            assert_eq!(strip.handoff_to, None);
+        }
+
+        /// Review Focus 2: with Delivery closed, Ground clears a request naming Delivery or
+        /// Ground alike, and never sends it to Delivery.
+        #[test]
+        fn closed_delivery_no_redirect_loop() {
+            for called in ["Zeta Delivery", "Zeta Ground"] {
+                let mut e = engine();
+                parked(&mut e, Some(NIGHT), Some(SUMMER));
+                let out = say(
+                    &mut e,
+                    GND,
+                    &format!("{called}, {CS}, IFR to Testville, request clearance"),
+                );
+                assert_eq!(out[0].freq_khz, GND, "{called}");
+                let got = items(&out);
+                let code = code_of(&got);
+                assert_eq!(got, clearance(code), "{called}");
+                no_contact(&got);
+            }
+        }
+    }
 }
 
 /// Taxis out and holds short; Ground hands the aircraft to Tower (readback given on Ground).
