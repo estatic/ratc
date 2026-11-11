@@ -248,6 +248,7 @@ impl EnrouteUnit {
                 cleared_ft: None,
                 rules: None,
                 callsign_misses: 0,
+                radar_contact: false,
             })
         });
         f.lang = lang;
@@ -449,6 +450,7 @@ mod tests {
             cleared_ft,
             rules: None,
             callsign_misses: 0,
+            radar_contact: false,
         }
     }
 

@@ -277,6 +277,12 @@ pub struct Strip {
     /// unit, or called the unit.
     #[serde(default)]
     pub handoff_acked: bool,
+    /// Radar contact carries over a silent hand-off to the same unit on the same frequency
+    /// (another station's Approach of the same callsign): set on the strip handed off that
+    /// way (exported as [`crate::handover::FlightHandover::radar_contact`]) and on the strip
+    /// taken in that way until Approach has given its arrival instruction unprompted.
+    #[serde(default)]
+    pub radar_contact_kept: bool,
     // Every field above that belongs to one flight is reset by `Strip::end_flight`.
     /// Transmissions taken for this aircraft without its callsign (the one aircraft in the
     /// exchange); from the third one the answer reminds the pilot to use it. Kept for the
@@ -347,6 +353,7 @@ impl Strip {
             handed_in: false,
             tower_inbound: false,
             handoff_acked: false,
+            radar_contact_kept: false,
             callsign_misses: 0,
             heard: 0,
         }
@@ -397,6 +404,7 @@ impl Strip {
         self.first_call_due = false;
         self.tower_inbound = false;
         self.handoff_acked = false;
+        self.radar_contact_kept = false;
     }
 
     /// Records a clearance just issued and the readback it requires. A clearance

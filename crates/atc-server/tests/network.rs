@@ -346,6 +346,7 @@ fn ifr_to_testville(c: &Callsign) -> FlightHandover {
         cleared_ft: Some(2000),
         rules: Some(FlightRules::Ifr),
         callsign_misses: 0,
+        radar_contact: false,
     }
 }
 
@@ -582,24 +583,47 @@ fn handoff_wrong_frequency_readback_keeps_flight() {
     );
 }
 
-/// The destination's Approach on the departure's frequency, under the same callsign: the
-/// hand-off is still said and read back, and the flight moves to the destination station.
+/// The destination's Approach is the same unit on the same frequency (EPKK/EPKT): the
+/// hand-off is silent, the flight moves to the destination station on the sample reaching
+/// the hand-off point, and that station goes on without "identified" or a call.
 #[test]
-fn destination_approach_same_frequency_takes_flight() {
+fn same_frequency_handoff_moves_flight_without_call() {
     let (net, c) = identified_ifr(TESTVILLE_SAME_APP, "ZZZY", 10.2);
-    let ((said_by, unit, khz), lat, t) = fly_to_contact(&net, &c, 10.2);
-    assert_eq!(
-        (said_by.as_str(), unit.as_str(), khz),
-        ("Zeta Approach", "Zeta Approach", ZETA_APP)
-    );
-    assert_ne!(khz, TESTVILLE_TWR);
-    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZZ)));
-    let rb = "contact one one niner decimal one, Sierra Papa Tango Sierra Tango";
-    net.on_transmission(&c, ZETA_APP, rb, Lang::En, SimTime(t + 0.5));
+    let mut lat = 10.2;
+    let mut t = 0.0;
+    while net.owner(&c) == Some(Owner::Station(ZZZZ)) {
+        assert!(lat < 10.5, "no hand-off before Testville");
+        t += 2.0;
+        lat += STEP_LAT;
+        let out = net.on_telemetry(sample(&c, t, at(lat), 2000.0, 150.0, ZETA_APP));
+        assert!(out.is_empty(), "{out:?}");
+    }
     assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
     assert!(!registered(&net, ZZZZ, &c));
-    let call = "Zeta Approach, Sierra Papa Tango Sierra Tango, two thousand feet";
-    first_call_to_testville(&net, &c, ZETA_APP, call, lat, t);
+    {
+        let testville = net.stations()[ZZZY].engine.lock().unwrap();
+        let strip = testville.strip(&c).expect("handed over");
+        assert!(strip.identified);
+        assert!(!strip.handed_in);
+    }
+    // The destination station goes on unprompted, once (here: no IFR data at ZZZY), with
+    // no "identified" and no contact.
+    let mut said = Vec::new();
+    for k in 1..=3 {
+        let t = t + 2.0 * f64::from(k);
+        let lat = lat + STEP_LAT * f64::from(k);
+        said.extend(net.on_telemetry(sample(&c, t, at(lat), 2000.0, 150.0, ZETA_APP)));
+    }
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said.iter().all(
+            |o| o.station == "Zeta Approach" && !o.message.items.contains(&AtcItem::Identified)
+        ),
+        "{said:?}"
+    );
+    assert_eq!(contact_in(&said), None, "{said:?}");
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
+    assert!(!registered(&net, ZZZZ, &c));
 }
 
 /// The destination's Approach on its own frequency: contact it there.

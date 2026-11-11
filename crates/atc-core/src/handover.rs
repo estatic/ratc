@@ -22,4 +22,8 @@ pub struct FlightHandover {
     /// Transmissions without a callsign so far ([`crate::strip::Strip::callsign_misses`]).
     #[serde(default)]
     pub callsign_misses: u32,
+    /// Handed over silently by the same unit on the same frequency: already identified, no
+    /// first call expected.
+    #[serde(default)]
+    pub radar_contact: bool,
 }

@@ -5732,6 +5732,7 @@ mod approach_arrival {
             cleared_ft: Some(cleared_ft).filter(|&ft| ft > 0),
             rules: Some(atc_phraseology::FlightRules::Ifr),
             callsign_misses: 0,
+            radar_contact: false,
         });
     }
 
@@ -7649,6 +7650,7 @@ mod handover {
             squawk: Some(4601),
             rules: Some(FlightRules::Ifr),
             callsign_misses: 0,
+            radar_contact: false,
         }
     }
 
@@ -8285,6 +8287,165 @@ mod handover {
         f.heard.clear();
         f.fly_to(&mut e, FARLAND, CLIMB, &never);
         assert!(f.heard.is_empty(), "{:?}", f.heard);
+    }
+
+    /// A hand-off to the destination's Approach of another loaded station that is the same
+    /// unit on the same frequency (EPKK and EPKT Approach: "Kraków Approach" on 121.075).
+    mod same_frequency_handoff {
+        use atc_navdata::procedures::AdjacentUnit;
+
+        use super::*;
+
+        /// The destination ZZZY's Approach, another station's position.
+        fn testville_approach(callsign: &str, khz: u32) -> AdjacentUnit {
+            AdjacentUnit {
+                callsign: callsign.into(),
+                khz,
+                kind: AdjacentKind::Approach,
+                airport: Some("ZZZY".into()),
+                min_level_ft: None,
+            }
+        }
+
+        /// An IFR flight bound for ZZZY handed in to ZZZZ's Approach 27 NM south of
+        /// Testville, identified on its first call; then one more sample (the hand-off point
+        /// is reached): what Approach said on it.
+        fn identified_then_sample(e: &mut AtcEngine) -> Vec<AtcOutput> {
+            e.import_flight(handover(ifr_plan("ZZZY", "Testville", 3000)));
+            let start = destination(HOME, 0.0, 3.0 * M_PER_NM);
+            let mut f = airborne(e, start, 3000.0, 0.0);
+            let out = say(
+                e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, three thousand feet",
+            );
+            assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+            f.step(e, 0.0, 150.0, 0.0, false);
+            f.heard
+        }
+
+        #[test]
+        fn same_unit_handoff_is_silent() {
+            let mut e = engine();
+            e.set_station_units(vec![testville_approach("Zeta Approach", APP)]);
+            let heard = identified_then_sample(&mut e);
+            assert!(heard.is_empty(), "{heard:?}");
+            assert_eq!(e.handoff_target(&cs()), Some(APP));
+            assert_eq!(e.handoff_airport(&cs()), Some("ZZZY".into()));
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.radar_contact_kept);
+            assert!(s.pending_readback.is_none());
+            let h = e.export_flight(&cs()).expect("exported");
+            assert!(h.radar_contact);
+        }
+
+        #[test]
+        fn different_unit_handoff_still_spoken() {
+            let mut e = engine();
+            e.set_station_units(vec![testville_approach("Testville Approach", 120400)]);
+            let heard = identified_then_sample(&mut e);
+            assert_eq!(
+                heard.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Testville Approach".to_string(), 120400)],
+                "{heard:?}"
+            );
+            assert_eq!(e.handoff_target(&cs()), None);
+            assert!(!e.strip(&cs()).unwrap().radar_contact_kept);
+            assert!(!e.export_flight(&cs()).unwrap().radar_contact);
+        }
+
+        /// The same unit but another callsign on the frequency: still spoken.
+        #[test]
+        fn same_frequency_other_callsign_still_spoken() {
+            let mut e = engine();
+            e.set_station_units(vec![testville_approach("Testville Approach", APP)]);
+            let heard = identified_then_sample(&mut e);
+            assert_eq!(
+                heard.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Testville Approach".to_string(), APP)],
+                "{heard:?}"
+            );
+        }
+
+        /// SPTST bound for ZZZZ handed in (`radar_contact` as given) to `e`, 12 NM west at
+        /// 5000 ft on Approach: the first sample's outputs.
+        fn imported_first_sample(e: &mut AtcEngine, radar_contact: bool) -> Vec<AtcOutput> {
+            let mut h = handover(ifr_plan("ZZZZ", "Zeta", 5000));
+            h.radar_contact = radar_contact;
+            e.import_flight(h);
+            let mut f = Flight {
+                t: 0.0,
+                pos: LatLon {
+                    lat: 10.0,
+                    lon: 9.8,
+                },
+                alt: 5000.0,
+                com1: APP,
+                rolling: false,
+                xpdr: Some(4601),
+                heard: Vec::new(),
+            };
+            f.step(e, 90.0, 150.0, 0.0, false);
+            f.heard
+        }
+
+        #[test]
+        fn imported_with_radar_contact_continues_unprompted() {
+            // What the handed-in first call gets today, for comparison.
+            let mut called = engine();
+            assert!(imported_first_sample(&mut called, false).is_empty());
+            let answer = items(&say(
+                &mut called,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet",
+            ));
+            assert_eq!(answer.first(), Some(&AtcItem::Identified), "{answer:?}");
+
+            let mut e = engine();
+            let heard = imported_first_sample(&mut e, true);
+            assert_eq!(items(&heard), answer[1..].to_vec(), "{heard:?}");
+            assert_eq!(heard[0].station, "Zeta Approach");
+            assert_eq!(heard[0].freq_khz, APP);
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.identified);
+            assert!(!s.handed_in);
+            assert!(!s.first_call_due);
+            assert!(!s.radar_contact_kept);
+            assert!(s.plan.as_ref().unwrap().approach.is_some());
+            assert!(s.pending_readback.is_some());
+            // Read back, then a call: not identified again.
+            let rb = format!(
+                "right heading one zero zero, maintain five thousand feet, QNH one zero one \
+                 three, expect ILS runway two seven, {CS_ABBR}"
+            );
+            let out = say(&mut e, APP, &rb);
+            assert!(out.is_empty(), "{rb}: {out:?}");
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            assert!(!items(&out).contains(&AtcItem::SayAgain), "{out:?}");
+        }
+
+        /// Handed in silently, the flight's first call (before any sample) is no "identified".
+        #[test]
+        fn imported_with_radar_contact_call_is_not_identified() {
+            let mut e = engine();
+            let mut h = handover(ifr_plan("ZZZF", "Farland", 10000));
+            h.radar_contact = true;
+            e.import_flight(h);
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, flight level one zero zero",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.identified);
+            assert_eq!(s.owner, Role::Approach);
+        }
     }
 }
 

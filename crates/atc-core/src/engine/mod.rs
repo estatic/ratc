@@ -377,6 +377,7 @@ impl AtcEngine {
             }),
             squawk: strip.squawk,
             callsign_misses: strip.callsign_misses,
+            radar_contact: strip.radar_contact_kept,
             plan,
         };
         self.remove_pilot(cs);
@@ -387,7 +388,9 @@ impl AtcEngine {
     /// strip of the same callsign) with its plan (without the departure airport's SID,
     /// runway and direct), cleared level and transponder code; its first call is answered as
     /// a flight handed over ([`Strip::handed_in`]). The owner is set to Approach (IFR) or
-    /// Tower and moves to the position it first calls.
+    /// Tower and moves to the position it first calls. An IFR flight handed over silently
+    /// ([`FlightHandover::radar_contact`]) is identified already and expects no first call:
+    /// Approach goes on with its next instruction unprompted.
     pub fn import_flight(&mut self, h: FlightHandover) {
         self.remove_pilot(&h.callsign);
         self.register_pilot(PilotProfile {
@@ -412,8 +415,16 @@ impl AtcEngine {
         strip.plan = plan;
         strip.squawk = h.squawk;
         strip.callsign_misses = h.callsign_misses;
-        strip.handed_in = true;
-        strip.first_call_due = true;
+        if h.radar_contact && ifr {
+            // Handed over silently by the same unit on the same frequency: identified
+            // already, no first call; Approach goes on unprompted
+            // ([`Strip::radar_contact_kept`]).
+            strip.identified = true;
+            strip.radar_contact_kept = true;
+        } else {
+            strip.handed_in = true;
+            strip.first_call_due = true;
+        }
     }
 
     /// The frequency (kHz) of the adjacent unit flight `cs` was handed off to, once the
