@@ -5526,16 +5526,18 @@ mod approach_departure {
             "Sierra Papa Oscar Tango Hotel, request taxi to stand golf alpha two",
         );
         assert!(taxi_target_of(&e, "SPOTH").is_some());
-        let out = items(&say(&mut e, GND, &format!("{CS}, any stand")));
+        let out = say(&mut e, GND, &format!("{CS}, any stand"));
+        assert_eq!(
+            items(&out),
+            vec![
+                AtcItem::Unable(atc_phraseology::UnableReason::NoFreeStand),
+                AtcItem::SayStand
+            ]
+        );
+        let text = &out[0].text;
         assert!(
-            matches!(
-                &out[..],
-                [
-                    AtcItem::Unable(atc_phraseology::UnableReason::UnknownStand { .. }),
-                    AtcItem::SayStand
-                ]
-            ),
-            "{out:?}"
+            text.contains("unable, no stand available, say stand"),
+            "{text}"
         );
         assert_eq!(taxi_target_of(&e, "SPTST"), None);
     }

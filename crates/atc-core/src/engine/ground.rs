@@ -236,9 +236,7 @@ impl AtcEngine {
         };
         let Some(k) = self.pick_stand(i) else {
             return vec![
-                AtcItem::Unable(UnableReason::UnknownStand {
-                    stand: "any".into(),
-                }),
+                AtcItem::Unable(UnableReason::NoFreeStand),
                 AtcItem::SayStand,
             ];
         };

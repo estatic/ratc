@@ -293,6 +293,10 @@ fn unable_pl() {
         })),
         "nie mogę, nieznane stanowisko trzy pięć"
     );
+    assert_eq!(
+        one(AtcItem::Unable(UnableReason::NoFreeStand)),
+        "nie mogę, brak wolnego stanowiska"
+    );
 }
 
 /// Stand names: letter runs of four letters or more are spoken as words, shorter ones and

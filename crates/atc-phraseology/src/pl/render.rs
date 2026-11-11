@@ -257,6 +257,7 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
                 }
                 UnableReason::UnknownDestination => "powtórz miejsce przeznaczenia".into(),
                 UnableReason::NoIfrData => "brak procedur IFR, tylko VFR".into(),
+                UnableReason::NoFreeStand => "brak wolnego stanowiska".into(),
                 UnableReason::Closed => "stanowisko zamknięte".into(),
                 UnableReason::ApproachNotAvailable => "podejście niedostępne".into(),
                 UnableReason::SouthernEntry => {

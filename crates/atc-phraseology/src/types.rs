@@ -324,6 +324,8 @@ pub enum UnableReason {
     NoRoute,
     /// The requested stand is not in the airport data.
     UnknownStand { stand: String },
+    /// "Any stand" asked and no suitable stand is free.
+    NoFreeStand,
     /// The destination of a clearance request is unknown or was not understood.
     UnknownDestination,
     /// No IFR procedure data for this airport: VFR only.

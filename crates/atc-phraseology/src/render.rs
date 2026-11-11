@@ -332,6 +332,7 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
                 }
                 UnableReason::UnknownDestination => "say again destination".into(),
                 UnableReason::NoIfrData => "IFR not available, VFR only".into(),
+                UnableReason::NoFreeStand => "no stand available".into(),
                 UnableReason::Closed => "station closed".into(),
                 UnableReason::ApproachNotAvailable => "approach not available".into(),
                 UnableReason::SouthernEntry => {

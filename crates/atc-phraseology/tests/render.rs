@@ -429,6 +429,10 @@ fn typed_items_render_as_before() {
             "unable, stand five Alpha unknown",
         ),
         (
+            AtcItem::Unable(UnableReason::NoFreeStand),
+            "unable, no stand available",
+        ),
+        (
             AtcItem::Taxi {
                 to: TaxiTo::HoldingPoint {
                     runway: "25".into(),
