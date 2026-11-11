@@ -740,6 +740,13 @@ impl AtcEngine {
             .filter(|(r, _, ft)| *r == role && (t.0 - ft).abs() <= FRAGMENT_S)
             .map(|(_, prev, _)| format!("{prev}, {text}"));
         let alone = self.hear(text, lang);
+        // A callsign naming no aircraft, one letter or digit off the only one working here.
+        let near = alone
+            .0
+            .callsign
+            .as_deref()
+            .filter(|_| alone.1.is_none())
+            .and_then(|h| self.near_aircraft(role, h));
         if alone.0.intent == PilotIntent::SayAgain {
             if let Some(i) = alone.1 {
                 self.understood_in(i, alone.2);
@@ -755,6 +762,9 @@ impl AtcEngine {
             ((msg, Some(i), l), _) => (text.to_string(), msg, i, l),
             (_, Some(((jmsg, Some(ji), jl), j))) => (j, jmsg, ji, jl),
             _ => {
+                if let Some(i) = near {
+                    return self.taken_for(role, freq_khz, text, lang, i, t);
+                }
                 if let Some(i) = self.only_addressed(role) {
                     return self.inferred(role, freq_khz, text, lang, i, t);
                 }
@@ -766,10 +776,9 @@ impl AtcEngine {
     }
 
     /// A transmission naming no aircraft, taken for aircraft `i`, the one in the exchange
-    /// ([`AtcEngine::only_addressed`]); counted on its strip. It is answered as if it named
-    /// it: what would go unanswered (a correct readback, an acknowledgement) gets
-    /// "<callsign>, roger", so the pilot hears who it was taken for, and from the third such
-    /// transmission the answer ends with "use your callsign in every transmission".
+    /// ([`AtcEngine::only_addressed`]); counted on its strip. It is answered as
+    /// [`AtcEngine::taken_for`], and from the third such transmission the answer ends with
+    /// "use your callsign in every transmission".
     fn inferred(
         &mut self,
         role: Role,
@@ -779,16 +788,33 @@ impl AtcEngine {
         i: usize,
         t: SimTime,
     ) -> Vec<AtcOutput> {
-        let (msg, _, heard_lang) = self.hear_as(text, lang, Some(i));
         self.strips[i].callsign_misses += 1;
+        let mut out = self.taken_for(role, freq_khz, text, lang, i, t);
+        if self.strips[i].callsign_misses >= CALLSIGN_REMINDER_AT {
+            self.remind_callsign(i, role, &mut out);
+        }
+        out
+    }
+
+    /// A transmission naming no aircraft (or one letter off it, [`AtcEngine::near_aircraft`])
+    /// taken for aircraft `i`, answered as if it named it: what would go unanswered (a
+    /// correct readback, an acknowledgement) gets "<callsign>, roger", so the pilot hears
+    /// who it was taken for.
+    fn taken_for(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        lang: Lang,
+        i: usize,
+        t: SimTime,
+    ) -> Vec<AtcOutput> {
+        let (msg, _, heard_lang) = self.hear_as(text, lang, Some(i));
         let mut out = self.answer(role, freq_khz, text, msg, i, heard_lang, t);
         // Approach does not talk to an aircraft with a radio failure.
         let silenced = role == Role::Approach && self.strips[i].radio_failure;
         if out.is_empty() && !silenced {
             out = self.transmit(i, role, vec![AtcItem::Roger]);
-        }
-        if self.strips[i].callsign_misses >= CALLSIGN_REMINDER_AT {
-            self.remind_callsign(i, role, &mut out);
         }
         out
     }
@@ -1127,6 +1153,21 @@ impl AtcEngine {
         });
         let only = on_freq.next().filter(|_| on_freq.next().is_none())?;
         (self.last_addressed.get(&role) == Some(&self.strips[only].callsign)).then_some(only)
+    }
+
+    /// The only aircraft `role` works on its frequency (owned, with surveillance) whose
+    /// callsign is one letter or digit off the heard callsign `heard` ([`near_callsign`]).
+    /// Unlike [`AtcEngine::only_addressed`] it need not be the one `role` last spoke to:
+    /// the transmission names it, nearly. `None`: no such aircraft, or more than one.
+    fn near_aircraft(&self, role: Role, heard: &str) -> Option<usize> {
+        let mut hits = (0..self.strips.len()).filter(|&k| {
+            let s = &self.strips[k];
+            s.owner == role
+                && self.tracks.contains_key(&s.callsign)
+                && near_callsign(heard, &s.callsign.0)
+        });
+        let first = hits.next()?;
+        hits.next().is_none().then_some(first)
     }
 
     /// A greeting is returned once per station, in front of the reply.
@@ -2051,6 +2092,18 @@ fn letters_lost(full: &str, heard: &str) -> bool {
     }
     let mut rest = f.iter();
     h.iter().all(|c| rest.any(|x| x == c))
+}
+
+/// `heard` differs from the callsign `known` by exactly one letter or digit (a
+/// substitution), in full or abbreviated form ("NSB" for N172SP, abbreviated "NSP").
+fn near_callsign(heard: &str, known: &str) -> bool {
+    let heard = Callsign::new(heard).0;
+    let known = Callsign::new(known);
+    let one_off = |k: &str| {
+        heard.chars().count() == k.chars().count()
+            && heard.chars().zip(k.chars()).filter(|(a, b)| a != b).count() == 1
+    };
+    one_off(&known.0) || one_off(&known.abbreviated())
 }
 
 /// "full stop" anywhere in the transmission (also inside a position report), heard in

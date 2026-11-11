@@ -9114,3 +9114,90 @@ fn dropped_reminder_rearms_once() {
     assert!(abc_at(&mut e, due + 25.0, 2.0).is_empty());
     assert!(abc_at(&mut e, due + 40.0, 6.0).is_empty());
 }
+
+/// B13: a callsign one letter or digit off the only aircraft working the frequency is that
+/// aircraft. (Ground stands in for Approach: the Approach fixtures fly SPTST only; the
+/// frequency scoping is the same for every position.)
+mod near_callsign {
+    use super::*;
+
+    const N172SP: &str = "November one seven two Sierra Papa";
+    const ACK: &str = "using my callsign in every transmission November Sierra Bravo";
+
+    fn is_say_again_callsign(i: &AtcItem) -> bool {
+        matches!(i, AtcItem::SayAgainCallsign { .. })
+    }
+
+    /// N172SP cleared to taxi, then Ground answers SPTST (registered, not flying, so not
+    /// working the frequency): Ground last spoke to another station, as in flight, so a
+    /// call without any callsign is not taken for N172SP.
+    fn n172sp_not_last_addressed(e: &mut AtcEngine) {
+        taxi_cleared_as(e, "N172SP", N172SP);
+        let other = say(
+            e,
+            GROUND,
+            &format!("Krakow Ground, {CS}, information Alpha, request taxi"),
+        );
+        assert_eq!(
+            other[0].message.to,
+            Some(Callsign::new("SPTST")),
+            "{other:?}"
+        );
+    }
+
+    /// N172SP (abbreviated "November Sierra Papa") heard as "November Sierra Bravo": taken
+    /// for it, answered to it, not counted as a call without a callsign (no "use your
+    /// callsign").
+    #[test]
+    fn one_letter_off_is_the_only_aircraft() {
+        let mut e = engine();
+        n172sp_not_last_addressed(&mut e);
+        let out = say(&mut e, GROUND, ACK);
+        assert!(!items(&out).iter().any(is_say_again_callsign), "{out:?}");
+        assert!(!items(&out).contains(&AtcItem::UseCallsign), "{out:?}");
+        assert_eq!(out[0].message.to, Some(Callsign::new("N172SP")), "{out:?}");
+        assert_eq!(
+            e.strip(&Callsign::new("N172SP")).unwrap().callsign_misses,
+            0
+        );
+        // Also right after Ground spoke to it: not counted as a call without a callsign.
+        let mut e = engine();
+        taxi_cleared_as(&mut e, "N172SP", N172SP);
+        let out = say(&mut e, GROUND, ACK);
+        assert_eq!(out[0].message.to, Some(Callsign::new("N172SP")), "{out:?}");
+        assert_eq!(
+            e.strip(&Callsign::new("N172SP")).unwrap().callsign_misses,
+            0
+        );
+    }
+
+    /// N172SP and N172SR both working the frequency: "November Sierra Bravo" is one letter
+    /// off both, so it is neither.
+    #[test]
+    fn one_letter_off_with_two_aircraft_is_not_guessed() {
+        let mut e = engine();
+        taxi_cleared_as(&mut e, "N172SR", "November one seven two Sierra Romeo");
+        n172sp_not_last_addressed(&mut e);
+        let out = say(&mut e, GROUND, ACK);
+        assert!(
+            matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+            "{out:?}"
+        );
+    }
+
+    /// "November Charlie Bravo" is two letters off N172SP: not taken.
+    #[test]
+    fn two_letters_off_is_not_taken() {
+        let mut e = engine();
+        n172sp_not_last_addressed(&mut e);
+        let out = say(
+            &mut e,
+            GROUND,
+            "using my callsign in every transmission November Charlie Bravo",
+        );
+        assert!(
+            matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+            "{out:?}"
+        );
+    }
+}
