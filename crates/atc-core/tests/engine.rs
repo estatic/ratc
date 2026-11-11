@@ -6546,6 +6546,84 @@ mod approach_arrival {
         assert_eq!(p.f.heard.len(), n + 2);
     }
 
+    /// B10 (review): the arrival turns onto the final while its transfer to Tower is still
+    /// to be read back: Tower says nothing unprompted then or after the readback (it did
+    /// not turn final under Tower), and its call gets the landing clearance, once.
+    #[test]
+    fn turned_final_before_transfer_read_back_is_cleared_on_call() {
+        let mut e = engine();
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 6.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 2000.0;
+        p.tick(&mut e);
+        p.tick(&mut e);
+        // Transferred to Tower; the frequency is not read back yet.
+        p.reads_back = false;
+        let out = p.call(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Sierra Tango, established ILS runway two seven",
+        );
+        let contact = items(&out);
+        assert_eq!(contact_of(&out[0]), Some(("Zeta Tower".to_string(), TWR)));
+        assert_eq!(p.f.com1, TWR);
+        // Off the final, then back onto it with Tower.
+        let lands = |p: &Pilot| {
+            p.f.heard
+                .iter()
+                .filter(|o| {
+                    o.message
+                        .items
+                        .iter()
+                        .any(|i| matches!(i, AtcItem::ClearedLand { .. }))
+                })
+                .count()
+        };
+        p.f.pos = destination(THR_27, 90.0, 5.0 * M_PER_NM);
+        p.f.pos = destination(p.f.pos, 0.0, M_PER_NM);
+        for _ in 0..3 {
+            p.f.step(&mut e, 270.0, 100.0, 0.0, false);
+        }
+        assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+        p.f.pos = destination(THR_27, 90.0, 5.0 * M_PER_NM);
+        for _ in 0..3 {
+            p.f.step(&mut e, 270.0, 100.0, -500.0, false);
+        }
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.phase, FlightPhase::Circuit(CircuitLeg::Final));
+        assert!(s.pending_readback.is_some());
+        assert_eq!(lands(&p), 0, "{:?}", p.f.heard);
+        // Read back: Tower owns it now, still nothing unprompted; its call is cleared.
+        let rb = ifr_readback(&contact).expect("a frequency readback");
+        assert!(say(&mut e, APP, &rb).is_empty());
+        let s = e.strip(&cs()).unwrap();
+        assert!(s.pending_readback.is_none());
+        assert_eq!(s.owner, Role::Tower);
+        for _ in 0..4 {
+            p.f.step(&mut e, 270.0, 100.0, -500.0, false);
+        }
+        assert_eq!(lands(&p), 0, "{:?}", p.f.heard);
+        let out = p.call(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
+        );
+        assert!(
+            matches!(items(&out).as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
+            "{out:?}"
+        );
+        for _ in 0..4 {
+            p.f.step(&mut e, 270.0, 100.0, -500.0, false);
+        }
+        assert_eq!(lands(&p), 1, "{:?}", p.f.heard);
+    }
+
     /// "Request full procedure": direct to the IAF, the approach clearance there.
     #[test]
     fn full_procedure_from_the_iaf() {
@@ -9007,6 +9085,32 @@ mod handover {
                 "{}",
                 out[0].text
             );
+        }
+
+        /// Never "zero miles from touchdown": past the threshold, or under half a mile before
+        /// it off the final, a call is answered "report final" as before.
+        #[test]
+        fn no_zero_miles_at_or_past_threshold() {
+            let call = "Zeta Tower, Sierra Papa Tango Sierra Tango, final";
+            // Over the runway, 1 NM past the threshold, not on the final before.
+            let mut e = tower_only(|_| {});
+            let past = destination(THR_27, 270.0, M_PER_NM);
+            arrival_at(&mut e, past, 1000.0);
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            let out = say(&mut e, TWR, call);
+            assert_eq!(items(&out), vec![AtcItem::Report(CircuitLeg::Final)]);
+            // 0.3 NM before it, crossing the centreline: not on the final by heading.
+            let mut e = tower_only(|_| {});
+            let (mut f, _) = first_call_to_tower(&mut e);
+            no_bounce(&mut e, &mut f);
+            f.pos = destination(THR_27, 90.0, 0.3 * M_PER_NM);
+            f.alt = 600.0;
+            for _ in 0..3 {
+                f.step(&mut e, 0.0, 90.0, 0.0, false);
+            }
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            let out = say(&mut e, TWR, call);
+            assert_eq!(items(&out), vec![AtcItem::Report(CircuitLeg::Final)]);
         }
 
         /// On the final with the runway free: cleared to land with no call, exactly once.

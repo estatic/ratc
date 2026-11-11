@@ -189,17 +189,21 @@ impl AtcEngine {
         {
             return Vec::new();
         }
-        let strip = &self.strips[i];
-        let tuned = self.position(Role::Tower).is_some_and(|pos| {
-            self.tracks
-                .get(&strip.callsign)
-                .is_some_and(|sv| atc_proto::same_channel(sv.last.com1_khz, pos.khz))
-        });
-        if !tuned || self.wind().is_none() {
+        if !self.on_tower_frequency(i) || self.wind().is_none() {
             return Vec::new();
         }
         let items = self.departure(i);
         self.transmit(i, Role::Tower, items)
+    }
+
+    /// Aircraft `i`'s COM1 (in its latest sample) is on the Tower frequency.
+    fn on_tower_frequency(&self, i: usize) -> bool {
+        let callsign = &self.strips[i].callsign;
+        self.position(Role::Tower).is_some_and(|pos| {
+            self.tracks
+                .get(callsign)
+                .is_some_and(|sv| atc_proto::same_channel(sv.last.com1_khz, pos.khz))
+        })
     }
 
     /// The pilot calls ready after Tower already cleared the aircraft or asked for the
@@ -347,18 +351,26 @@ impl AtcEngine {
     /// An IFR arrival not on the final yet, from its last sample: on the extended centreline
     /// (within the final's half-width) "continue approach, <N> miles from touchdown"; off it
     /// "you are <N> miles <side> of the final approach course", `side` the direction of the
-    /// aircraft from the course. `None` without a sample or runway geometry.
+    /// aircraft from the course. `None` without a sample or runway geometry, past the
+    /// threshold, or under half a mile from it (the caller then asks for "report final").
     fn not_on_final(&self, i: usize) -> Option<Vec<AtcItem>> {
         let strip = &self.strips[i];
         let pos = self.tracks.get(&strip.callsign)?.last.pos;
         let (thr, course) = self.final_geometry(&strip.runway)?;
-        // Across the extended centreline, positive to the right of the landing course.
+        // Along the landing course from the threshold (negative before it) and across the
+        // extended centreline (positive to the right of the course).
         let rel = (bearing_deg(thr, pos) - course).to_radians();
-        let right = distance_m(thr, pos) * rel.sin();
+        let d = distance_m(thr, pos);
+        let (along, right) = (d * rel.cos(), d * rel.sin());
+        let to_go = distance_to_go_nm(pos, thr);
+        // Past the threshold, or less than half a mile out: never "zero miles".
+        if along >= 0.0 || to_go == 0 {
+            return None;
+        }
         if right.abs() < FINAL_HALF_WIDTH_M {
             return Some(vec![
                 AtcItem::ContinueApproach,
-                AtcItem::DistanceToGo(distance_to_go_nm(pos, thr)),
+                AtcItem::DistanceToGo(to_go),
             ]);
         }
         let side = Compass8::from_bearing(course + 90.0_f64.copysign(right));
@@ -389,21 +401,14 @@ impl AtcEngine {
             || strip.permissions.may_land
             || strip.missed_approach
             || strip.handoff_to.is_some()
+            || strip.pending_readback.is_some()
         {
             return Vec::new();
         }
-        let strip = &self.strips[i];
-        let tuned = self.position(Role::Tower).is_some_and(|pos| {
-            self.tracks
-                .get(&strip.callsign)
-                .is_some_and(|sv| atc_proto::same_channel(sv.last.com1_khz, pos.khz))
-        });
-        if !tuned
+        let callsign = &self.strips[i].callsign;
+        if !self.on_tower_frequency(i)
             || self.wind().is_none()
-            || self
-                .runway
-                .can_clear(&strip.callsign, RunwayUse::Land)
-                .is_err()
+            || self.runway.can_clear(callsign, RunwayUse::Land).is_err()
         {
             return Vec::new();
         }
