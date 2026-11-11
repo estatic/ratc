@@ -624,6 +624,16 @@ fn same_frequency_handoff_moves_flight_without_call() {
     assert_eq!(contact_in(&said), None, "{said:?}");
     assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
     assert!(!registered(&net, ZZZZ, &c));
+    // The pilot's next call on the same frequency: neither identified again nor sent on.
+    let call = "Zeta Approach, Sierra Papa Tango Sierra Tango, two thousand feet";
+    let out = net.on_transmission(&c, ZETA_APP, call, Lang::En, SimTime(t + 7.0));
+    assert!(
+        out.iter()
+            .all(|o| !o.message.items.contains(&AtcItem::Identified)),
+        "{out:?}"
+    );
+    assert_eq!(contact_in(&out), None, "{out:?}");
+    assert_eq!(net.owner(&c), Some(Owner::Station(ZZZY)));
 }
 
 /// The destination's Approach on its own frequency: contact it there.

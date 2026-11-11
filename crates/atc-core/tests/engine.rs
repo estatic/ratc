@@ -8429,6 +8429,85 @@ mod handover {
             assert!(!items(&out).contains(&AtcItem::SayAgain), "{out:?}");
         }
 
+        /// Handed in silently, an inbound call with an approach request before any sample
+        /// does not begin a new flight: no "identified", the plan is kept, and the first
+        /// sample still brings the arrival instruction.
+        #[test]
+        fn imported_with_radar_contact_inbound_call_keeps_the_plan() {
+            let mut e = engine();
+            let mut h = handover(ifr_plan("ZZZZ", "Zeta", 5000));
+            h.radar_contact = true;
+            e.import_flight(h);
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, inbound to Zeta, request ILS",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.radar_contact_kept);
+            let plan = s.plan.as_ref().expect("plan kept");
+            assert_eq!(plan.destination, "ZZZZ");
+            assert_eq!(plan.cleared_ft, 5000);
+            let mut f = Flight {
+                t: 10.0,
+                pos: LatLon {
+                    lat: 10.0,
+                    lon: 9.8,
+                },
+                alt: 5000.0,
+                com1: APP,
+                rolling: false,
+                xpdr: Some(4601),
+                heard: Vec::new(),
+            };
+            f.step(&mut e, 90.0, 150.0, 0.0, false);
+            let got = items(&f.heard);
+            assert!(!got.contains(&AtcItem::Identified), "{got:?}");
+            assert!(
+                got.iter()
+                    .any(|i| matches!(i, AtcItem::ExpectApproach { .. })),
+                "{got:?}"
+            );
+        }
+
+        /// Handed in silently and airborne, but Approach has not gone on yet (here: squawking
+        /// 7600, so it issues nothing): an inbound call with an approach request does not
+        /// begin a new flight, so there is no "identified" and the plan is kept.
+        #[test]
+        fn imported_with_radar_contact_airborne_inbound_call_keeps_the_plan() {
+            let mut e = engine();
+            let mut h = handover(ifr_plan("ZZZZ", "Zeta", 5000));
+            h.radar_contact = true;
+            e.import_flight(h);
+            let mut f = Flight {
+                t: 0.0,
+                pos: LatLon {
+                    lat: 10.0,
+                    lon: 9.8,
+                },
+                alt: 5000.0,
+                com1: APP,
+                rolling: false,
+                xpdr: Some(7600),
+                heard: Vec::new(),
+            };
+            f.step(&mut e, 90.0, 150.0, 0.0, false);
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.phase.is_airborne());
+            assert!(s.radar_contact_kept, "{:?}", f.heard);
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, inbound to Zeta, request ILS",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            let s = e.strip(&cs()).unwrap();
+            let plan = s.plan.as_ref().expect("plan kept");
+            assert_eq!(plan.destination, "ZZZZ");
+            assert_eq!(plan.cleared_ft, 5000);
+        }
+
         /// Handed in silently, the flight's first call (before any sample) is no "identified".
         #[test]
         fn imported_with_radar_contact_call_is_not_identified() {

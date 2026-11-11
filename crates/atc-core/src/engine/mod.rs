@@ -1037,8 +1037,9 @@ impl AtcEngine {
     /// handed off.
     fn starts_new_flight(&self, i: usize, role: Role, msg: &PilotMessage) -> bool {
         let strip = &self.strips[i];
-        // A flight handed in from another station carries its plan into its first call.
-        if !strip.phase.is_airborne() || strip.handed_in {
+        // A flight handed in from another station carries its plan into its first call; one
+        // handed in silently in radar contact keeps it until Approach goes on.
+        if !strip.phase.is_airborne() || strip.handed_in || strip.radar_contact_kept {
             return false;
         }
         match (role, &msg.intent) {
