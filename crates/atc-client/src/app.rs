@@ -344,7 +344,9 @@ impl App {
         if let Some(tx) = self.tx.take() {
             self.send(ClientMsg::PttEnd).await;
             let secs = tx.samples as f64 / f64::from(PILOT_RATE);
-            if tx.samples == 0 {
+            if tx.samples == 0 && tx.blocked {
+                self.say("[ptt] off - nothing sent (frequency was busy)");
+            } else if tx.samples == 0 {
                 self.say("[ptt] off - no microphone audio was sent (check input_device)");
             } else {
                 self.say(&format!("[ptt] off - sent {secs:.1} s of audio"));

@@ -455,11 +455,70 @@ impl SimDataSource for XPlaneSource {
     fn cache_inputs(&self) -> Vec<PathBuf> {
         apt_dat_candidates(&self.root)
     }
+
+    fn gps_warnings(&self, icaos: &[String]) -> Vec<String> {
+        let custom = self.root.join("Custom Data");
+        if !custom.join("earth_424.dat").is_file() {
+            return Vec::new();
+        }
+        icaos
+            .iter()
+            .filter(|i| !custom.join("CIFP").join(format!("{i}.dat")).is_file())
+            .map(|i| {
+                format!(
+                    "X-Plane Custom Data replaces the default navigation data and has no \
+                     procedures for {i}: the aircraft GPS will list no departures or arrivals \
+                     there. Move \"Custom Data\" aside or install a navigation database that \
+                     covers {i}."
+                )
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gps_root(tag: &str, earth_424: bool, cifp: &[&str]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("vatc-gps-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Custom Data/CIFP")).unwrap();
+        if earth_424 {
+            std::fs::write(root.join("Custom Data/earth_424.dat"), "").unwrap();
+        }
+        for i in cifp {
+            std::fs::write(root.join(format!("Custom Data/CIFP/{i}.dat")), "").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn custom_data_without_cifp_warns() {
+        let root = gps_root("warn", true, &["EPKT"]);
+        let src = XPlaneSource::new(root.clone());
+        let w = src.gps_warnings(&["EPKK".into(), "EPKT".into()]);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("no procedures for EPKK"), "{w:?}");
+        assert!(w[0].contains("covers EPKK."), "{w:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn no_custom_data_no_warning() {
+        let root = gps_root("none", false, &[]);
+        let src = XPlaneSource::new(root.clone());
+        assert!(src.gps_warnings(&["EPKK".into()]).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_data_with_cifp_no_warning() {
+        let root = gps_root("cifp", true, &["EPKK"]);
+        let src = XPlaneSource::new(root.clone());
+        assert!(src.gps_warnings(&["EPKK".into()]).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     fn extract(text: &str, icao: &str) -> Option<(String, String)> {
         extract_airport(text.as_bytes(), icao).unwrap()

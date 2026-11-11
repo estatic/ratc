@@ -121,6 +121,45 @@ async fn ptt_flow_and_frequency_busy() {
 }
 
 #[tokio::test]
+async fn refused_ptt_says_frequency_busy() {
+    let mut h = start();
+    h.feed(Input::Sim(SimUpdate::Telemetry(frame(118_105))))
+        .await;
+    assert!(matches!(
+        h.next_out().await,
+        Outgoing::Msg(ClientMsg::Telemetry(_))
+    ));
+    h.feed(Input::Server(ServerEvent::Connected)).await;
+    h.feed(Input::Ptt(PttInput::KeyToggle)).await;
+    assert!(matches!(
+        h.next_out().await,
+        Outgoing::Msg(ClientMsg::PttStart { .. })
+    ));
+    h.feed(Input::Server(ServerEvent::Msg(
+        ServerMsg::FrequencyBlocked { freq_khz: 118_105 },
+    )))
+    .await;
+    h.feed(Input::Ptt(PttInput::KeyToggle)).await;
+    assert_eq!(h.next_out().await, Outgoing::Msg(ClientMsg::PttEnd));
+    // a normal press without audio still gets the microphone hint
+    h.feed(Input::Ptt(PttInput::KeyToggle)).await;
+    assert!(matches!(
+        h.next_out().await,
+        Outgoing::Msg(ClientMsg::PttStart { .. })
+    ));
+    h.feed(Input::Ptt(PttInput::KeyToggle)).await;
+    assert_eq!(h.next_out().await, Outgoing::Msg(ClientMsg::PttEnd));
+    h.settle().await;
+    let printed = h.printed.lock().unwrap().clone();
+    let offs: Vec<&String> = printed.iter().filter(|l| l.contains("[ptt] off")).collect();
+    assert_eq!(
+        offs[0], "[ptt] off - nothing sent (frequency was busy)",
+        "{printed:?}"
+    );
+    assert!(offs[1].contains("check input_device"), "{printed:?}");
+}
+
+#[tokio::test]
 async fn text_lines_need_telemetry_and_connection() {
     let mut h = start();
     h.feed(Input::Line("request taxi".into())).await;
