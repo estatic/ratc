@@ -809,7 +809,9 @@ impl AtcEngine {
             && self.called_elsewhere(i, role, &msg).is_none();
         let mut items = self.answer_items(role, freq_khz, text, msg, i, heard_lang, t);
         if named_elsewhere && !items.is_empty() {
-            items.splice(0..0, self.this_is(role));
+            // After a greeting: "good morning, this is Kraków Delivery, cleared ...".
+            let at = usize::from(matches!(items[0], AtcItem::Courtesy(_)));
+            items.splice(at..at, self.this_is(role));
         }
         self.transmit(i, role, items)
     }
@@ -1745,11 +1747,13 @@ impl AtcEngine {
 
     /// A call without a request naming another open position of this airport ("Krakow
     /// Approach, ..." on the Tower frequency), or any call naming the position aircraft `i`
-    /// is being sent to: that position. Another request is served by the position it was
+    /// is being handed over to (not redirected to): that position. Another request is served by the position it was
     /// made to (its role handler sends on what it does not serve).
     fn called_elsewhere(&self, i: usize, role: Role, msg: &PilotMessage) -> Option<Role> {
         let to = self.named_position(role, msg)?;
-        (!is_request(&msg.intent) || self.strips[i].handoff_to == Some(to)).then_some(to)
+        let strip = &self.strips[i];
+        let handed_over_to = strip.handoff_to == Some(to) && !strip.redirected;
+        (!is_request(&msg.intent) || handed_over_to).then_some(to)
     }
 
     /// Another open position of this airport that the transmission names ("Krakow Approach,
@@ -1774,9 +1778,10 @@ impl AtcEngine {
     /// this position serves, made instead of the readback, drops the redirect.
     fn redirect(&mut self, i: usize, to: Role) -> Vec<AtcItem> {
         let items = self.hand_over(i, to);
-        let strip = &mut self.strips[i];
         // After `expect_readback`, which clears it for every new clearance.
-        strip.redirected = strip.handoff_to.is_some();
+        if !items.is_empty() {
+            self.strips[i].redirected = true;
+        }
         items
     }
 

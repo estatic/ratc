@@ -200,7 +200,7 @@ impl AtcEngine {
             PilotIntent::ReportEstablished
                 if self.arrival(i).is_some_and(|p| p.approach_cleared) =>
             {
-                self.redirect(i, Role::Tower)
+                self.hand_over(i, Role::Tower)
             }
             _ => Vec::new(),
         }
@@ -446,7 +446,7 @@ impl AtcEngine {
         if self.is_night() {
             vec![AtcItem::VisualApproachNotAvailable]
         } else {
-            self.redirect(i, Role::Tower)
+            self.hand_over(i, Role::Tower)
         }
     }
 
@@ -578,7 +578,7 @@ impl AtcEngine {
             if self.strips[i].phase == FlightPhase::Circuit(atc_phraseology::CircuitLeg::Final)
                 && inside
             {
-                let items = self.redirect(i, Role::Tower);
+                let items = self.hand_over(i, Role::Tower);
                 return self.transmit(i, Role::Approach, items);
             }
             return Vec::new();

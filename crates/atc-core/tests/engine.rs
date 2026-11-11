@@ -3855,6 +3855,51 @@ mod delivery {
             assert_eq!(strip.handoff_to, None);
         }
 
+        /// A request repeating the call that was redirected, still naming the other position,
+        /// is served here: the redirect is not given again.
+        #[test]
+        fn request_repeating_redirected_call_is_served_here() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            say(&mut e, DEL, &format!("Zeta Ground, {CS}"));
+            let out = say(
+                &mut e,
+                DEL,
+                &format!("Zeta Ground, {CS}, IFR to Testville, request clearance"),
+            );
+            let got = items(&out);
+            let code = code_of(&got);
+            let mut want = vec![this_is("Zeta Delivery")];
+            want.extend(clearance(code));
+            assert_eq!(got, want);
+            assert_eq!(e.strip(&Callsign::new("SPTST")).unwrap().handoff_to, None);
+        }
+
+        /// A greeting comes first, then who this is.
+        #[test]
+        fn greeting_before_this_is() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            let out = say(
+                &mut e,
+                DEL,
+                &format!("Zeta Ground, good morning, {CS}, IFR to Testville, request clearance"),
+            );
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Courtesy(_),
+                        AtcItem::ThisIs { .. },
+                        AtcItem::ClearedTo { .. },
+                        ..
+                    ]
+                ),
+                "{got:?}"
+            );
+        }
+
         /// A genuine hand-over is not a redirect: after Tower sends the airborne departure to
         /// Approach, a request on the Tower frequency still gets the readback asked for, and
         /// the hand-over stays.
@@ -5519,6 +5564,8 @@ mod approach_arrival {
         target: f64,
         /// Turns onto assigned headings.
         obeys_headings: bool,
+        /// Reads back what it is told.
+        reads_back: bool,
         /// Positions of fixes the pilot may be sent direct to.
         fixes: HashMap<String, LatLon>,
     }
@@ -5539,6 +5586,7 @@ mod approach_arrival {
                 to: None,
                 target: alt,
                 obeys_headings: true,
+                reads_back: true,
                 fixes: HashMap::from([("IAFOX".to_string(), IAF)]),
             }
         }
@@ -5575,7 +5623,7 @@ mod approach_arrival {
                     _ => {}
                 }
             }
-            if let Some(rb) = ifr_readback(&o.message.items) {
+            if let Some(rb) = ifr_readback(&o.message.items).filter(|_| self.reads_back) {
                 let out = say(e, o.freq_khz, &rb);
                 assert!(out.is_empty(), "readback {rb:?} answered: {out:?}");
             }
@@ -6169,6 +6217,43 @@ mod approach_arrival {
             "Zeta Approach, Sierra Sierra Tango, missed approach, climbing four thousand feet",
         );
         p
+    }
+
+    /// The automatic transfer to Tower on the final is a hand-over, not a redirect: a request
+    /// to Approach instead of its readback gets the readback asked for, and the flight stays
+    /// handed over to Tower.
+    #[test]
+    fn request_after_final_handoff_keeps_it() {
+        let mut e = engine();
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        p.reads_back = false;
+        let n = p.f.heard.len();
+        p.until(&mut e, 200, |p| p.f.heard.len() > n);
+        assert_eq!(
+            contact_of(&p.f.heard[n]),
+            Some(("Zeta Tower".to_string(), TWR))
+        );
+        assert_eq!(e.strip(&cs()).unwrap().handoff_to, Some(Role::Tower));
+        let out = p.call(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Sierra Tango, request RNAV approach",
+        );
+        assert!(
+            items(&out)
+                .iter()
+                .any(|i| matches!(i, AtcItem::ReadBack(_))),
+            "{out:?}"
+        );
+        assert_eq!(e.strip(&cs()).unwrap().handoff_to, Some(Role::Tower));
     }
 
     /// Vectored, cleared, flown down the final without a report: transferred to Tower
