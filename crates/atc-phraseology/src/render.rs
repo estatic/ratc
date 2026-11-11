@@ -50,6 +50,20 @@ fn render_en(msg: &AtcMessage, first_contact: bool) -> String {
     parts.join(", ")
 }
 
+/// The callsign as said on the radio in `lang`, in full or abbreviated
+/// ("November one seven two Sierra Papa" / "November Sierra Papa").
+pub fn callsign_spoken(cs: &Callsign, full: bool, lang: Lang) -> String {
+    match lang {
+        Lang::En => callsign_words(cs, full),
+        Lang::Pl => crate::pl::render::callsign_words(cs, full),
+    }
+}
+
+/// A stand name as said on the radio ("APRON4 GA" -> "apron four Golf Alpha").
+pub fn stand_spoken(name: &str) -> String {
+    name_words(name)
+}
+
 fn callsign_words(cs: &Callsign, full: bool) -> String {
     let text = if full { cs.0.clone() } else { cs.abbreviated() };
     spell(&text)

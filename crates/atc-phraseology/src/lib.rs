@@ -12,8 +12,8 @@ pub use parse::{
     Place, Vocabulary, parse_pilot, parse_pilot_in, parse_pilot_known, parse_pilot_with,
 };
 pub use render::{
-    altitude_words, digits_words, frequency_decimals, frequency_words, number_words, render,
-    runway_words, spell_char, station_name,
+    altitude_words, callsign_spoken, digits_words, frequency_decimals, frequency_words,
+    number_words, render, runway_words, spell_char, stand_spoken, station_name,
 };
 pub use types::{
     ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules,

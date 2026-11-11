@@ -519,6 +519,20 @@ impl Network {
         }
     }
 
+    /// Phrases the speaker `from` is expected to say on `freq_khz` (its own callsign, the
+    /// stands on a Ground position), from the engine of whoever works the frequency; none
+    /// for an enroute unit.
+    pub fn stt_hints(&self, freq_khz: u32, from: &Callsign) -> Vec<String> {
+        match self.stt_prompt_owner(freq_khz, self.pilot_pos(from)) {
+            Some(Owner::Station(i)) => self.stations[i]
+                .engine
+                .lock()
+                .unwrap()
+                .stt_hints(from, freq_khz),
+            _ => Vec::new(),
+        }
+    }
+
     /// Each station's id and engine snapshot, taken under the ownership lock so that no
     /// flight is half-way between two engines (and the owners -> engine lock order holds).
     pub fn snapshots(&self) -> Vec<(String, EngineSnapshot)> {

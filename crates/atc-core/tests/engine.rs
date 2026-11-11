@@ -9201,3 +9201,33 @@ mod near_callsign {
         );
     }
 }
+
+#[test]
+fn hints_carry_own_callsign() {
+    let e = engine();
+    let hints = e.stt_hints(&Callsign::new("N172SP"), 119_100);
+    assert!(
+        hints.contains(&"November one seven two Sierra Papa".to_string()),
+        "{hints:?}"
+    );
+    assert!(
+        hints.contains(&"November Sierra Papa".to_string()),
+        "{hints:?}"
+    );
+}
+
+#[test]
+fn ground_hints_carry_stands() {
+    let e = engine();
+    let cs = Callsign::new("SPTST");
+    let stand = atc_phraseology::stand_spoken(&epkk().0.stands[0].name);
+    let ground = e.stt_hints(&cs, GROUND);
+    assert!(ground.contains(&stand), "{ground:?}");
+    assert!(
+        ground.len() <= 2 + atc_core::engine::STT_HINT_STANDS,
+        "{ground:?}"
+    );
+    let tower = e.stt_hints(&cs, TOWER);
+    assert!(!tower.contains(&stand), "{tower:?}");
+    assert_eq!(tower.len(), 2, "{tower:?}");
+}

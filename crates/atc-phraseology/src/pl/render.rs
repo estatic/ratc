@@ -26,7 +26,7 @@ pub fn render(msg: &AtcMessage, first_contact: bool) -> String {
     parts.join(", ")
 }
 
-fn callsign_words(cs: &Callsign, full: bool) -> String {
+pub(crate) fn callsign_words(cs: &Callsign, full: bool) -> String {
     let text = if full { cs.0.clone() } else { cs.abbreviated() };
     spell(&text)
 }

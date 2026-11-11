@@ -178,6 +178,24 @@ async fn stt_prompt_carries_last_atc_transmission() {
     assert!(prompts[1].contains("taxi to holding point"), "{prompts:?}");
 }
 
+/// The prompt names the speaker's own callsign (full and abbreviated) and stays short.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prompt_includes_hints_and_stays_short() {
+    let srv = start(vec![transcript("uh", 0.1)], false).await;
+    let mut c = Client::hello(&srv.url, "N172SP").await;
+    c.weather_and_parked(GROUND).await;
+    ptt(&mut c, GROUND).await;
+    c.recv_until(is_transcript).await;
+    let prompts = srv.stt.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("November Sierra Papa"), "{prompts:?}");
+    assert!(
+        prompts[0].contains("November one seven two Sierra Papa"),
+        "{prompts:?}"
+    );
+    assert!(prompts[0].split_whitespace().count() <= 170, "{prompts:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn empty_and_noise_transcripts() {
     let srv = start(

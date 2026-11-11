@@ -43,6 +43,9 @@
 //! the adjacent units say (spec 3.1, `lang_for`).
 
 mod approach;
+/// Stand names offered to speech recognition on a Ground frequency.
+pub const STT_HINT_STANDS: usize = 20;
+
 mod delivery;
 mod follow_me;
 mod ground;
@@ -1425,6 +1428,32 @@ impl AtcEngine {
         } else {
             Content::Acknowledgement
         }
+    }
+
+    /// What the controller expects to hear from `cs` on `freq_khz`, as spoken phrases to
+    /// prime speech recognition: the aircraft's own callsign in full and abbreviated, and on
+    /// a Ground position the airport's stand names (at most [`STT_HINT_STANDS`], nearest
+    /// the aircraft first).
+    pub fn stt_hints(&self, cs: &Callsign, freq_khz: u32) -> Vec<String> {
+        let lang = self.strip(cs).map_or(Lang::En, |s| s.lang);
+        let mut hints = vec![
+            atc_phraseology::callsign_spoken(cs, true, lang),
+            atc_phraseology::callsign_spoken(cs, false, lang),
+        ];
+        hints.dedup();
+        if self.role_at(freq_khz) == Some(Role::Ground) {
+            let mut stands: Vec<&atc_navdata::model::Stand> = self.airport.stands.iter().collect();
+            if let Some(at) = self.tracks.get(cs).map(|t| t.last.pos) {
+                stands.sort_by(|a, b| distance_m(a.pos, at).total_cmp(&distance_m(b.pos, at)));
+            }
+            hints.extend(
+                stands
+                    .iter()
+                    .take(STT_HINT_STANDS)
+                    .map(|st| atc_phraseology::stand_spoken(&st.name)),
+            );
+        }
+        hints
     }
 
     fn strip_index(&self, cs: &Callsign) -> Option<usize> {
