@@ -224,9 +224,10 @@ pub fn normalize(text: &str) -> Vec<Token> {
         }
     }
 
+    let words = fix_whisper_words(s.split_whitespace().collect());
     let mut out = Vec::new();
     let mut run = Run::default();
-    for w in s.split_whitespace() {
+    for w in words.iter().map(String::as_str) {
         if w == "\u{1}" {
             run.flush(&mut out);
             if out.last() != Some(&Token::Break) {
@@ -244,7 +245,68 @@ pub fn normalize(text: &str) -> Vec<Token> {
         }
     }
     run.flush(&mut out);
-    join_downwind(out)
+    join_frequency(join_downwind(out))
+}
+
+/// Word-level repairs of what Whisper wrote for radio speech: "one way two
+/// seven" (runway), "nine-year" / "ninea" (nine), "establish" (established),
+/// "Horshirt" (hold short), "stand nine ride" (right).
+fn fix_whisper_words(words: Vec<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut k = 0;
+    while k < words.len() {
+        let w = words[k];
+        let next_is_number = words
+            .get(k + 2)
+            .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()) || digit_word(n).is_some());
+        match w {
+            "one" if words.get(k + 1) == Some(&"way") && next_is_number => {
+                out.push("runway".into());
+                k += 2;
+                continue;
+            }
+            "nine" if words.get(k + 1) == Some(&"year") => {
+                out.push("nine".into());
+                k += 2;
+                continue;
+            }
+            "ninea" | "nineyear" => out.push("nine".into()),
+            "establish" => out.push("established".into()),
+            "horshirt" => {
+                out.push("hold".into());
+                out.push("short".into());
+            }
+            "ride" if after_stand_number(&out) => out.push("right".into()),
+            _ => out.push(w.to_string()),
+        }
+        k += 1;
+    }
+    out
+}
+
+/// True when the words so far end in a stand number: "stand" then digits.
+fn after_stand_number(words: &[String]) -> bool {
+    let is_digit = |w: &str| w.chars().all(|c| c.is_ascii_digit()) || digit_word(w).is_some();
+    let digits = words.iter().rev().take_while(|w| is_digit(w)).count();
+    digits > 0
+        && words
+            .len()
+            .checked_sub(digits + 1)
+            .is_some_and(|i| words[i] == "stand")
+}
+
+/// "129, decimal 255": the comma Whisper put before "decimal" is not a break.
+fn join_frequency(toks: Vec<Token>) -> Vec<Token> {
+    let mut out: Vec<Token> = Vec::with_capacity(toks.len());
+    for (k, t) in toks.iter().enumerate() {
+        let before_decimal = toks.get(k + 1) == Some(&Token::Word("decimal".into()));
+        let after_mhz = k > 0 && matches!(&toks[k - 1], Token::Number(d) if d.len() == 3);
+        if *t == Token::Break && before_decimal && after_mhz {
+            continue;
+        }
+        out.push(t.clone());
+    }
+    out
 }
 
 /// Whisper writes "number one" as "#1": `#` glued to digits becomes "number".

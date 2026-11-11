@@ -1047,3 +1047,55 @@ fn stand_number_is_not_destination() {
     assert_eq!(m.items.destination.as_deref(), Some("EPKT"));
     assert!(m.items.runways.is_empty() && m.items.altitudes_ft.is_empty());
 }
+
+// Whisper mis-hearings seen in the 2026-11-11 flight test (B13a).
+#[test]
+fn whisper_one_way_is_runway_before_a_number() {
+    let m = with("Sierra Bravo Charlie, cleared ILS approach one way two seven");
+    assert_eq!(m.items.approaches.first().map(|a| a.1.as_str()), Some("27"));
+}
+
+#[test]
+fn whisper_nine_year_and_ninea_are_nine() {
+    for said in [
+        "Sierra Bravo Charlie, turn left heading two nine-year five",
+        "Sierra Bravo Charlie, turn left heading two ninea five",
+    ] {
+        assert_eq!(with(said).items.headings, vec![295], "{said}");
+    }
+}
+
+#[test]
+fn whisper_frequency_with_decimal_joins() {
+    for said in [
+        "Sierra Bravo Charlie, Contact Katowice Tower 129, decimal 255",
+        "Sierra Bravo Charlie, contact Katowice Tower one two ninea decimal two five five",
+        "Sierra Bravo Charlie, contact Katowice Tower one two nine decimal two five five",
+    ] {
+        assert_eq!(with(said).items.freqs_khz, vec![129_255], "{said}");
+    }
+}
+
+#[test]
+fn whisper_establish_is_established() {
+    let a = with("Sierra Bravo Charlie, establish ILS runway two seven");
+    let b = with("Sierra Bravo Charlie, established ILS runway two seven");
+    assert_eq!(a.intent, b.intent);
+    assert_eq!(a.intent, PilotIntent::ReportEstablished);
+}
+
+#[test]
+fn whisper_horshirt_is_hold_short() {
+    let m = with("Sierra Bravo Charlie, Horshirt runway two five");
+    assert_eq!(m.items.hold_short, vec!["25".to_string()]);
+}
+
+#[test]
+fn whisper_stand_ride_is_right() {
+    for said in [
+        "Ground, Sierra Bravo Charlie, request taxi to stand 9-Ride",
+        "Ground, Sierra Bravo Charlie, request taxi to stand nine ride",
+    ] {
+        assert_eq!(heard_stand(said), "stand 9 R", "{said}");
+    }
+}
