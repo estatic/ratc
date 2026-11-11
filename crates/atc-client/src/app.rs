@@ -286,6 +286,10 @@ impl App {
                 }
                 self.com1 = None;
                 self.heard.clear();
+                // A held press ends with the radios: the server ends the transmission.
+                if self.tx.take().is_some() {
+                    self.ptt.reset();
+                }
                 let line = format!("{} lost - radios off until it is back", self.sim.name);
                 self.say(&line);
                 self.send(ClientMsg::SimLost).await;
@@ -556,6 +560,35 @@ mod tests {
         app.sim(SimUpdate::Telemetry(telemetry())).await;
         let last = printed.lock().unwrap().last().cloned().unwrap();
         assert!(last.starts_with("X-Plane connected, "), "{last}");
+    }
+
+    /// A press held when the sim is lost ends here: no microphone audio after `SimLost`,
+    /// and the release sends no `PttEnd` (the server ends the transmission itself).
+    #[tokio::test]
+    async fn lost_sim_ends_a_held_press() {
+        let (mut app, _printed, mut rx) = capture();
+        app.server(ServerEvent::Connected);
+        app.sim(SimUpdate::Telemetry(telemetry())).await;
+        app.ptt_press().await;
+        app.mic(vec![0; 160]).await;
+        app.sim(SimUpdate::Lost).await;
+        app.mic(vec![0; 160]).await;
+        app.ptt_release().await;
+        let mut sent = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            sent.push(m);
+        }
+        let lost = sent
+            .iter()
+            .position(|m| matches!(m, Outgoing::Msg(ClientMsg::SimLost)))
+            .expect("SimLost sent");
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, Outgoing::Msg(ClientMsg::PttStart { .. }))),
+            "{sent:?}"
+        );
+        assert_eq!(lost, sent.len() - 1, "{sent:?}");
+        assert!(app.tx.is_none());
     }
 
     #[test]
