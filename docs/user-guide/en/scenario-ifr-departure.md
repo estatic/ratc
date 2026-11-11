@@ -18,7 +18,13 @@ Menu item 1 → find EPKT → tick the positions ATIS 120.230, Delivery 124.080,
 
 Then remove (or comment out) the `airport = "EPKK"` line in `config/server.toml`. Without it the server loads every station in `data_dir`; the log should start with `stations: EPKK, EPKT`. Any other stations in `data/airports` are loaded too and do not affect this flight. There is no separate station list in the config.
 
-Kraków Approach on 121.075 belongs to both stations. While you fly out of Kraków you talk to the EPKK station's Approach. 30 NM before Katowice it hands you to the EPKT station's Approach: same callsign, same frequency, but the hand-off is still announced and has to be read back.
+Kraków Approach on 121.075 belongs to both stations. While you fly out of Kraków you talk to the EPKK station's Approach. 30 NM before Katowice it hands you to the EPKT station's Approach: same callsign, same frequency, so the hand-off is silent: you hear no "contact" call and change nothing. The EPKT controller simply goes on with you.
+
+## Your callsign
+
+The client takes the callsign from the simulator: the tail number of the loaded aircraft (N172SP, SP-ABC). To fly under another one, set `callsign = "SP-ABC"` in `config/client.toml`; it overrides the tail number. If the aircraft has no tail number and no `callsign` is set, the client says so and does not connect.
+
+The controller says your callsign in full on the first contact and abbreviates it afterwards: the first character and the last two (SP-ABC becomes "Sierra Bravo Charlie", N172SP becomes "November Sierra Papa"). Do the same: say it in full until the controller abbreviates it, then you may too. The tables below use SP-ABC.
 
 ## Preparation
 
@@ -59,6 +65,27 @@ The transition altitude is 6500 ft at both airports. Above it (on a flight level
 | Stand at EPKT | 995 ft (field elevation) | X-Plane apt.dat |
 
 A Cessna 172 will not reach FL100 before the hand-off to Katowice; expect to be somewhere around 4000–5000 ft. That is fine: EPKT Approach assigns the altitude itself.
+
+## Flying it with the G1000
+
+- **FPL.** Press **FPL**. If the destination is empty, press the **FMS** knob to activate the cursor, enter EPKT with the small and large FMS knobs, then **ENT**.
+- **Departure.** **PROC → Select Departure → SUDOL 2J** (runway 25) → **Load**. The runway and the SID must match what Delivery clears you to; for runway 07 it is SUDOL 1F.
+- **After take-off.** Press **NAV** so the autopilot follows the SID. When a controller gives you a heading, switch to **HDG** and fly it; go back to NAV when you are cleared direct or back on the route.
+- **Altitudes.** Set the assigned level in the selected altitude window and climb or descend with **ALT** / **VS** (the altitude table above lists what to expect).
+- **Transition altitude.** At EPKK it is 6500 ft. When you are cleared to a flight level above it, set **STD BARO** (1013); below it, keep the QNH from the controller.
+- **ILS.** Tune the localizer on **NAV1** (IKTO 109.90), switch the **CDI** to **LOC** and arm **APR** when you are cleared for the approach.
+
+## Empty departure list
+
+If **PROC → Select Departure** lists nothing for EPKK (or Select Approach lists nothing for EPKT), the cause is usually the simulator, not this program. A navigation database in X-Plane's `Custom Data` folder (an `earth_424.dat` file) replaces the default data. If it has no procedures for the airport, the G1000 shows none.
+
+The server checks this at start-up and prints a warning for each station concerned:
+
+```
+X-Plane Custom Data replaces the default navigation data and has no procedures for EPKK: the aircraft GPS will list no departures or arrivals there. Move "Custom Data" aside or install a navigation database that covers EPKK.
+```
+
+Move `Custom Data` aside (rename it) and restart X-Plane, or install a database that covers the airport.
 
 ## Delivery 121.980
 
@@ -122,12 +149,10 @@ After take-off fly the SID in NAV mode and keep climbing. Cross KK599 at or abov
 |---|---|
 | You (at 1500 ft) | Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing flight level one zero zero |
 | Approach | Sierra Papa Alpha Bravo Charlie, identified |
-| Approach (30 NM from EPKT, about 7 min after take-off, before KK602) | Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five |
-| You | Approach one two one decimal zero seven five, Sierra Bravo Charlie |
 
 On the first call say the altitude you are actually passing.
 
-The frequency does not change, so leave COM1 alone: this is the hand-off to the EPKT station's Approach. Keep flying the SID and climbing until that controller gives you a route. On this flight you do not get "direct Katowice" or a 20 NM descent from the Kraków Approach: the hand-off comes first.
+About 30 NM from EPKT (about 7 min after take-off, before KK602) the flight passes to the EPKT station's Approach. The frequency does not change and the hand-off is silent: leave COM1 alone and say nothing. Keep flying the SID and climbing until that controller gives you a route. On this flight you do not get "direct Katowice" or a 20 NM descent from the Kraków Approach: the hand-off comes first.
 
 ## Kraków Approach 121.075: arrival and ILS 27
 
@@ -159,6 +184,8 @@ If you are already on the localizer and on the glideslope, Approach may hand you
 
 ## Katowice Tower 129.255: landing
 
+Tower clears an IFR arrival to land on final on its own: you do not need a "final" call. If you call Tower before final, it tells you where you are in the sequence and clears you when you get there.
+
 | Who | Phrase |
 |---|---|
 | You | Katowice Tower, Sierra Papa Alpha Bravo Charlie, established ILS runway two seven |
@@ -185,7 +212,7 @@ Vacate the runway and stop past the holding line.
 
 You can name the stand straight away: "runway vacated, request taxi to stand apron four GA" gets the same clearance without "say stand". Without a stand, Ground sends you to your own stand if it knows one, otherwise it asks "say stand". After landing the taxi clearance always goes to a stand, with no QNH or squawk.
 
-Stand names from the scenery are matched on their letters and digits, so "APRON4 GA" can be said as "apron four GA" or "apron four golf alpha". Several stands share that name; Ground picks the nearest free one. Ground says it as "apron four Golf Alpha".
+Stand names from the scenery are matched on their letters and digits, so "APRON4 GA" can be said as "apron four GA" or "apron four golf alpha". Several stands share that name; Ground picks the nearest free one. Ground says it as "apron four Golf Alpha". If you ask for "any stand" ("any available spot"), Ground assigns a free general-aviation stand, or says "unable, no stand available" when there is none.
 
 That is the end of the flight: transponder to STBY, shut down. In the recording it took about 40 minutes from the clearance request to the stand: take-off in minute 3, landing in minute 34.
 
