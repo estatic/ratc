@@ -22,6 +22,9 @@ pub enum SimUpdate {
     DrawRange {
         metres: f64,
     },
+    /// The sim stopped sending data after it had sent some; the next `Telemetry` means it is
+    /// back.
+    Lost,
 }
 
 /// Which simulator an adapter talks to, for console lines.

@@ -324,6 +324,9 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<SimUpdate>) -> anyhow::R
     let mut buf = [0u8; 2048];
     let mut last_weather: Option<Instant> = None;
     let mut last_aircraft: Option<SimAircraft> = None;
+    // Data seen at least once, and `Lost` already reported for the current silence.
+    let mut had_data = false;
+    let mut lost_sent = false;
     loop {
         let recv = tokio::time::timeout(cfg.silence_timeout, sock.recv_from(&mut buf));
         let n = tokio::select! {
@@ -331,6 +334,12 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<SimUpdate>) -> anyhow::R
             r = recv => match r {
                 Err(_) => {
                     tracing::warn!("no X-Plane data, resubscribing");
+                    if had_data && !lost_sent {
+                        lost_sent = true;
+                        if tx.send(SimUpdate::Lost).await.is_err() {
+                            return Ok(());
+                        }
+                    }
                     resubscribe(&sock, cfg.xplane_addr).await;
                     continue;
                 }
@@ -353,6 +362,8 @@ pub async fn run_xplane(cfg: XpConfig, tx: mpsc::Sender<SimUpdate>) -> anyhow::R
             ALL.get(usize::try_from(i).unwrap_or(usize::MAX))
                 .is_some_and(|a| a.0.is_telemetry())
         });
+        had_data = true;
+        lost_sent = false;
         state.apply(&values);
         if has_telemetry
             && let Some(f) = state.telemetry()
@@ -582,6 +593,64 @@ mod tests {
             0.0, 0.0, 1000.0, 0.0, 0.0,
         ];
         v.iter().enumerate().map(|(i, &x)| (i as i32, x)).collect()
+    }
+
+    /// A reader against a fake X-Plane socket; returns the updates and the reader's address.
+    async fn fake_xplane() -> (UdpSocket, mpsc::Receiver<SimUpdate>, SocketAddr) {
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut cfg = XpConfig::new(peer.local_addr().unwrap());
+        cfg.local_bind = "127.0.0.1:0".parse().unwrap();
+        cfg.silence_timeout = Duration::from_millis(50);
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(run_xplane(cfg, tx));
+        let mut buf = [0u8; 2048];
+        let (_, reader) = peer.recv_from(&mut buf).await.unwrap();
+        (peer, rx, reader)
+    }
+
+    async fn next_update(rx: &mut mpsc::Receiver<SimUpdate>, ms: u64) -> Option<SimUpdate> {
+        tokio::time::timeout(Duration::from_millis(ms), rx.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    #[tokio::test]
+    async fn silence_after_data_reports_lost_once() {
+        let (peer, mut rx, reader) = fake_xplane().await;
+        peer.send_to(&pkt(&full_state()), reader).await.unwrap();
+        let mut got_telemetry = false;
+        let mut lost = 0;
+        while let Some(u) = next_update(&mut rx, 200).await {
+            match u {
+                SimUpdate::Telemetry(_) => got_telemetry = true,
+                SimUpdate::Lost => {
+                    lost += 1;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(got_telemetry);
+        assert_eq!(lost, 1);
+        // Further silence reports nothing more; data again re-arms it.
+        assert_eq!(next_update(&mut rx, 200).await, None);
+        peer.send_to(&pkt(&full_state()), reader).await.unwrap();
+        assert!(matches!(
+            next_update(&mut rx, 200).await,
+            Some(SimUpdate::Telemetry(_))
+        ));
+        let mut lost_again = false;
+        while let Some(u) = next_update(&mut rx, 200).await {
+            lost_again |= u == SimUpdate::Lost;
+        }
+        assert!(lost_again);
+    }
+
+    #[tokio::test]
+    async fn silence_before_any_data_reports_nothing() {
+        let (_peer, mut rx, _reader) = fake_xplane().await;
+        assert_eq!(next_update(&mut rx, 300).await, None);
     }
 
     #[test]

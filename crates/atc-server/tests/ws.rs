@@ -354,6 +354,50 @@ async fn atis_loops_on_atis_freq() {
     )));
 }
 
+/// B4: a lost simulator untunes the client and frees its PTT; the next telemetry tunes it
+/// again and restarts the ATIS.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sim_lost_untunes_and_releases_ptt() {
+    let srv = start(vec![], false).await;
+    let mut a = Client::hello(&srv.url, "SP-ABC").await;
+    let mut b = Client::hello(&srv.url, "SP-XYZ").await;
+    a.weather_and_parked(ATIS).await;
+    a.recv_until(is_audio_end).await;
+    srv.wait_listeners(ATIS, 1).await;
+
+    a.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    b.send(ClientMsg::Telemetry(parked(GROUND))).await;
+    srv.wait_listeners(GROUND, 1).await;
+    b.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    let blocked = b.recv_for(Duration::from_millis(300)).await;
+    assert!(
+        blocked
+            .iter()
+            .any(|m| matches!(m, In::Msg(ServerMsg::FrequencyBlocked { .. }))),
+        "{blocked:?}"
+    );
+    b.send(ClientMsg::PttEnd).await;
+
+    a.send(ClientMsg::SimLost).await;
+    srv.wait_listeners(ATIS, 0).await;
+    b.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    let free = b.recv_for(Duration::from_millis(300)).await;
+    assert!(
+        !free
+            .iter()
+            .any(|m| matches!(m, In::Msg(ServerMsg::FrequencyBlocked { .. }))),
+        "{free:?}"
+    );
+
+    a.send(ClientMsg::Telemetry(parked(ATIS))).await;
+    let again = a.recv_until(is_audio_end).await;
+    assert!(
+        again
+            .iter()
+            .any(|m| matches!(m, In::Msg(ServerMsg::AtcAudioStart { looping: true, .. })))
+    );
+}
+
 /// ATIS on a second radio selected for listening plays while the pilot transmits on Ground.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn atis_on_a_listened_second_radio() {

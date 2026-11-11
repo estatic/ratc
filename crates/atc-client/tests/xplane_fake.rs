@@ -54,7 +54,7 @@ async fn fake_xplane_end_to_end() {
         match timeout(T, rx.recv()).await.unwrap().unwrap() {
             SimUpdate::Telemetry(f) => got_t = Some(f),
             SimUpdate::Weather(w) => got_w = Some(w),
-            SimUpdate::Aircraft(_) | SimUpdate::DrawRange { .. } => {}
+            SimUpdate::Aircraft(_) | SimUpdate::DrawRange { .. } | SimUpdate::Lost => {}
         }
     }
     let f = got_t.unwrap();
