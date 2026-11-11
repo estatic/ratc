@@ -191,6 +191,9 @@ pub struct HeardItems {
     pub approaches: Vec<(ApproachKind, String)>,
     pub destination: Option<String>,
     pub points: Vec<String>,
+    /// "any stand", "any available spot", "any parking": Ground picks a free stand.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any_stand: bool,
 }
 
 impl HeardItems {

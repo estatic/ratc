@@ -1,4 +1,4 @@
-use atc_navdata::model::{EdgeKind, FreqKind, ZoneKind};
+use atc_navdata::model::{EdgeKind, FreqKind, StandCategory, StandKind, ZoneKind};
 use atc_navdata::{NavdataError, parse_apt_dat};
 
 const FIX: &str = include_str!("fixtures/mini.dat");
@@ -87,4 +87,29 @@ fn missing_airport_is_error() {
         parse_apt_dat(FIX, "ZZZZ"),
         Err(NavdataError::AirportNotFound(_))
     ));
+}
+
+/// Row 1300 keeps the stand type (field 4) and the aircraft categories (field 5, `|`-separated;
+/// `all` is no restriction).
+#[test]
+fn stand_row_keeps_type_and_categories() {
+    let text = "I\n1100 Version\n1 1000 0 0 EPKT Test\n\
+        1300 50.47 19.08 270.0 tie_down props APRON4 GA\n\
+        1300 50.47 19.08 270.0 gate heavy|jets 81\n\
+        1300 50.47 19.08 270.0 hangar all H1\n\
+        1300 50.47 19.08 270.0 misc heavy 70 de-ice\n\
+        99\n";
+    let a = parse_apt_dat(text, "EPKT").unwrap();
+    assert_eq!(a.stands[0].name, "APRON4 GA");
+    assert_eq!(a.stands[0].kind, StandKind::TieDown);
+    assert_eq!(a.stands[0].categories, vec![StandCategory::Props]);
+    assert_eq!(a.stands[1].kind, StandKind::Gate);
+    assert_eq!(
+        a.stands[1].categories,
+        vec![StandCategory::Heavy, StandCategory::Jets]
+    );
+    assert_eq!(a.stands[2].kind, StandKind::Hangar);
+    assert!(a.stands[2].categories.is_empty());
+    assert_eq!(a.stands[3].kind, StandKind::Misc);
+    assert_eq!(a.stands[3].name, "70 de-ice");
 }

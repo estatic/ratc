@@ -1126,3 +1126,31 @@ fn gulf_stays_a_word_for_places() {
     );
     assert_eq!(m.items.destination.as_deref(), Some("KGCX"), "{m:?}");
 }
+
+/// B6: "any stand" / "any available spot" / "any parking" asks Ground to pick a free stand.
+#[test]
+fn any_stand_is_heard() {
+    for text in [
+        "Katowice Ground, Sierra Papa Alpha Bravo Charlie, request taxi to any available spot",
+        "Any stand.",
+        "Sierra Bravo Charlie, any stand",
+        "Ground, Sierra Bravo Charlie, request taxi to any parking",
+        "Sierra Bravo Charlie, request any free stand",
+        "Sierra Bravo Charlie, taxi to any available parking spot",
+    ] {
+        let m = en(text);
+        assert!(m.items.any_stand, "{text}: {m:?}");
+        assert_eq!(
+            m.intent,
+            PilotIntent::RequestTaxiToStand { stand: None },
+            "{text}"
+        );
+    }
+    for text in [
+        "Ground, Sierra Bravo Charlie, request taxi to stand five",
+        "Sierra Bravo Charlie, request taxi",
+        "Sierra Bravo Charlie, any traffic in the area",
+    ] {
+        assert!(!en(text).items.any_stand, "{text}");
+    }
+}

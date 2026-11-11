@@ -906,6 +906,8 @@ fn crossing_airport() -> Airport {
                 lon: 19.004,
             },
             heading_deg: 0.0,
+            kind: Default::default(),
+            categories: Vec::new(),
         }],
         ..ap
     }
@@ -4665,6 +4667,8 @@ mod approach_departure {
                         name: (*name).into(),
                         pos: *pos,
                         heading_deg: 0.0,
+                        kind: Default::default(),
+                        categories: Vec::new(),
                     });
                 }
             },
@@ -5352,6 +5356,8 @@ mod approach_departure {
                         name: "Stand 1".into(),
                         pos: FAR_GA,
                         heading_deg: 0.0,
+                        kind: Default::default(),
+                        categories: Vec::new(),
                     },
                 )
             },
@@ -5384,6 +5390,154 @@ mod approach_departure {
         taxiing_in_near_stand_1(&mut e, false);
         let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
         assert_eq!(out, vec![AtcItem::SayStand], "{out:?}");
+    }
+
+    /// `lon_off` degrees east of Stand 1 (0.0009 is about 100 m).
+    fn east_of_stand_1(lon_off: f64) -> LatLon {
+        LatLon {
+            lat: STAND_1.lat,
+            lon: STAND_1.lon + lon_off,
+        }
+    }
+
+    /// A stand of `kind` for `categories` (empty: all) at `pos`.
+    fn typed_stand(
+        name: &str,
+        pos: LatLon,
+        kind: atc_navdata::model::StandKind,
+        categories: Vec<atc_navdata::model::StandCategory>,
+    ) -> Stand {
+        Stand {
+            name: name.into(),
+            pos,
+            heading_deg: 0.0,
+            kind,
+            categories,
+        }
+    }
+
+    /// ZZZZ with, east of Stand 1 (a gate for props): a de-icing stand (nearest), a
+    /// jets-only tie-down, and three props tie-downs GA 1..3 (200, 300, 400 m).
+    fn engine_with_ga_stands(edit: impl FnOnce(&mut Airport)) -> AtcEngine {
+        use atc_navdata::model::{StandCategory as C, StandKind as K};
+        engine_airport(
+            Strictness::Standard,
+            |ap| {
+                ap.stands.extend([
+                    typed_stand("70 de-ice", east_of_stand_1(0.0009), K::Misc, vec![]),
+                    typed_stand("J1", east_of_stand_1(0.0014), K::TieDown, vec![C::Jets]),
+                    typed_stand("GA 1", east_of_stand_1(0.0018), K::TieDown, vec![C::Props]),
+                    typed_stand("GA 2", east_of_stand_1(0.0027), K::TieDown, vec![C::Props]),
+                    typed_stand("GA 3", east_of_stand_1(0.0036), K::TieDown, vec![C::Props]),
+                ]);
+                edit(ap);
+            },
+            |_| {},
+            |_| {},
+        )
+    }
+
+    fn taxi_target_of(e: &AtcEngine, cs: &str) -> Option<atc_core::taxi::TaxiTarget> {
+        e.strip(&Callsign::new(cs)).unwrap().taxi_target.clone()
+    }
+
+    /// B6: a C172 after landing asking for "any available spot" is cleared to the nearest
+    /// free props tie-down: not the nearer gate, the de-icing stand, the jets-only stand, the
+    /// occupied one, nor the one another aircraft was cleared to.
+    #[test]
+    fn any_stand_assigns_free_ga_stand() {
+        let mut e = engine_with_ga_stands(|_| {});
+        // SPOTH stands on GA 1 and is cleared to GA 2.
+        other_aircraft_at(&mut e, east_of_stand_1(0.0018));
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(
+            &mut e,
+            GND,
+            "Sierra Papa Oscar Tango Hotel, request taxi to stand golf alpha two",
+        ));
+        assert!(matches!(out[0], AtcItem::Taxi { .. }), "{out:?}");
+        assert_eq!(
+            taxi_target_of(&e, "SPOTH"),
+            Some(atc_core::taxi::TaxiTarget::Stand {
+                name: "GA 2".into(),
+                at: Some(east_of_stand_1(0.0027))
+            })
+        );
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to any available spot"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "GA 3"),
+            "{out:?}"
+        );
+        assert_eq!(
+            taxi_target_of(&e, "SPTST"),
+            Some(atc_core::taxi::TaxiTarget::Stand {
+                name: "GA 3".into(),
+                at: Some(east_of_stand_1(0.0036))
+            })
+        );
+    }
+
+    /// B6: with every tie-down free, "any stand" is the nearest props tie-down (GA 1), not
+    /// the nearer gate or de-icing stand.
+    #[test]
+    fn any_stand_prefers_the_nearest_tie_down() {
+        let mut e = engine_with_ga_stands(|_| {});
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(&mut e, GND, &format!("{CS}, any stand")));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "GA 1"),
+            "{out:?}"
+        );
+    }
+
+    /// B6: without a GA stand, a gate accepting props is taken.
+    #[test]
+    fn any_stand_falls_back_to_a_gate() {
+        let mut e = engine_with_ga_stands(|ap| ap.stands.retain(|s| !s.name.starts_with("GA")));
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to any parking"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "Stand 1"),
+            "{out:?}"
+        );
+    }
+
+    /// B6: every suitable stand taken (the gate is jets-only, the tie-downs occupied or
+    /// cleared to) -> unable, say stand.
+    #[test]
+    fn any_stand_none_free() {
+        let mut e = engine_with_ga_stands(|ap| {
+            ap.stands[0].categories = vec![atc_navdata::model::StandCategory::Jets];
+            ap.stands.retain(|s| s.name != "GA 3");
+        });
+        other_aircraft_at(&mut e, east_of_stand_1(0.0018));
+        taxiing_in_near_stand_1(&mut e, false);
+        say(
+            &mut e,
+            GND,
+            "Sierra Papa Oscar Tango Hotel, request taxi to stand golf alpha two",
+        );
+        assert!(taxi_target_of(&e, "SPOTH").is_some());
+        let out = items(&say(&mut e, GND, &format!("{CS}, any stand")));
+        assert!(
+            matches!(
+                &out[..],
+                [
+                    AtcItem::Unable(atc_phraseology::UnableReason::UnknownStand { .. }),
+                    AtcItem::SayStand
+                ]
+            ),
+            "{out:?}"
+        );
+        assert_eq!(taxi_target_of(&e, "SPTST"), None);
     }
 
     /// M-4: taxiing in near the home stand with no taxi clearance, "request follow me" gets

@@ -49,6 +49,7 @@ mod ground;
 mod snapshot;
 mod stand;
 mod stand_match;
+mod stand_pick;
 mod tower;
 mod vfr;
 

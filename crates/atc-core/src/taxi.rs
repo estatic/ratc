@@ -557,6 +557,8 @@ mod tests {
             name: name.into(),
             pos,
             heading_deg: 0.0,
+            kind: Default::default(),
+            categories: Vec::new(),
         }
     }
 

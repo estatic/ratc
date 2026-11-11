@@ -128,6 +128,7 @@ pub fn parse_pilot_in(
     let mut scan = Scan::new(&toks, vocab);
     scan.scan_addressee();
     let found = scan.scan_known_callsign(known);
+    scan.scan_any_stand();
     scan.scan_items();
     scan.single_place_destination();
     msg.callsign = found.or_else(|| scan.find_callsign());
@@ -587,6 +588,32 @@ impl<'a> Scan<'a> {
                 self.start = i + 1;
                 return;
             }
+        }
+    }
+
+    /// "any (available | free ...) stand / spot / parking (spot)": sets `any_stand`.
+    fn scan_any_stand(&mut self) {
+        const QUALIFIERS: &[&str] = &["available", "free", "suitable", "open", "vacant"];
+        const PLACES: &[&str] = &["stand", "spot", "parking", "position", "gate", "place"];
+        for i in 0..self.toks.len() {
+            if self.w(i) != Some("any") || self.used[i] {
+                continue;
+            }
+            let mut j = i + 1;
+            while self.w(j).is_some_and(|w| QUALIFIERS.contains(&w)) && j < i + 3 {
+                j += 1;
+            }
+            if !self.w(j).is_some_and(|w| PLACES.contains(&w)) {
+                continue;
+            }
+            j += 1;
+            // "parking spot", "parking position".
+            if self.w(j).is_some_and(|w| PLACES.contains(&w)) {
+                j += 1;
+            }
+            self.items.any_stand = true;
+            self.mark(i, j);
+            return;
         }
     }
 
@@ -1361,6 +1388,9 @@ impl<'a> Scan<'a> {
         }
         if self.any_seq(TAXI_HELP) {
             return PilotIntent::RequestTaxiHelp;
+        }
+        if self.items.any_stand {
+            return PilotIntent::RequestTaxiToStand { stand: None };
         }
         for i in 0..n {
             if !self.w(i).is_some_and(is_request_word) {

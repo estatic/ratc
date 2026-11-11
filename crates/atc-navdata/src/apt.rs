@@ -5,8 +5,8 @@ use std::str::FromStr;
 use atc_geo::LatLon;
 
 use crate::model::{
-    ActiveZone, Airport, EdgeKind, FreqKind, Frequency, Runway, RunwayEnd, Stand, TaxiEdge,
-    TaxiNetwork, TaxiNode, ZoneKind,
+    ActiveZone, Airport, EdgeKind, FreqKind, Frequency, Runway, RunwayEnd, Stand, StandCategory,
+    StandKind, TaxiEdge, TaxiNetwork, TaxiNode, ZoneKind,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -164,6 +164,8 @@ pub fn parse_apt_dat(text: &str, icao: &str) -> Result<Airport, NavdataError> {
                 },
                 heading_deg: field(&tok, 3, "heading", line)?,
                 name: tail(&tok, 6),
+                kind: StandKind::from_apt(tok.get(4).copied().unwrap_or_default()),
+                categories: StandCategory::list_from_apt(tok.get(5).copied().unwrap_or_default()),
             }),
             _ => {}
         }
