@@ -128,7 +128,9 @@ pub fn parse_pilot_in(
     let mut scan = Scan::new(&toks, vocab);
     scan.scan_addressee();
     let found = scan.scan_known_callsign(known);
+    scan.scan_any_stand();
     scan.scan_items();
+    scan.single_place_destination();
     msg.callsign = found.or_else(|| scan.find_callsign());
     msg.intent = scan.intent();
     msg.addressee = scan.addressee;
@@ -330,6 +332,11 @@ fn is_stand_word(w: &str) -> bool {
                     | "my"
                     | "ok"
             ))
+}
+
+/// "apron" as Whisper mishears it ("a prone" is two words: `prone` after `a`).
+fn is_apron_misheard(w: &str) -> bool {
+    matches!(w, "aparon" | "upron" | "aprone" | "apran" | "prone")
 }
 
 /// Any form of "request": "request taxi", "requests taxi", "requesting departure".
@@ -584,6 +591,32 @@ impl<'a> Scan<'a> {
         }
     }
 
+    /// "any (available | free ...) stand / spot / parking (spot)": sets `any_stand`.
+    fn scan_any_stand(&mut self) {
+        const QUALIFIERS: &[&str] = &["available", "free", "suitable", "open", "vacant"];
+        const PLACES: &[&str] = &["stand", "spot", "parking", "position", "gate", "place"];
+        for i in 0..self.toks.len() {
+            if self.w(i) != Some("any") || self.used[i] {
+                continue;
+            }
+            let mut j = i + 1;
+            while self.w(j).is_some_and(|w| QUALIFIERS.contains(&w)) && j < i + 3 {
+                j += 1;
+            }
+            if !self.w(j).is_some_and(|w| PLACES.contains(&w)) {
+                continue;
+            }
+            j += 1;
+            // "parking spot", "parking position".
+            if self.w(j).is_some_and(|w| PLACES.contains(&w)) {
+                j += 1;
+            }
+            self.items.any_stand = true;
+            self.mark(i, j);
+            return;
+        }
+    }
+
     fn scan_items(&mut self) {
         let toks = self.toks;
         for (i, tok) in toks.iter().enumerate() {
@@ -780,6 +813,7 @@ impl<'a> Scan<'a> {
             }
             "direct" | "proceed" => self.direct_at(i),
             "to" | "do" | "for" | "destination" | "into" => self.destination_at(i),
+            "ifr" | "vfr" => self.rules_destination_at(i),
             "ils" | "vor" | "rnav" | "i" | "r" => self.approach_at(i),
             _ => {}
         }
@@ -846,6 +880,51 @@ impl<'a> Scan<'a> {
         }
     }
 
+    /// The destination right after "IFR"/"VFR", where the speech recogniser often turns "to"
+    /// into "2", "two" or "do", or glues it to the name: "IFR 2 Katowice", "IFR Tokatowice".
+    fn rules_destination_at(&mut self, i: usize) {
+        if self.items.destination.is_some() {
+            return;
+        }
+        let mut j = self.skip_break(i + 1);
+        if self.num(j) == Some("2") || matches!(self.w(j), Some("two" | "to" | "do")) {
+            j = self.skip_break(j + 1);
+        }
+        let found = self.icao_at(j).or_else(|| self.place_at(j));
+        if let Some((icao, end)) = found {
+            self.items.destination = Some(icao);
+            self.mark(i + 1, end);
+        }
+    }
+
+    /// A clearance request ("request ... clearance", or "clearance" in an IFR call).
+    fn is_clearance_request(&self) -> bool {
+        self.request_then(4, |k| self.w(k) == Some("clearance"))
+            || ((0..self.toks.len()).any(|i| self.w(i) == Some("clearance")) && self.is_ifr())
+    }
+
+    /// A clearance request that names no destination by a keyword: a single known place said
+    /// anywhere in it ("IFR Katowice, request clearance") is the destination.
+    fn single_place_destination(&mut self) {
+        if self.items.destination.is_some() || !self.is_clearance_request() {
+            return;
+        }
+        let mut found: Vec<(String, usize, usize)> = Vec::new();
+        for i in 0..self.toks.len() {
+            if !self.used[i]
+                && let Some((icao, end)) = self.place_at(i)
+                && !found.iter().any(|(c, ..)| *c == icao)
+            {
+                found.push((icao, i, end));
+            }
+        }
+        if let [(icao, from, end)] = found.as_slice() {
+            self.items.destination = Some(icao.clone());
+            let (from, end) = (*from, *end);
+            self.mark(from, end);
+        }
+    }
+
     /// Four spelled letters ("echo papa kilo tango"), or one word that is the ICAO code of a
     /// known place.
     fn icao_at(&self, j: usize) -> Option<(String, usize)> {
@@ -897,7 +976,12 @@ impl<'a> Scan<'a> {
                 if NOT_PLACES.contains(&last_said.as_str()) {
                     return None;
                 }
-                inflected_place(&last_said, last).then(|| {
+                let glued = last_said
+                    .strip_prefix("to")
+                    .filter(|rest| init.is_empty() && !rest.is_empty());
+                (inflected_place(&last_said, last)
+                    || glued.is_some_and(|r| inflected_place(r, last)))
+                .then(|| {
                     (
                         words.len(),
                         dist(place),
@@ -1233,9 +1317,7 @@ impl<'a> Scan<'a> {
         }) {
             return Some(PilotIntent::ReportEstablished);
         }
-        if self.request_then(4, |k| self.w(k) == Some("clearance"))
-            || (has(&["clearance"]) && self.is_ifr())
-        {
+        if self.is_clearance_request() {
             let level_ft = self.items.altitudes_ft.first().copied().or_else(|| {
                 self.items
                     .flight_levels
@@ -1307,6 +1389,9 @@ impl<'a> Scan<'a> {
         if self.any_seq(TAXI_HELP) {
             return PilotIntent::RequestTaxiHelp;
         }
+        if self.items.any_stand {
+            return PilotIntent::RequestTaxiToStand { stand: None };
+        }
         for i in 0..n {
             if !self.w(i).is_some_and(is_request_word) {
                 continue;
@@ -1322,8 +1407,26 @@ impl<'a> Scan<'a> {
                 let mut parts = vec![keyword.to_string()];
                 // The pilot's callsign (already taken) ends the stand; "left" / "right" /
                 // "centre" right after a number is the stand's letter ("nine right" is 9R).
+                let mut skip = 0;
                 for j in s + 1..n.min(s + 11) {
-                    if self.used.get(j).copied().unwrap_or(false) {
+                    if j < skip {
+                        continue;
+                    }
+                    // "GALPHA" in capitals is read as a registration, its letters taken.
+                    const GALPHA: [char; 6] = ['G', 'A', 'L', 'P', 'H', 'A'];
+                    if parts.len() > 1
+                        && (0..GALPHA.len()).all(|k| {
+                            matches!(self.toks.get(j + k), Some(Token::Letter(c)) if *c == GALPHA[k])
+                        })
+                    {
+                        parts.push("galpha".to_string());
+                        skip = j + GALPHA.len();
+                        continue;
+                    }
+                    // ("for galpha" may have been taken for a destination.)
+                    if self.used.get(j).copied().unwrap_or(false)
+                        && !matches!(&self.toks[j], Token::Word(w) if w == "for")
+                    {
                         break;
                     }
                     let after_number = matches!(self.toks[j - 1], Token::Number(_));
@@ -1333,7 +1436,31 @@ impl<'a> Scan<'a> {
                         Token::Word(w) if after_number && side_letter(w).is_some() => {
                             parts.extend(side_letter(w).map(String::from));
                         }
-                        Token::Word(w) if is_stand_word(w) => parts.push(w.clone()),
+                        Token::Word(w) if is_stand_word(w) || is_apron_misheard(w) => {
+                            parts.push(w.clone());
+                        }
+                        // "apron for Golf Alpha": the 4 of the stand; "galpha": two letters
+                        // run together.
+                        Token::Word(w)
+                            if (w == "for"
+                                && parts
+                                    .last()
+                                    .is_some_and(|p| p == "apron" || is_apron_misheard(p)))
+                                || w == "galpha"
+                                || w == "gulf" =>
+                        {
+                            parts.push(w.clone());
+                        }
+                        // A comma inside the stand name ("Aparon 4, Gulf Alpha").
+                        Token::Break
+                            if parts.len() > 1
+                                && matches!(
+                                    self.toks.get(j + 1),
+                                    Some(Token::Letter(_)) | Some(Token::Word(_))
+                                )
+                                && (matches!(self.toks.get(j + 1), Some(Token::Letter(_)))
+                                    || self.w(j + 1) == Some("gulf"))
+                                && !self.used.get(j + 1).copied().unwrap_or(false) => {}
                         Token::Word(_) | Token::Break => break,
                     }
                 }

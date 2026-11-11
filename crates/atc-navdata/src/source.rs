@@ -61,6 +61,11 @@ pub trait SimDataSource: Send + Sync {
     fn airports(&self, around: LatLon, radius_nm: f64) -> Result<Vec<Destination>, SourceError>;
     /// Files whose size/mtime change makes a cached airport scan stale.
     fn cache_inputs(&self) -> Vec<PathBuf>;
+    /// Warnings about the simulator's own navigation data for these airports (e.g. the
+    /// aircraft GPS having no procedures there), one line each, for the server log.
+    fn gps_warnings(&self, _icaos: &[String]) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Which simulator's data the server reads.

@@ -85,6 +85,16 @@ impl Playback {
         }
     }
 
+    /// Drops everything: queued and incoming speech, the ATIS loop and the relay. The heard
+    /// frequencies stay as they are.
+    pub fn stop_all(&mut self) {
+        self.queue.clear();
+        self.front_pos = 0;
+        self.incoming.clear();
+        self.atis = None;
+        self.relay = None;
+    }
+
     pub fn on_msg(&mut self, m: &ServerMsg) {
         match m {
             ServerMsg::AtcAudioStart {
@@ -243,6 +253,18 @@ mod tests {
         assert!(should_play(GND, &[TWR, GND]));
         // A 25 kHz radio tunes Kraków Ground 118.105 as 118.100.
         assert!(should_play(118_105, &[118_100]));
+    }
+
+    #[test]
+    fn stop_all_silences_a_looping_clip() {
+        let mut p = Playback::new(16_000);
+        p.set_heard(&[ATIS]);
+        utterance(&mut p, 1, ATIS, true, &[1, 2, 3]);
+        utterance(&mut p, 2, ATIS, false, &[7, 7]);
+        assert_eq!(take(&mut p, 2), [7, 7]);
+        p.stop_all();
+        assert!(!p.is_active());
+        assert_eq!(take(&mut p, 6), [0; 6]);
     }
 
     #[test]

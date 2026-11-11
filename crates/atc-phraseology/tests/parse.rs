@@ -993,3 +993,164 @@ fn landing_words_are_never_destinations() {
         assert_eq!(m.items.destination, None, "{said}");
     }
 }
+
+fn ifr_destination(text: &str) -> Option<String> {
+    with(text).items.destination
+}
+
+#[test]
+fn ifr_2_place_is_destination() {
+    assert_eq!(
+        ifr_destination(
+            "Delivery, Sierra Papa Alpha Bravo Charlie, IFR 2 Katowice, request clearance"
+        )
+        .as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn ifr_glued_to_place_is_destination() {
+    assert_eq!(
+        ifr_destination(
+            "Delivery, Sierra Papa Alpha Bravo Charlie, IFR Tokatowice, request clearance"
+        )
+        .as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn ifr_two_place_is_destination() {
+    assert_eq!(
+        ifr_destination("Delivery, Sierra Papa Alpha Bravo Charlie, IFR two Katowice").as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn clearance_with_one_place_takes_it() {
+    assert_eq!(
+        ifr_destination(
+            "Delivery, Sierra Papa Alpha Bravo Charlie, IFR Katowice, request clearance"
+        )
+        .as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn stand_number_is_not_destination() {
+    let m = with(
+        "Delivery, Sierra Papa Alpha Bravo Charlie, stand 2, IFR to Katowice, request clearance",
+    );
+    assert_eq!(m.items.destination.as_deref(), Some("EPKT"));
+    assert!(m.items.runways.is_empty() && m.items.altitudes_ft.is_empty());
+}
+
+// Whisper mis-hearings seen in the 2026-11-11 flight test (B13a).
+#[test]
+fn whisper_one_way_is_runway_before_a_number() {
+    let m = with("Sierra Bravo Charlie, cleared ILS approach one way two seven");
+    assert_eq!(m.items.approaches.first().map(|a| a.1.as_str()), Some("27"));
+}
+
+#[test]
+fn whisper_nine_year_and_ninea_are_nine() {
+    for said in [
+        "Sierra Bravo Charlie, turn left heading two nine-year five",
+        "Sierra Bravo Charlie, turn left heading two ninea five",
+    ] {
+        assert_eq!(with(said).items.headings, vec![295], "{said}");
+    }
+}
+
+#[test]
+fn whisper_frequency_with_decimal_joins() {
+    for said in [
+        "Sierra Bravo Charlie, Contact Katowice Tower 129, decimal 255",
+        "Sierra Bravo Charlie, contact Katowice Tower one two ninea decimal two five five",
+        "Sierra Bravo Charlie, contact Katowice Tower one two nine decimal two five five",
+    ] {
+        assert_eq!(with(said).items.freqs_khz, vec![129_255], "{said}");
+    }
+}
+
+#[test]
+fn whisper_establish_is_established() {
+    let a = with("Sierra Bravo Charlie, establish ILS runway two seven");
+    let b = with("Sierra Bravo Charlie, established ILS runway two seven");
+    assert_eq!(a.intent, b.intent);
+    assert_eq!(a.intent, PilotIntent::ReportEstablished);
+}
+
+#[test]
+fn whisper_horshirt_is_hold_short() {
+    let m = with("Sierra Bravo Charlie, Horshirt runway two five");
+    assert_eq!(m.items.hold_short, vec!["25".to_string()]);
+}
+
+#[test]
+fn whisper_stand_ride_is_right() {
+    for said in [
+        "Ground, Sierra Bravo Charlie, request taxi to stand 9-Ride",
+        "Ground, Sierra Bravo Charlie, request taxi to stand nine ride",
+    ] {
+        assert_eq!(heard_stand(said), "stand 9 R", "{said}");
+    }
+}
+
+#[test]
+fn stand_as_whisper_mishears_it() {
+    for (said, want) in [
+        ("stand Aparon 4, Gulf Alpha", "STANDAPARON4GULFA"),
+        ("stand a prone for Golf Alpha", "STANDAPRONEFORGA"),
+        ("stand Upron for GALPHA", "STANDUPRONFORGALPHA"),
+        ("stand Apron for Golf Alpha", "STANDAPRONFORGA"),
+    ] {
+        let s = heard_stand(&format!("Sierra Bravo Charlie, request taxi to {said}"));
+        assert_eq!(squash(&s), want, "{said}: {s}");
+    }
+}
+
+#[test]
+fn gulf_stays_a_word_for_places() {
+    let v = Vocabulary {
+        places: vec![Place::new("gulf coast", "KGCX")].into(),
+        ..Vocabulary::default()
+    };
+    let m = parse_pilot_with(
+        "Ground, Sierra Bravo Charlie, request IFR to Gulf Coast",
+        Lang::En,
+        &v,
+    );
+    assert_eq!(m.items.destination.as_deref(), Some("KGCX"), "{m:?}");
+}
+
+/// B6: "any stand" / "any available spot" / "any parking" asks Ground to pick a free stand.
+#[test]
+fn any_stand_is_heard() {
+    for text in [
+        "Katowice Ground, Sierra Papa Alpha Bravo Charlie, request taxi to any available spot",
+        "Any stand.",
+        "Sierra Bravo Charlie, any stand",
+        "Ground, Sierra Bravo Charlie, request taxi to any parking",
+        "Sierra Bravo Charlie, request any free stand",
+        "Sierra Bravo Charlie, taxi to any available parking spot",
+    ] {
+        let m = en(text);
+        assert!(m.items.any_stand, "{text}: {m:?}");
+        assert_eq!(
+            m.intent,
+            PilotIntent::RequestTaxiToStand { stand: None },
+            "{text}"
+        );
+    }
+    for text in [
+        "Ground, Sierra Bravo Charlie, request taxi to stand five",
+        "Sierra Bravo Charlie, request taxi",
+        "Sierra Bravo Charlie, any traffic in the area",
+    ] {
+        assert!(!en(text).items.any_stand, "{text}");
+    }
+}

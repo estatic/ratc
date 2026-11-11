@@ -94,6 +94,67 @@ pub struct Stand {
     pub name: String,
     pub pos: LatLon,
     pub heading_deg: f64,
+    /// Stand type (apt.dat row 1300, field 4).
+    #[serde(default)]
+    pub kind: StandKind,
+    /// Aircraft categories the stand takes (row 1300, field 5); empty: all.
+    #[serde(default)]
+    pub categories: Vec<StandCategory>,
+}
+
+/// Type of a stand (apt.dat row 1300: `gate`, `tie_down`, `hangar`, `misc`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StandKind {
+    Gate,
+    TieDown,
+    Hangar,
+    #[default]
+    Misc,
+}
+
+impl StandKind {
+    /// The apt.dat keyword; anything unknown is `Misc`.
+    pub fn from_apt(s: &str) -> Self {
+        match s {
+            "gate" => StandKind::Gate,
+            "tie_down" | "tie-down" => StandKind::TieDown,
+            "hangar" => StandKind::Hangar,
+            _ => StandKind::Misc,
+        }
+    }
+}
+
+/// Aircraft category a stand takes (apt.dat row 1300 field 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StandCategory {
+    Heavy,
+    Jets,
+    Turboprops,
+    Props,
+    Helos,
+    Fighters,
+}
+
+impl StandCategory {
+    /// The `|`-separated apt.dat list; `all` (or nothing known) is no restriction (empty).
+    pub fn list_from_apt(s: &str) -> Vec<Self> {
+        if s.split('|').any(|c| c == "all") {
+            return Vec::new();
+        }
+        s.split('|')
+            .filter_map(|c| {
+                Some(match c {
+                    "heavy" => StandCategory::Heavy,
+                    "jets" => StandCategory::Jets,
+                    "turboprops" => StandCategory::Turboprops,
+                    "props" => StandCategory::Props,
+                    "helos" => StandCategory::Helos,
+                    "fighters" => StandCategory::Fighters,
+                    _ => return None,
+                })
+            })
+            .collect()
+    }
 }
 
 /// An airport that can be named as a flight destination.

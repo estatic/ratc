@@ -139,6 +139,12 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
     )?;
     let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();
     tracing::info!("stations: {}", ids.join(", "));
+    if let Some(src) = sim_data.as_deref() {
+        let icaos: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+        for w in src.gps_warnings(&icaos) {
+            tracing::warn!("{w}");
+        }
+    }
     let units = load_units(&cfg.data_dir);
     let stations = StationMap::union_with_units(loaded.iter().map(|s| &s.procs), &units);
     let stt = WhisperStt::new(&cfg.whisper.model, cfg.whisper.language.as_deref())

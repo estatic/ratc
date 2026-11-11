@@ -906,6 +906,8 @@ fn crossing_airport() -> Airport {
                 lon: 19.004,
             },
             heading_deg: 0.0,
+            kind: Default::default(),
+            categories: Vec::new(),
         }],
         ..ap
     }
@@ -1008,14 +1010,19 @@ fn misheard_takeoff_readback_does_not_lock_session() {
     );
     assert!(matches!(tower[2][..], [AtcItem::ClearedLand { .. }]));
 
-    // A readback asked for twice without success is then accepted.
+    // A readback asked for twice without success is then accepted, the clearance said
+    // once more so the pilot knows what stands.
     let mut e = engine();
     let clearance = taxi_cleared(&mut e, "Alpha");
     let wrong = format!("hold short runway zero seven, {CS_ABBR}");
     for _ in 0..2 {
         assert_eq!(items(&say(&mut e, GROUND, &wrong))[0], AtcItem::Negative);
     }
-    assert!(say(&mut e, GROUND, &wrong).is_empty());
+    let restated = items(&say(&mut e, GROUND, &wrong));
+    assert!(
+        restated.first().is_some_and(is_taxi_to_holding_point),
+        "{restated:?}"
+    );
     let cs = Callsign::new("SPTST");
     assert_eq!(e.strip(&cs).unwrap().pending_readback, None);
     assert!(is_taxi_to_holding_point(&clearance[0]));
@@ -1132,7 +1139,8 @@ fn hold_position_must_be_read_back() {
     assert!(say(&mut e, GROUND, &format!("holding position, {CS_ABBR}")).is_empty());
     assert_eq!(e.strip(&cs).unwrap().pending_readback, None);
 
-    // No readback: asked twice, then accepted.
+    // No readback: asked twice; a bare callsign after that carries none of it and does
+    // not complete it, the readback does.
     let mut e = engine();
     roll_onto_runway(&mut e);
     for _ in 0..2 {
@@ -1140,6 +1148,8 @@ fn hold_position_must_be_read_back() {
         assert_eq!(items(&out), vec![AtcItem::ReadBack(hold.clone())]);
     }
     assert!(say(&mut e, GROUND, CS_ABBR).is_empty());
+    assert_eq!(e.strip(&cs).unwrap().pending_readback, Some(hold.clone()));
+    assert!(say(&mut e, GROUND, &format!("holding position, {CS_ABBR}")).is_empty());
     assert_eq!(e.strip(&cs).unwrap().pending_readback, None);
 }
 
@@ -2345,14 +2355,15 @@ fn misdetected_short_phrase_keeps_language() {
     assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert!(out[0].text.contains("powtórz"), "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
-    // Not understood in either language: answered in the session language (the first
-    // time it closes the readback, asked for twice already).
+    // Not understood in either language: answered in the session language (the readback,
+    // asked for twice already, stays open: this carries none of it).
     let blah = format!("{PL_CS_ABBR}, blah blah");
-    assert!(say_in(&mut e, GROUND, &blah, Lang::En).is_empty());
-    let out = say_in(&mut e, GROUND, &blah, Lang::En);
-    assert_eq!(out.len(), 1, "{out:?}");
-    assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
-    assert_eq!(spabc_lang(&e), Lang::Pl);
+    for _ in 0..2 {
+        let out = say_in(&mut e, GROUND, &blah, Lang::En);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
+        assert_eq!(spabc_lang(&e), Lang::Pl);
+    }
 }
 
 /// Auto, English session: English words tagged `pl` (the Polish parser passes them
@@ -3776,6 +3787,181 @@ mod delivery {
             .unwrap();
         assert_eq!(requested_runway(&fresh), None);
     }
+
+    /// Plan 14a B1, B2: a request is answered by the position it was made to, whoever it
+    /// named; only a call without a request is sent to the position it named.
+    mod position_routing {
+        use super::*;
+
+        const NOON: f64 = 12.0 * 3600.0;
+        const NIGHT: f64 = 23.0 * 3600.0;
+
+        fn this_is(station: &str) -> AtcItem {
+            AtcItem::ThisIs {
+                station: station.into(),
+            }
+        }
+
+        fn no_contact(items: &[AtcItem]) {
+            assert!(
+                !items.iter().any(|i| matches!(i, AtcItem::Contact { .. })),
+                "{items:?}"
+            );
+        }
+
+        /// B1: "Zeta Ground, ..., request clearance" on the Delivery frequency is cleared by
+        /// Delivery, which says who it is.
+        #[test]
+        fn request_to_wrong_position_is_served_here() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            let out = say(
+                &mut e,
+                DEL,
+                &format!(
+                    "Zeta Ground, {CS}, Cessna one seven two, information Alpha, IFR to \
+                     Testville, request clearance"
+                ),
+            );
+            assert_eq!(out.len(), 1, "{out:?}");
+            assert_eq!(out[0].freq_khz, DEL);
+            let got = items(&out);
+            let code = code_of(&got);
+            let mut want = vec![this_is("Zeta Delivery")];
+            want.extend(clearance(code));
+            assert_eq!(got, want);
+            no_contact(&got);
+        }
+
+        /// A bare call to another open position is still sent there.
+        #[test]
+        fn bare_call_to_other_position_is_still_redirected() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            let out = say(&mut e, DEL, &format!("Zeta Ground, {CS}"));
+            assert_eq!(
+                items(&out),
+                vec![
+                    this_is("Zeta Delivery"),
+                    AtcItem::Contact {
+                        station: "Zeta Ground".into(),
+                        khz: GND,
+                    },
+                ]
+            );
+        }
+
+        /// B2: a request after a redirect, without the frequency read back, is answered as a
+        /// request; the redirect is dropped.
+        #[test]
+        fn request_after_redirect_is_answered() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            say(&mut e, DEL, &format!("Zeta Ground, {CS}"));
+            let out = say(&mut e, DEL, REQUEST);
+            let got = items(&out);
+            let code = code_of(&got);
+            assert_eq!(got, clearance(code));
+            let strip = e.strip(&Callsign::new("SPTST")).unwrap();
+            assert_eq!(strip.handoff_to, None);
+        }
+
+        /// A request repeating the call that was redirected, still naming the other position,
+        /// is served here: the redirect is not given again.
+        #[test]
+        fn request_repeating_redirected_call_is_served_here() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            say(&mut e, DEL, &format!("Zeta Ground, {CS}"));
+            let out = say(
+                &mut e,
+                DEL,
+                &format!("Zeta Ground, {CS}, IFR to Testville, request clearance"),
+            );
+            let got = items(&out);
+            let code = code_of(&got);
+            let mut want = vec![this_is("Zeta Delivery")];
+            want.extend(clearance(code));
+            assert_eq!(got, want);
+            assert_eq!(e.strip(&Callsign::new("SPTST")).unwrap().handoff_to, None);
+        }
+
+        /// A greeting comes first, then who this is.
+        #[test]
+        fn greeting_before_this_is() {
+            let mut e = engine();
+            parked(&mut e, Some(NOON), Some(SUMMER));
+            let out = say(
+                &mut e,
+                DEL,
+                &format!("Zeta Ground, good morning, {CS}, IFR to Testville, request clearance"),
+            );
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Courtesy(_),
+                        AtcItem::ThisIs { .. },
+                        AtcItem::ClearedTo { .. },
+                        ..
+                    ]
+                ),
+                "{got:?}"
+            );
+        }
+
+        /// A genuine hand-over is not a redirect: after Tower sends the airborne departure to
+        /// Approach, a request on the Tower frequency still gets the readback asked for, and
+        /// the hand-over stays.
+        #[test]
+        fn request_during_genuine_handoff_keeps_it() {
+            use crate::approach_departure::{APP, TWR, departed, engine};
+            let mut e = engine();
+            departed(&mut e, "Testville", true);
+            let cs = Callsign::new("SPTST");
+            let strip = e.strip(&cs).unwrap();
+            assert_eq!(strip.handoff_to, Some(Role::Approach));
+            assert_eq!(
+                strip.pending_items,
+                vec![AtcItem::Contact {
+                    station: "Zeta Approach".into(),
+                    khz: APP,
+                }]
+            );
+            let out = say(
+                &mut e,
+                TWR,
+                &format!("Zeta Tower, {CS}, airborne, passing one thousand two hundred feet"),
+            );
+            let got = items(&out);
+            assert!(
+                got.iter().any(|i| matches!(i, AtcItem::ReadBack(_))),
+                "{got:?}"
+            );
+            assert_eq!(e.strip(&cs).unwrap().handoff_to, Some(Role::Approach));
+        }
+
+        /// Review Focus 2: with Delivery closed, Ground clears a request naming Delivery or
+        /// Ground alike, and never sends it to Delivery.
+        #[test]
+        fn closed_delivery_no_redirect_loop() {
+            for called in ["Zeta Delivery", "Zeta Ground"] {
+                let mut e = engine();
+                parked(&mut e, Some(NIGHT), Some(SUMMER));
+                let out = say(
+                    &mut e,
+                    GND,
+                    &format!("{called}, {CS}, IFR to Testville, request clearance"),
+                );
+                assert_eq!(out[0].freq_khz, GND, "{called}");
+                let got = items(&out);
+                let code = code_of(&got);
+                assert_eq!(got, clearance(code), "{called}");
+                no_contact(&got);
+            }
+        }
+    }
 }
 
 /// Taxis out and holds short; Ground hands the aircraft to Tower (readback given on Ground).
@@ -4481,6 +4667,8 @@ mod approach_departure {
                         name: (*name).into(),
                         pos: *pos,
                         heading_deg: 0.0,
+                        kind: Default::default(),
+                        categories: Vec::new(),
                     });
                 }
             },
@@ -4546,6 +4734,25 @@ mod approach_departure {
             "apron 4 GA",
             "parking APRON4 GA",
             "stand apron4 ga",
+        ] {
+            let mut e = engine_with_stands(&[("APRON4 GA", NEAR_GA)]);
+            parked_on_stand_1(&mut e);
+            let out = items(&say(&mut e, GND, &format!("{CS}, request taxi to {said}")));
+            assert!(
+                matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "APRON4 GA"),
+                "{said}: {out:?}"
+            );
+        }
+    }
+
+    /// Whisper's rendering of "stand apron four golf alpha" still finds the stand (B5).
+    #[test]
+    fn stand_misheard_by_whisper_is_matched() {
+        for said in [
+            "stand Aparon 4, Gulf Alpha",
+            "stand a prone for Golf Alpha",
+            "stand Apron for Golf Alpha",
+            "stand Upron for GALPHA",
         ] {
             let mut e = engine_with_stands(&[("APRON4 GA", NEAR_GA)]);
             parked_on_stand_1(&mut e);
@@ -4739,6 +4946,237 @@ mod approach_departure {
         );
         assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
         f.heard.clear();
+    }
+
+    /// B9 (flight test 2026-11-11): Approach hands the arrival to the destination's Tower,
+    /// "Katowice Tower" 129.255; the pilot's readbacks of the hand-off, as Whisper wrote them.
+    mod readback_after_garble {
+        use super::*;
+
+        const KTW_TWR: u32 = 129255;
+
+        /// [`engine`] with the destination's tower called "Katowice Tower" on 129.255.
+        fn katowice_engine() -> AtcEngine {
+            engine_with_procs(
+                |p| {
+                    for u in p
+                        .adjacent
+                        .iter_mut()
+                        .filter(|u| u.callsign == "Testville Tower")
+                    {
+                        u.callsign = "Katowice Tower".into();
+                        u.khz = KTW_TWR;
+                    }
+                },
+                |_| {},
+            )
+        }
+
+        /// The IFR flight to Testville up to Approach's "contact Katowice Tower 129.255",
+        /// not yet read back.
+        fn handed_to_katowice(e: &mut AtcEngine) {
+            let mut f = departed(e, "Testville", true);
+            let tower = std::mem::take(&mut f.heard);
+            assert!(say(e, TWR, &readback(&tower[0].message.items, CS_ABBR)).is_empty());
+            let out = say(e, APP, AIRBORNE);
+            assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+            let any = |h: &[AtcOutput]| !h.is_empty();
+            f.fly_to(e, ZZ002, CLIMB, &any);
+            assert!(say(e, APP, &format!("proceed direct Testville, {CS_ABBR}")).is_empty());
+            f.heard.clear();
+            f.fly_to(e, TESTVILLE, CLIMB, &any);
+            let descent = format!(
+                "descend to two thousand five hundred feet, QNH one zero one three, {CS_ABBR}"
+            );
+            assert!(say(e, APP, &descent).is_empty());
+            f.heard.clear();
+            let handed = |h: &[AtcOutput]| h.iter().any(|o| contact_of(o).is_some());
+            f.fly_to(e, TESTVILLE, CLIMB, &handed);
+            assert_eq!(
+                f.heard.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Katowice Tower".to_string(), KTW_TWR)],
+                "{:?}",
+                f.heard
+            );
+        }
+
+        /// Every pilot transmission in order; what Approach said to each.
+        fn replay(e: &mut AtcEngine, calls: &[&str]) -> Vec<(String, Vec<AtcItem>)> {
+            calls
+                .iter()
+                .map(|c| {
+                    let c = c.replace("{CS_ABBR}", CS_ABBR);
+                    let out = items(&say(e, APP, &c));
+                    (c, out)
+                })
+                .collect()
+        }
+
+        /// Each transmission got `answers` (in order), never "say again" or "pass your
+        /// message", and the hand-off is complete in the end.
+        fn accepted(e: &AtcEngine, log: &[(String, Vec<AtcItem>)], answers: &[Vec<AtcItem>]) {
+            let got: Vec<Vec<AtcItem>> = log.iter().map(|(_, o)| o.clone()).collect();
+            assert_eq!(got, answers, "{log:#?}");
+            assert!(
+                !got.iter().flatten().any(|i| matches!(
+                    i,
+                    AtcItem::SayAgain | AtcItem::SayAgainCallsign { .. } | AtcItem::PassYourMessage
+                )),
+                "{log:#?}"
+            );
+            let cs = Callsign::new("SPTST");
+            assert!(e.strip(&cs).unwrap().pending_readback.is_none(), "{log:#?}");
+            assert_eq!(e.handoff_target(&cs), Some(KTW_TWR), "{log:#?}");
+        }
+
+        /// "Read back frequency".
+        fn asked() -> Vec<AtcItem> {
+            vec![AtcItem::ReadBack(vec![ReadbackItem::Frequency(KTW_TWR)])]
+        }
+
+        /// The transmissions as flown, as read today: the first readback is accepted, the
+        /// repeat is no new call, the fragment is taken for the aircraft ("roger").
+        #[test]
+        fn clean_readback_after_garbled_ones_is_accepted() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Contact Katowice Tower one two ninea decimal two five five {CS_ABBR}",
+                    "Contact Katowice Tower 129, decimal 255 {CS_ABBR}",
+                    "Conta Katowice-Krácow Tower",
+                    "Contact Katowice Tower 129, decimal two five five, {CS_ABBR}",
+                    "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                ],
+            );
+            accepted(
+                &e,
+                &log,
+                &[vec![], vec![], vec![AtcItem::Roger], vec![], vec![]],
+            );
+        }
+
+        /// The exchange as it went in flight, before "ninea" and "129, decimal 255" were
+        /// read: two readbacks with the frequency not understood are asked for again; the
+        /// fragment carries no frequency and does not complete the hand-off although asked
+        /// for often enough; the clean readback does, and its repeat is no new call.
+        #[test]
+        fn clean_readback_after_two_wrong_ones_is_accepted() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Contact Katowice Tower one two nina decimal two five five {CS_ABBR}",
+                    "Contact Katowice Tower 129 dot 255 {CS_ABBR}",
+                    "Conta Katowice-Krácow Tower",
+                ],
+            );
+            assert_eq!(
+                log.iter().map(|(_, o)| o.clone()).collect::<Vec<_>>(),
+                vec![asked(), asked(), vec![]],
+                "{log:#?}"
+            );
+            let cs = Callsign::new("SPTST");
+            assert!(e.strip(&cs).unwrap().pending_readback.is_some(), "{log:#?}");
+            let log = replay(
+                &mut e,
+                &[
+                    "Contact Katowice Tower 129, decimal two five five, {CS_ABBR}",
+                    "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                ],
+            );
+            accepted(&e, &log, &[vec![], vec![]]);
+        }
+
+        /// Asked for often enough, a readback still wrong is accepted and the hand-off said
+        /// once more.
+        #[test]
+        fn wrong_readback_at_the_limit_is_accepted_and_restated() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Contact Katowice Tower one two nina decimal two five five {CS_ABBR}",
+                    "Contact Katowice Tower 129 dot 255 {CS_ABBR}",
+                    "Contact Katowice Tower one two eight decimal two five five {CS_ABBR}",
+                ],
+            );
+            let contact = AtcItem::Contact {
+                station: "Katowice Tower".into(),
+                khz: KTW_TWR,
+            };
+            accepted(&e, &log, &[asked(), asked(), vec![contact]]);
+        }
+
+        #[test]
+        fn clean_readback_after_fragment_alone() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Conta Katowice-Krácow Tower",
+                    "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                ],
+            );
+            accepted(&e, &log, &[asked(), vec![]]);
+        }
+
+        /// A report naming the station the aircraft was sent to is no readback fragment:
+        /// after the hand-off is complete, "no answer from Katowice Tower" and "unable to
+        /// contact Katowice Tower" are answered, not taken for a repeat of the readback.
+        #[test]
+        fn report_naming_the_handoff_station_is_answered() {
+            for report in [
+                "Zeta Approach, {CS_ABBR}, no answer from Katowice Tower",
+                "Zeta Approach, {CS_ABBR}, unable to contact Katowice Tower",
+            ] {
+                let mut e = katowice_engine();
+                handed_to_katowice(&mut e);
+                let log = replay(
+                    &mut e,
+                    &[
+                        "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                        report,
+                    ],
+                );
+                assert_eq!(log[0].1, Vec::<AtcItem>::new(), "{log:#?}");
+                assert!(!log[1].1.is_empty(), "{log:#?}");
+            }
+        }
+
+        /// The station-name rule is for another unit only: after Tower's hand-off to this
+        /// airport's Approach, a bare call to Approach on the Tower frequency is still told
+        /// who this is and sent on, as before.
+        #[test]
+        fn call_to_own_approach_on_the_old_frequency_is_still_answered() {
+            let mut e = katowice_engine();
+            let mut f = departed(&mut e, "Testville", true);
+            let tower = std::mem::take(&mut f.heard);
+            assert_eq!(
+                tower.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Zeta Approach".to_string(), APP)],
+                "{tower:?}"
+            );
+            assert!(say(&mut e, TWR, &readback(&tower[0].message.items, CS_ABBR)).is_empty());
+            let out = items(&say(&mut e, TWR, &format!("Zeta Approach, {CS}")));
+            assert_eq!(
+                out,
+                vec![
+                    AtcItem::ThisIs {
+                        station: "Zeta Tower".into()
+                    },
+                    AtcItem::Contact {
+                        station: "Zeta Approach".into(),
+                        khz: APP
+                    }
+                ],
+                "{out:?}"
+            );
+        }
     }
 
     /// Spec 3.6: a second IFR departure of the same aircraft in the same session, after the
@@ -4941,6 +5379,8 @@ mod approach_departure {
                         name: "Stand 1".into(),
                         pos: FAR_GA,
                         heading_deg: 0.0,
+                        kind: Default::default(),
+                        categories: Vec::new(),
                     },
                 )
             },
@@ -4973,6 +5413,156 @@ mod approach_departure {
         taxiing_in_near_stand_1(&mut e, false);
         let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
         assert_eq!(out, vec![AtcItem::SayStand], "{out:?}");
+    }
+
+    /// `lon_off` degrees east of Stand 1 (0.0009 is about 100 m).
+    fn east_of_stand_1(lon_off: f64) -> LatLon {
+        LatLon {
+            lat: STAND_1.lat,
+            lon: STAND_1.lon + lon_off,
+        }
+    }
+
+    /// A stand of `kind` for `categories` (empty: all) at `pos`.
+    fn typed_stand(
+        name: &str,
+        pos: LatLon,
+        kind: atc_navdata::model::StandKind,
+        categories: Vec<atc_navdata::model::StandCategory>,
+    ) -> Stand {
+        Stand {
+            name: name.into(),
+            pos,
+            heading_deg: 0.0,
+            kind,
+            categories,
+        }
+    }
+
+    /// ZZZZ with, east of Stand 1 (a gate for props): a de-icing stand (nearest), a
+    /// jets-only tie-down, and three props tie-downs GA 1..3 (200, 300, 400 m).
+    fn engine_with_ga_stands(edit: impl FnOnce(&mut Airport)) -> AtcEngine {
+        use atc_navdata::model::{StandCategory as C, StandKind as K};
+        engine_airport(
+            Strictness::Standard,
+            |ap| {
+                ap.stands.extend([
+                    typed_stand("70 de-ice", east_of_stand_1(0.0009), K::Misc, vec![]),
+                    typed_stand("J1", east_of_stand_1(0.0014), K::TieDown, vec![C::Jets]),
+                    typed_stand("GA 1", east_of_stand_1(0.0018), K::TieDown, vec![C::Props]),
+                    typed_stand("GA 2", east_of_stand_1(0.0027), K::TieDown, vec![C::Props]),
+                    typed_stand("GA 3", east_of_stand_1(0.0036), K::TieDown, vec![C::Props]),
+                ]);
+                edit(ap);
+            },
+            |_| {},
+            |_| {},
+        )
+    }
+
+    fn taxi_target_of(e: &AtcEngine, cs: &str) -> Option<atc_core::taxi::TaxiTarget> {
+        e.strip(&Callsign::new(cs)).unwrap().taxi_target.clone()
+    }
+
+    /// B6: a C172 after landing asking for "any available spot" is cleared to the nearest
+    /// free props tie-down: not the nearer gate, the de-icing stand, the jets-only stand, the
+    /// occupied one, nor the one another aircraft was cleared to.
+    #[test]
+    fn any_stand_assigns_free_ga_stand() {
+        let mut e = engine_with_ga_stands(|_| {});
+        // SPOTH stands on GA 1 and is cleared to GA 2.
+        other_aircraft_at(&mut e, east_of_stand_1(0.0018));
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(
+            &mut e,
+            GND,
+            "Sierra Papa Oscar Tango Hotel, request taxi to stand golf alpha two",
+        ));
+        assert!(matches!(out[0], AtcItem::Taxi { .. }), "{out:?}");
+        assert_eq!(
+            taxi_target_of(&e, "SPOTH"),
+            Some(atc_core::taxi::TaxiTarget::Stand {
+                name: "GA 2".into(),
+                at: Some(east_of_stand_1(0.0027))
+            })
+        );
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to any available spot"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "GA 3"),
+            "{out:?}"
+        );
+        assert_eq!(
+            taxi_target_of(&e, "SPTST"),
+            Some(atc_core::taxi::TaxiTarget::Stand {
+                name: "GA 3".into(),
+                at: Some(east_of_stand_1(0.0036))
+            })
+        );
+    }
+
+    /// B6: with every tie-down free, "any stand" is the nearest props tie-down (GA 1), not
+    /// the nearer gate or de-icing stand.
+    #[test]
+    fn any_stand_prefers_the_nearest_tie_down() {
+        let mut e = engine_with_ga_stands(|_| {});
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(&mut e, GND, &format!("{CS}, any stand")));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "GA 1"),
+            "{out:?}"
+        );
+    }
+
+    /// B6: without a GA stand, a gate accepting props is taken.
+    #[test]
+    fn any_stand_falls_back_to_a_gate() {
+        let mut e = engine_with_ga_stands(|ap| ap.stands.retain(|s| !s.name.starts_with("GA")));
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, request taxi to any parking"),
+        ));
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "Stand 1"),
+            "{out:?}"
+        );
+    }
+
+    /// B6: every suitable stand taken (the gate is jets-only, the tie-downs occupied or
+    /// cleared to) -> unable, say stand.
+    #[test]
+    fn any_stand_none_free() {
+        let mut e = engine_with_ga_stands(|ap| {
+            ap.stands[0].categories = vec![atc_navdata::model::StandCategory::Jets];
+            ap.stands.retain(|s| s.name != "GA 3");
+        });
+        other_aircraft_at(&mut e, east_of_stand_1(0.0018));
+        taxiing_in_near_stand_1(&mut e, false);
+        say(
+            &mut e,
+            GND,
+            "Sierra Papa Oscar Tango Hotel, request taxi to stand golf alpha two",
+        );
+        assert!(taxi_target_of(&e, "SPOTH").is_some());
+        let out = say(&mut e, GND, &format!("{CS}, any stand"));
+        assert_eq!(
+            items(&out),
+            vec![
+                AtcItem::Unable(atc_phraseology::UnableReason::NoFreeStand),
+                AtcItem::SayStand
+            ]
+        );
+        let text = &out[0].text;
+        assert!(
+            text.contains("unable, no stand available, say stand"),
+            "{text}"
+        );
+        assert_eq!(taxi_target_of(&e, "SPTST"), None);
     }
 
     /// M-4: taxiing in near the home stand with no taxi clearance, "request follow me" gets
@@ -5389,6 +5979,8 @@ mod approach_arrival {
         target: f64,
         /// Turns onto assigned headings.
         obeys_headings: bool,
+        /// Reads back what it is told.
+        reads_back: bool,
         /// Positions of fixes the pilot may be sent direct to.
         fixes: HashMap<String, LatLon>,
     }
@@ -5409,6 +6001,7 @@ mod approach_arrival {
                 to: None,
                 target: alt,
                 obeys_headings: true,
+                reads_back: true,
                 fixes: HashMap::from([("IAFOX".to_string(), IAF)]),
             }
         }
@@ -5445,7 +6038,7 @@ mod approach_arrival {
                     _ => {}
                 }
             }
-            if let Some(rb) = ifr_readback(&o.message.items) {
+            if let Some(rb) = ifr_readback(&o.message.items).filter(|_| self.reads_back) {
                 let out = say(e, o.freq_khz, &rb);
                 assert!(out.is_empty(), "readback {rb:?} answered: {out:?}");
             }
@@ -5554,7 +6147,95 @@ mod approach_arrival {
             cleared_ft: Some(cleared_ft).filter(|&ft| ft > 0),
             rules: Some(atc_phraseology::FlightRules::Ifr),
             callsign_misses: 0,
+            radar_contact: false,
         });
+    }
+
+    /// The silent hand-off chained to the landing: handed in in radar contact, Approach goes
+    /// on unprompted with the arrival instruction, clears the approach and hands the flight
+    /// over to Tower on the final; the pilot checks in with Tower and is cleared to land.
+    #[test]
+    fn silent_import_to_landing_clearance() {
+        let mut e = engine();
+        let mut h = atc_core::handover::FlightHandover {
+            callsign: cs(),
+            aircraft_type: "C172".into(),
+            plan: None,
+            squawk: Some(4601),
+            cleared_ft: Some(5000),
+            rules: Some(atc_phraseology::FlightRules::Ifr),
+            callsign_misses: 0,
+            radar_contact: true,
+        };
+        h.plan = Some(atc_core::strip::FlightPlan {
+            ifr: true,
+            destination: "ZZZZ".into(),
+            dest_name: "Zeta".into(),
+            cruise_ft: 5000,
+            sid: None,
+            dep_runway: None,
+            star: None,
+            approach: None,
+            vectors: false,
+            cleared_ft: 5000,
+            direct: None,
+            heading: None,
+            approach_cleared: false,
+            pattern: None,
+            established_check: false,
+        });
+        e.import_flight(h);
+        let mut p = Pilot::new(WEST, 5000.0, 90.0);
+        p.f.xpdr = Some(4601);
+        // The first sample: the arrival instruction, unprompted, from Approach.
+        p.tick(&mut e);
+        let first = p.f.heard.first().expect("an unprompted instruction");
+        assert_eq!(
+            (first.station.as_str(), first.freq_khz),
+            ("Zeta Approach", APP)
+        );
+        assert!(
+            !first.message.items.contains(&AtcItem::Identified),
+            "{:?}",
+            first.message.items
+        );
+        assert!(
+            first
+                .message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::ExpectApproach { .. })),
+            "{:?}",
+            first.message.items
+        );
+        p.until(&mut e, 600, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 300, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        let n = p.f.heard.len();
+        p.until(&mut e, 200, |p| p.f.heard.len() > n);
+        assert_eq!(
+            contact_of(&p.f.heard[n]),
+            Some(("Zeta Tower".to_string(), TWR)),
+            "{:?}",
+            p.f.heard
+        );
+        assert_eq!(p.f.com1, TWR);
+        assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        let out = p.call(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Sierra Tango, established ILS runway two seven",
+        );
+        assert!(
+            matches!(items(&out).as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
+            "{out:?}"
+        );
+        assert!(e.strip(&cs()).unwrap().permissions.may_land);
     }
 
     /// The first call of the EPKK -> EPKT flight, handed in climbing to FL100.
@@ -5975,6 +6656,84 @@ mod approach_arrival {
         assert_eq!(p.f.heard.len(), n + 2);
     }
 
+    /// B10 (review): the arrival turns onto the final while its transfer to Tower is still
+    /// to be read back: Tower says nothing unprompted then or after the readback (it did
+    /// not turn final under Tower), and its call gets the landing clearance, once.
+    #[test]
+    fn turned_final_before_transfer_read_back_is_cleared_on_call() {
+        let mut e = engine();
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 6.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 2000.0;
+        p.tick(&mut e);
+        p.tick(&mut e);
+        // Transferred to Tower; the frequency is not read back yet.
+        p.reads_back = false;
+        let out = p.call(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Sierra Tango, established ILS runway two seven",
+        );
+        let contact = items(&out);
+        assert_eq!(contact_of(&out[0]), Some(("Zeta Tower".to_string(), TWR)));
+        assert_eq!(p.f.com1, TWR);
+        // Off the final, then back onto it with Tower.
+        let lands = |p: &Pilot| {
+            p.f.heard
+                .iter()
+                .filter(|o| {
+                    o.message
+                        .items
+                        .iter()
+                        .any(|i| matches!(i, AtcItem::ClearedLand { .. }))
+                })
+                .count()
+        };
+        p.f.pos = destination(THR_27, 90.0, 5.0 * M_PER_NM);
+        p.f.pos = destination(p.f.pos, 0.0, M_PER_NM);
+        for _ in 0..3 {
+            p.f.step(&mut e, 270.0, 100.0, 0.0, false);
+        }
+        assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+        p.f.pos = destination(THR_27, 90.0, 5.0 * M_PER_NM);
+        for _ in 0..3 {
+            p.f.step(&mut e, 270.0, 100.0, -500.0, false);
+        }
+        let s = e.strip(&cs()).unwrap();
+        assert_eq!(s.phase, FlightPhase::Circuit(CircuitLeg::Final));
+        assert!(s.pending_readback.is_some());
+        assert_eq!(lands(&p), 0, "{:?}", p.f.heard);
+        // Read back: Tower owns it now, still nothing unprompted; its call is cleared.
+        let rb = ifr_readback(&contact).expect("a frequency readback");
+        assert!(say(&mut e, APP, &rb).is_empty());
+        let s = e.strip(&cs()).unwrap();
+        assert!(s.pending_readback.is_none());
+        assert_eq!(s.owner, Role::Tower);
+        for _ in 0..4 {
+            p.f.step(&mut e, 270.0, 100.0, -500.0, false);
+        }
+        assert_eq!(lands(&p), 0, "{:?}", p.f.heard);
+        let out = p.call(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
+        );
+        assert!(
+            matches!(items(&out).as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
+            "{out:?}"
+        );
+        for _ in 0..4 {
+            p.f.step(&mut e, 270.0, 100.0, -500.0, false);
+        }
+        assert_eq!(lands(&p), 1, "{:?}", p.f.heard);
+    }
+
     /// "Request full procedure": direct to the IAF, the approach clearance there.
     #[test]
     fn full_procedure_from_the_iaf() {
@@ -6039,6 +6798,43 @@ mod approach_arrival {
             "Zeta Approach, Sierra Sierra Tango, missed approach, climbing four thousand feet",
         );
         p
+    }
+
+    /// The automatic transfer to Tower on the final is a hand-over, not a redirect: a request
+    /// to Approach instead of its readback gets the readback asked for, and the flight stays
+    /// handed over to Tower.
+    #[test]
+    fn request_after_final_handoff_keeps_it() {
+        let mut e = engine();
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 200, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        p.reads_back = false;
+        let n = p.f.heard.len();
+        p.until(&mut e, 200, |p| p.f.heard.len() > n);
+        assert_eq!(
+            contact_of(&p.f.heard[n]),
+            Some(("Zeta Tower".to_string(), TWR))
+        );
+        assert_eq!(e.strip(&cs()).unwrap().handoff_to, Some(Role::Tower));
+        let out = p.call(
+            &mut e,
+            APP,
+            "Zeta Approach, Sierra Sierra Tango, request RNAV approach",
+        );
+        assert!(
+            items(&out)
+                .iter()
+                .any(|i| matches!(i, AtcItem::ReadBack(_))),
+            "{out:?}"
+        );
+        assert_eq!(e.strip(&cs()).unwrap().handoff_to, Some(Role::Tower));
     }
 
     /// Vectored, cleared, flown down the final without a report: transferred to Tower
@@ -7434,6 +8230,7 @@ mod handover {
             squawk: Some(4601),
             rules: Some(FlightRules::Ifr),
             callsign_misses: 0,
+            radar_contact: false,
         }
     }
 
@@ -7661,17 +8458,14 @@ mod handover {
             Some((ApproachKind::Ils, "27".into()))
         );
         no_bounce(&mut e, &mut f);
-        // Established on the ILS 27 final: cleared to land.
+        // On the ILS 27 final: cleared to land with no call (B10).
+        f.heard.clear();
         on_final(&mut e, &mut f);
-        let out = say(
-            &mut e,
-            TWR,
-            "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
-        );
-        let got = items(&out);
+        let got = items(&f.heard);
         assert!(
             matches!(got.as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
-            "{out:?} (phase {:?})",
+            "{:?} (phase {:?})",
+            f.heard,
             e.strip(&cs()).unwrap().phase
         );
         assert!(say(&mut e, TWR, &readback(&got, CS_ABBR)).is_empty());
@@ -8071,6 +8865,447 @@ mod handover {
         f.fly_to(&mut e, FARLAND, CLIMB, &never);
         assert!(f.heard.is_empty(), "{:?}", f.heard);
     }
+
+    /// A hand-off to the destination's Approach of another loaded station that is the same
+    /// unit on the same frequency (EPKK and EPKT Approach: "Kraków Approach" on 121.075).
+    mod same_frequency_handoff {
+        use atc_navdata::procedures::AdjacentUnit;
+
+        use super::*;
+
+        /// The destination ZZZY's Approach, another station's position.
+        fn testville_approach(callsign: &str, khz: u32) -> AdjacentUnit {
+            AdjacentUnit {
+                callsign: callsign.into(),
+                khz,
+                kind: AdjacentKind::Approach,
+                airport: Some("ZZZY".into()),
+                min_level_ft: None,
+            }
+        }
+
+        /// An IFR flight bound for ZZZY handed in to ZZZZ's Approach 27 NM south of
+        /// Testville, identified on its first call; then one more sample (the hand-off point
+        /// is reached): what Approach said on it.
+        fn identified_then_sample(e: &mut AtcEngine) -> Vec<AtcOutput> {
+            e.import_flight(handover(ifr_plan("ZZZY", "Testville", 3000)));
+            let start = destination(HOME, 0.0, 3.0 * M_PER_NM);
+            let mut f = airborne(e, start, 3000.0, 0.0);
+            let out = say(
+                e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, three thousand feet",
+            );
+            assert_eq!(items(&out), vec![AtcItem::Identified], "{out:?}");
+            f.step(e, 0.0, 150.0, 0.0, false);
+            f.heard
+        }
+
+        #[test]
+        fn same_unit_handoff_is_silent() {
+            let mut e = engine();
+            e.set_station_units(vec![testville_approach("Zeta Approach", APP)]);
+            let heard = identified_then_sample(&mut e);
+            assert!(heard.is_empty(), "{heard:?}");
+            assert_eq!(e.handoff_target(&cs()), Some(APP));
+            assert_eq!(e.handoff_airport(&cs()), Some("ZZZY".into()));
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.radar_contact_kept);
+            assert!(s.pending_readback.is_none());
+            let h = e.export_flight(&cs()).expect("exported");
+            assert!(h.radar_contact);
+        }
+
+        #[test]
+        fn different_unit_handoff_still_spoken() {
+            let mut e = engine();
+            e.set_station_units(vec![testville_approach("Testville Approach", 120400)]);
+            let heard = identified_then_sample(&mut e);
+            assert_eq!(
+                heard.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Testville Approach".to_string(), 120400)],
+                "{heard:?}"
+            );
+            assert_eq!(e.handoff_target(&cs()), None);
+            assert!(!e.strip(&cs()).unwrap().radar_contact_kept);
+            assert!(!e.export_flight(&cs()).unwrap().radar_contact);
+        }
+
+        /// The same unit but another callsign on the frequency: still spoken.
+        #[test]
+        fn same_frequency_other_callsign_still_spoken() {
+            let mut e = engine();
+            e.set_station_units(vec![testville_approach("Testville Approach", APP)]);
+            let heard = identified_then_sample(&mut e);
+            assert_eq!(
+                heard.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Testville Approach".to_string(), APP)],
+                "{heard:?}"
+            );
+        }
+
+        /// SPTST bound for ZZZZ handed in (`radar_contact` as given) to `e`, 12 NM west at
+        /// 5000 ft on Approach: the first sample's outputs.
+        fn imported_first_sample(e: &mut AtcEngine, radar_contact: bool) -> Vec<AtcOutput> {
+            let mut h = handover(ifr_plan("ZZZZ", "Zeta", 5000));
+            h.radar_contact = radar_contact;
+            e.import_flight(h);
+            let mut f = Flight {
+                t: 0.0,
+                pos: LatLon {
+                    lat: 10.0,
+                    lon: 9.8,
+                },
+                alt: 5000.0,
+                com1: APP,
+                rolling: false,
+                xpdr: Some(4601),
+                heard: Vec::new(),
+            };
+            f.step(e, 90.0, 150.0, 0.0, false);
+            f.heard
+        }
+
+        #[test]
+        fn imported_with_radar_contact_continues_unprompted() {
+            // What the handed-in first call gets today, for comparison.
+            let mut called = engine();
+            assert!(imported_first_sample(&mut called, false).is_empty());
+            let answer = items(&say(
+                &mut called,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet",
+            ));
+            assert_eq!(answer.first(), Some(&AtcItem::Identified), "{answer:?}");
+
+            let mut e = engine();
+            let heard = imported_first_sample(&mut e, true);
+            assert_eq!(items(&heard), answer[1..].to_vec(), "{heard:?}");
+            assert_eq!(heard[0].station, "Zeta Approach");
+            assert_eq!(heard[0].freq_khz, APP);
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.identified);
+            assert!(!s.handed_in);
+            assert!(!s.first_call_due);
+            assert!(!s.radar_contact_kept);
+            assert!(s.plan.as_ref().unwrap().approach.is_some());
+            assert!(s.pending_readback.is_some());
+            // Read back, then a call: not identified again.
+            let rb = format!(
+                "right heading one zero zero, maintain five thousand feet, QNH one zero one \
+                 three, expect ILS runway two seven, {CS_ABBR}"
+            );
+            let out = say(&mut e, APP, &rb);
+            assert!(out.is_empty(), "{rb}: {out:?}");
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, five thousand feet",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            assert!(!items(&out).contains(&AtcItem::SayAgain), "{out:?}");
+        }
+
+        /// Handed in silently, an inbound call with an approach request before any sample
+        /// does not begin a new flight: no "identified", the plan is kept, and the first
+        /// sample still brings the arrival instruction.
+        #[test]
+        fn imported_with_radar_contact_inbound_call_keeps_the_plan() {
+            let mut e = engine();
+            let mut h = handover(ifr_plan("ZZZZ", "Zeta", 5000));
+            h.radar_contact = true;
+            e.import_flight(h);
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, inbound to Zeta, request ILS",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.radar_contact_kept);
+            let plan = s.plan.as_ref().expect("plan kept");
+            assert_eq!(plan.destination, "ZZZZ");
+            assert_eq!(plan.cleared_ft, 5000);
+            let mut f = Flight {
+                t: 10.0,
+                pos: LatLon {
+                    lat: 10.0,
+                    lon: 9.8,
+                },
+                alt: 5000.0,
+                com1: APP,
+                rolling: false,
+                xpdr: Some(4601),
+                heard: Vec::new(),
+            };
+            f.step(&mut e, 90.0, 150.0, 0.0, false);
+            let got = items(&f.heard);
+            assert!(!got.contains(&AtcItem::Identified), "{got:?}");
+            assert!(
+                got.iter()
+                    .any(|i| matches!(i, AtcItem::ExpectApproach { .. })),
+                "{got:?}"
+            );
+        }
+
+        /// Handed in silently and airborne, but Approach has not gone on yet (here: squawking
+        /// 7600, so it issues nothing): an inbound call with an approach request does not
+        /// begin a new flight, so there is no "identified" and the plan is kept.
+        #[test]
+        fn imported_with_radar_contact_airborne_inbound_call_keeps_the_plan() {
+            let mut e = engine();
+            let mut h = handover(ifr_plan("ZZZZ", "Zeta", 5000));
+            h.radar_contact = true;
+            e.import_flight(h);
+            let mut f = Flight {
+                t: 0.0,
+                pos: LatLon {
+                    lat: 10.0,
+                    lon: 9.8,
+                },
+                alt: 5000.0,
+                com1: APP,
+                rolling: false,
+                xpdr: Some(7600),
+                heard: Vec::new(),
+            };
+            f.step(&mut e, 90.0, 150.0, 0.0, false);
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.phase.is_airborne());
+            assert!(s.radar_contact_kept, "{:?}", f.heard);
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, inbound to Zeta, request ILS",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            let s = e.strip(&cs()).unwrap();
+            let plan = s.plan.as_ref().expect("plan kept");
+            assert_eq!(plan.destination, "ZZZZ");
+            assert_eq!(plan.cleared_ft, 5000);
+        }
+
+        /// Handed in silently, the flight's first call (before any sample) is no "identified".
+        #[test]
+        fn imported_with_radar_contact_call_is_not_identified() {
+            let mut e = engine();
+            let mut h = handover(ifr_plan("ZZZF", "Farland", 10000));
+            h.radar_contact = true;
+            e.import_flight(h);
+            let out = say(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Papa Tango Sierra Tango, flight level one zero zero",
+            );
+            assert!(!items(&out).contains(&AtcItem::Identified), "{out:?}");
+            let s = e.strip(&cs()).unwrap();
+            assert!(s.identified);
+            assert_eq!(s.owner, Role::Approach);
+        }
+    }
+
+    /// B10: Tower tells an IFR arrival not yet on the final where it is, and clears it to
+    /// land unprompted once it is on the final.
+    mod tower_ifr_final {
+        use atc_phraseology::Compass8;
+
+        use super::super::approach_departure::{END_27, HOLD_27};
+        use super::*;
+
+        /// The arrival handed in to the Tower-only ZZZZ, its first call answered, at `pos`
+        /// heading 270 (3 samples).
+        fn arrival_at(e: &mut AtcEngine, pos: LatLon, alt: f64) -> Flight {
+            let (mut f, _) = first_call_to_tower(e);
+            no_bounce(e, &mut f);
+            f.heard.clear();
+            f.pos = pos;
+            f.alt = alt;
+            for _ in 0..3 {
+                f.step(e, 270.0, 90.0, 0.0, false);
+            }
+            f
+        }
+
+        fn clearances(f: &Flight) -> usize {
+            f.heard
+                .iter()
+                .filter(|o| {
+                    o.message
+                        .items
+                        .iter()
+                        .any(|i| matches!(i, AtcItem::ClearedLand { .. }))
+                })
+                .count()
+        }
+
+        /// "Established" on the extended centreline 12 NM out, beyond the final: continue
+        /// approach and the distance to touchdown, not "report final".
+        #[test]
+        fn established_beyond_final_zone_continue_approach() {
+            let mut e = tower_only(|_| {});
+            let pos = destination(THR_27, 90.0, 12.0 * M_PER_NM);
+            let f = arrival_at(&mut e, pos, 4000.0);
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            assert!(f.heard.is_empty(), "{:?}", f.heard);
+            let out = say(
+                &mut e,
+                TWR,
+                "Zeta Tower, Sierra Papa Tango Sierra Tango, established ILS runway two seven",
+            );
+            assert_eq!(
+                items(&out),
+                vec![AtcItem::ContinueApproach, AtcItem::DistanceToGo(12)],
+                "{out:?}"
+            );
+            assert!(
+                out[0]
+                    .text
+                    .contains("continue approach, one two miles from touchdown"),
+                "{}",
+                out[0].text
+            );
+        }
+
+        /// "Final" 4 km north of the centreline 6 NM out: Tower says where the aircraft is.
+        #[test]
+        fn final_call_off_course_gets_position() {
+            let mut e = tower_only(|_| {});
+            let abeam = destination(THR_27, 90.0, 6.0 * M_PER_NM);
+            let pos = destination(abeam, 0.0, 4000.0);
+            let f = arrival_at(&mut e, pos, 2000.0);
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            assert!(f.heard.is_empty(), "{:?}", f.heard);
+            let out = say(
+                &mut e,
+                TWR,
+                "Zeta Tower, Sierra Papa Tango Sierra Tango, final",
+            );
+            assert_eq!(
+                items(&out),
+                vec![AtcItem::OffFinal {
+                    nm: 2,
+                    side: Compass8::North
+                }],
+                "{out:?}"
+            );
+            assert!(
+                out[0]
+                    .text
+                    .contains("you are two miles north of the final approach course"),
+                "{}",
+                out[0].text
+            );
+        }
+
+        /// Never "zero miles from touchdown": past the threshold, or under half a mile before
+        /// it off the final, a call is answered "report final" as before.
+        #[test]
+        fn no_zero_miles_at_or_past_threshold() {
+            let call = "Zeta Tower, Sierra Papa Tango Sierra Tango, final";
+            // Over the runway, 1 NM past the threshold, not on the final before.
+            let mut e = tower_only(|_| {});
+            let past = destination(THR_27, 270.0, M_PER_NM);
+            arrival_at(&mut e, past, 1000.0);
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            let out = say(&mut e, TWR, call);
+            assert_eq!(items(&out), vec![AtcItem::Report(CircuitLeg::Final)]);
+            // 0.3 NM before it, crossing the centreline: not on the final by heading.
+            let mut e = tower_only(|_| {});
+            let (mut f, _) = first_call_to_tower(&mut e);
+            no_bounce(&mut e, &mut f);
+            f.pos = destination(THR_27, 90.0, 0.3 * M_PER_NM);
+            f.alt = 600.0;
+            for _ in 0..3 {
+                f.step(&mut e, 0.0, 90.0, 0.0, false);
+            }
+            assert_eq!(e.strip(&cs()).unwrap().phase, FlightPhase::Airborne);
+            let out = say(&mut e, TWR, call);
+            assert_eq!(items(&out), vec![AtcItem::Report(CircuitLeg::Final)]);
+        }
+
+        /// On the final with the runway free: cleared to land with no call, exactly once.
+        #[test]
+        fn ifr_arrival_cleared_unprompted_on_final() {
+            let mut e = tower_only(|_| {});
+            let (mut f, _) = first_call_to_tower(&mut e);
+            no_bounce(&mut e, &mut f);
+            f.heard.clear();
+            on_final(&mut e, &mut f);
+            assert_eq!(
+                e.strip(&cs()).unwrap().phase,
+                FlightPhase::Circuit(CircuitLeg::Final)
+            );
+            assert_eq!(clearances(&f), 1, "{:?}", f.heard);
+            assert_eq!(f.heard.len(), 1, "{:?}", f.heard);
+            assert_eq!(f.heard[0].freq_khz, TWR);
+            assert!(
+                matches!(f.heard[0].message.items.as_slice(),
+                    [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
+                "{:?}",
+                f.heard
+            );
+            assert!(e.strip(&cs()).unwrap().permissions.may_land);
+            for _ in 0..5 {
+                f.step(&mut e, 270.0, 90.0, -500.0, false);
+            }
+            assert_eq!(clearances(&f), 1, "{:?}", f.heard);
+        }
+
+        /// The runway is occupied as the arrival turns final: no "go around" and nothing at
+        /// all while it stays occupied; once it is free, with the arrival still on the final,
+        /// the landing clearance, once.
+        #[test]
+        fn unprompted_clearance_not_repeated_when_runway_busy() {
+            let mut e = tower_only(|_| {});
+            let (mut f, _) = first_call_to_tower(&mut e);
+            no_bounce(&mut e, &mut f);
+            // Another aircraft is cleared for take-off from the holding point.
+            let other = Callsign::new("SPABC");
+            e.register_pilot(PilotProfile {
+                callsign: other.clone(),
+                aircraft_type: "C172".into(),
+            });
+            let mut ground = f.sample(270.0, 0.0, 0.0, true);
+            ground.callsign = other.clone();
+            ground.pos = HOLD_27;
+            ground.alt_ft_msl = 100.0;
+            ground.com1_khz = TWR;
+            let contact = e.on_telemetry(ground.clone());
+            assert_eq!(contact.len(), 1, "{contact:?}");
+            let rb = readback(&contact[0].message.items, "Sierra Papa Alpha Bravo Charlie");
+            assert!(say(&mut e, GND, &rb).is_empty());
+            ground.t = SimTime(ground.t.0 + 2.0);
+            let takeoff = e.on_telemetry(ground.clone());
+            assert!(is_takeoff_clearance(&items(&takeoff)), "{takeoff:?}");
+            // The arrival turns final: nothing while the runway is occupied.
+            f.heard.clear();
+            on_final(&mut e, &mut f);
+            for _ in 0..5 {
+                f.step(&mut e, 270.0, 90.0, -500.0, false);
+            }
+            assert_eq!(
+                e.strip(&cs()).unwrap().phase,
+                FlightPhase::Circuit(CircuitLeg::Final)
+            );
+            assert!(f.heard.is_empty(), "{:?}", f.heard);
+            assert!(!e.strip(&cs()).unwrap().missed_approach);
+            // The departure gets airborne: the runway is free.
+            ground.pos = END_27;
+            ground.alt_ft_msl = 600.0;
+            ground.on_ground = false;
+            ground.gs_kt = 80.0;
+            for _ in 0..3 {
+                ground.t = SimTime(ground.t.0 + 2.0);
+                e.on_telemetry(ground.clone());
+            }
+            assert!(e.strip(&other).unwrap().phase.is_airborne());
+            for _ in 0..5 {
+                f.step(&mut e, 270.0, 90.0, -500.0, false);
+            }
+            assert_eq!(clearances(&f), 1, "{:?}", f.heard);
+            assert_eq!(f.heard.len(), 1, "{:?}", f.heard);
+        }
+    }
 }
 
 // Readback reminders: a missing readback is reminded of once, after 10 s of sim time or
@@ -8441,4 +9676,121 @@ fn dropped_reminder_rearms_once() {
     e.on_transmission(GROUND, &back, Lang::En, SimTime(due + 12.0));
     assert!(abc_at(&mut e, due + 25.0, 2.0).is_empty());
     assert!(abc_at(&mut e, due + 40.0, 6.0).is_empty());
+}
+
+/// B13: a callsign one letter or digit off the only aircraft working the frequency is that
+/// aircraft. (Ground stands in for Approach: the Approach fixtures fly SPTST only; the
+/// frequency scoping is the same for every position.)
+mod near_callsign {
+    use super::*;
+
+    const N172SP: &str = "November one seven two Sierra Papa";
+    const ACK: &str = "using my callsign in every transmission November Sierra Bravo";
+
+    fn is_say_again_callsign(i: &AtcItem) -> bool {
+        matches!(i, AtcItem::SayAgainCallsign { .. })
+    }
+
+    /// N172SP cleared to taxi, then Ground answers SPTST (registered, not flying, so not
+    /// working the frequency): Ground last spoke to another station, as in flight, so a
+    /// call without any callsign is not taken for N172SP.
+    fn n172sp_not_last_addressed(e: &mut AtcEngine) {
+        taxi_cleared_as(e, "N172SP", N172SP);
+        let other = say(
+            e,
+            GROUND,
+            &format!("Krakow Ground, {CS}, information Alpha, request taxi"),
+        );
+        assert_eq!(
+            other[0].message.to,
+            Some(Callsign::new("SPTST")),
+            "{other:?}"
+        );
+    }
+
+    /// N172SP (abbreviated "November Sierra Papa") heard as "November Sierra Bravo": taken
+    /// for it, answered to it, not counted as a call without a callsign (no "use your
+    /// callsign").
+    #[test]
+    fn one_letter_off_is_the_only_aircraft() {
+        let mut e = engine();
+        n172sp_not_last_addressed(&mut e);
+        let out = say(&mut e, GROUND, ACK);
+        assert!(!items(&out).iter().any(is_say_again_callsign), "{out:?}");
+        assert!(!items(&out).contains(&AtcItem::UseCallsign), "{out:?}");
+        assert_eq!(out[0].message.to, Some(Callsign::new("N172SP")), "{out:?}");
+        assert_eq!(
+            e.strip(&Callsign::new("N172SP")).unwrap().callsign_misses,
+            0
+        );
+        // Also right after Ground spoke to it: not counted as a call without a callsign.
+        let mut e = engine();
+        taxi_cleared_as(&mut e, "N172SP", N172SP);
+        let out = say(&mut e, GROUND, ACK);
+        assert_eq!(out[0].message.to, Some(Callsign::new("N172SP")), "{out:?}");
+        assert_eq!(
+            e.strip(&Callsign::new("N172SP")).unwrap().callsign_misses,
+            0
+        );
+    }
+
+    /// N172SP and N172SR both working the frequency: "November Sierra Bravo" is one letter
+    /// off both, so it is neither.
+    #[test]
+    fn one_letter_off_with_two_aircraft_is_not_guessed() {
+        let mut e = engine();
+        taxi_cleared_as(&mut e, "N172SR", "November one seven two Sierra Romeo");
+        n172sp_not_last_addressed(&mut e);
+        let out = say(&mut e, GROUND, ACK);
+        assert!(
+            matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+            "{out:?}"
+        );
+    }
+
+    /// "November Charlie Bravo" is two letters off N172SP: not taken.
+    #[test]
+    fn two_letters_off_is_not_taken() {
+        let mut e = engine();
+        n172sp_not_last_addressed(&mut e);
+        let out = say(
+            &mut e,
+            GROUND,
+            "using my callsign in every transmission November Charlie Bravo",
+        );
+        assert!(
+            matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+            "{out:?}"
+        );
+    }
+}
+
+#[test]
+fn hints_carry_own_callsign() {
+    let e = engine();
+    let hints = e.stt_hints(&Callsign::new("N172SP"), 119_100);
+    assert!(
+        hints.contains(&"November one seven two Sierra Papa".to_string()),
+        "{hints:?}"
+    );
+    assert!(
+        hints.contains(&"November Sierra Papa".to_string()),
+        "{hints:?}"
+    );
+}
+
+#[test]
+fn ground_hints_carry_stands() {
+    let e = engine();
+    let cs = Callsign::new("SPTST");
+    let stand = atc_phraseology::stand_spoken(&epkk().0.stands[0].name);
+    let ground = e.stt_hints(&cs, GROUND);
+    assert!(ground.contains(&stand), "{ground:?}");
+    assert!(
+        ground.len() <= 2 + atc_core::engine::STT_HINT_STANDS,
+        "{ground:?}"
+    );
+    let tower = e.stt_hints(&cs, TOWER);
+    assert!(!tower.contains(&stand), "{tower:?}");
+    assert_eq!(tower.len(), 2, "{tower:?}");
 }

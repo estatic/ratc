@@ -188,11 +188,13 @@ impl AtcEngine {
                 }
                 Some(FlightRules::Vfr) => Vec::new(),
             },
-            PilotIntent::ReportInbound { .. } if new => self.inbound(i, msg, None, false, None),
+            PilotIntent::ReportInbound { .. } if new => {
+                self.inbound(i, Some(msg), None, false, None)
+            }
             PilotIntent::RequestApproach {
                 kind,
                 full_procedure,
-            } if new => self.inbound(i, msg, *kind, *full_procedure, None),
+            } if new => self.inbound(i, Some(msg), *kind, *full_procedure, None),
             PilotIntent::RequestApproach {
                 kind,
                 full_procedure,
@@ -200,7 +202,7 @@ impl AtcEngine {
             PilotIntent::ReportEstablished
                 if self.arrival(i).is_some_and(|p| p.approach_cleared) =>
             {
-                self.redirect(i, Role::Tower)
+                self.hand_over(i, Role::Tower)
             }
             _ => Vec::new(),
         }
@@ -223,24 +225,56 @@ impl AtcEngine {
         if plan.as_ref().is_some_and(|p| !p.ifr) {
             return self.redirect(i, Role::Tower);
         }
+        let items = self.handed_in_arrival(i, Some(msg));
+        if items.is_empty() {
+            // No telemetry yet: still the flight handed over, served on its next call.
+            self.strips[i].handed_in = true;
+        }
+        items
+    }
+
+    /// The arrival instruction for IFR flight `i` handed in bound for this airport: the
+    /// route to its approach from the level the previous unit cleared it to (as
+    /// [`AtcEngine::inbound`]), the approach type as `msg` requests. Without a call (`msg`
+    /// `None`: handed in silently, already identified) no "identified". Nothing (the plan
+    /// kept): no telemetry yet.
+    fn handed_in_arrival(&mut self, i: usize, msg: Option<&PilotMessage>) -> Vec<AtcItem> {
+        let plan = self.strips[i].plan.clone();
         // The level the previous unit cleared it to, kept as the level it reports.
         let cleared_ft = plan.as_ref().map(|p| p.cleared_ft).filter(|&ft| ft > 0);
         self.strips[i].plan = None;
-        let (kind, full) = match msg.intent {
-            PilotIntent::RequestApproach {
+        let (kind, full) = match msg.map(|m| &m.intent) {
+            Some(&PilotIntent::RequestApproach {
                 kind,
                 full_procedure,
-            } => (kind, full_procedure),
+            }) => (kind, full_procedure),
             _ => (None, false),
         };
         let items = self.inbound(i, msg, kind, full, cleared_ft);
         if items.is_empty() {
-            // No telemetry yet: still the flight handed over, served on its next call.
-            let strip = &mut self.strips[i];
-            strip.plan = plan;
-            strip.handed_in = true;
+            self.strips[i].plan = plan;
         }
         items
+    }
+
+    /// Per sample, for IFR flight `i` handed in silently in radar contact
+    /// ([`crate::strip::Strip::radar_contact_kept`]): bound for this airport, Approach goes on with the
+    /// arrival instruction unprompted, once; passing through, nothing to say.
+    fn radar_contact_arrival(&mut self, i: usize) -> Vec<AtcOutput> {
+        let here = self.strips[i]
+            .plan
+            .as_ref()
+            .is_some_and(|p| p.destination.eq_ignore_ascii_case(&self.airport.icao));
+        if !here {
+            self.strips[i].radar_contact_kept = false;
+            return Vec::new();
+        }
+        let items = self.handed_in_arrival(i, None);
+        if items.is_empty() {
+            return Vec::new();
+        }
+        self.strips[i].radar_contact_kept = false;
+        self.transmit(i, Role::Approach, items)
     }
 
     /// The flight plan of aircraft `i` when it is an IFR arrival to this airport.
@@ -254,11 +288,12 @@ impl AtcEngine {
     /// The first call of an airborne aircraft without a flight plan: a VFR flight is sent to
     /// Tower; an IFR flight gets a plan to this airport and the route to its approach (see
     /// the module docs). `kind` / `full`: as requested; `cleared_ft`: the level a handed-in
-    /// flight was cleared to by the previous unit.
+    /// flight was cleared to by the previous unit. `msg` `None`: no call (a flight handed in
+    /// silently, already identified), so no "identified".
     fn inbound(
         &mut self,
         i: usize,
-        msg: &PilotMessage,
+        msg: Option<&PilotMessage>,
         kind: Option<ApproachKind>,
         full: bool,
         cleared_ft: Option<i32>,
@@ -266,8 +301,9 @@ impl AtcEngine {
         if !self.strips[i].phase.is_airborne() {
             return Vec::new();
         }
-        let vfr =
-            says(&msg.raw, "vfr") || (!mentions_ifr(&msg.raw) && !msg.items.points.is_empty());
+        let vfr = msg.is_some_and(|msg| {
+            says(&msg.raw, "vfr") || (!mentions_ifr(&msg.raw) && !msg.items.points.is_empty())
+        });
         if vfr {
             return self.redirect(i, Role::Tower);
         }
@@ -318,12 +354,18 @@ impl AtcEngine {
         // it reports ([`reported_level`]), else its altitude; reporting only the altitude it
         // is passing, the arrival level (a passing altitude is never given back as a level).
         let actual_ft = ((s.alt_ft_msl / 100.0).round() as i32) * 100;
-        let reported = reported_level(&msg.raw, self.strips[i].lang, &msg.items);
+        let reported = msg.map_or(Reported::default(), |msg| {
+            reported_level(&msg.raw, self.strips[i].lang, &msg.items)
+        });
         let present_ft = cleared_ft
             .or(reported.level_ft)
             .unwrap_or(if reported.passing { target } else { actual_ft });
         let level_ft = present_ft.min(target);
-        let mut items = vec![AtcItem::Identified];
+        let mut items = if msg.is_some() {
+            vec![AtcItem::Identified]
+        } else {
+            Vec::new()
+        };
         let (mut heading, mut direct, mut pattern) = (None, None, None);
         match (&star_item, full, &iaf_fix) {
             (Some((_, item)), _, _) => items.push(item.clone()),
@@ -446,7 +488,7 @@ impl AtcEngine {
         if self.is_night() {
             vec![AtcItem::VisualApproachNotAvailable]
         } else {
-            self.redirect(i, Role::Tower)
+            self.hand_over(i, Role::Tower)
         }
     }
 
@@ -578,7 +620,7 @@ impl AtcEngine {
             if self.strips[i].phase == FlightPhase::Circuit(atc_phraseology::CircuitLeg::Final)
                 && inside
             {
-                let items = self.redirect(i, Role::Tower);
+                let items = self.hand_over(i, Role::Tower);
                 return self.transmit(i, Role::Approach, items);
             }
             return Vec::new();
@@ -1039,6 +1081,9 @@ impl AtcEngine {
         let Some(s) = self.tracks.get(&strip.callsign).map(|t| t.last.clone()) else {
             return Vec::new();
         };
+        if strip.radar_contact_kept && plan.approach.is_none() {
+            return self.radar_contact_arrival(i);
+        }
         if plan.approach.is_some() {
             return self.arrival_update(i, &s);
         }
@@ -1059,6 +1104,7 @@ impl AtcEngine {
             items,
         }) = self.hand_off(&plan, s.pos)
         {
+            let silent = self.same_unit_and_frequency(i, &items);
             let strip = &mut self.strips[i];
             // An empty unit: released, no unit to contact (see `Strip::handed_off`).
             strip.handed_off = Some(unit);
@@ -1068,6 +1114,13 @@ impl AtcEngine {
                 _ => None,
             });
             strip.handed_off_airport = airport;
+            if silent {
+                // Already on the unit's frequency: nothing to say or read back, radar
+                // contact carries over to the station taking the flight.
+                strip.handoff_acked = true;
+                strip.radar_contact_kept = true;
+                return Vec::new();
+            }
             strip.expect_readback(&items, self.cfg.strictness, self.now);
             return self.transmit(i, Role::Approach, items);
         }
@@ -1083,6 +1136,18 @@ impl AtcEngine {
             return self.transmit(i, Role::Approach, items);
         }
         Vec::new()
+    }
+
+    /// The hand-off `items` only name the unit aircraft `i` is already working: a contact to
+    /// this Approach's callsign on the frequency the aircraft is on (another station's
+    /// Approach position of the same unit, such as EPKK and EPKT Approach).
+    fn same_unit_and_frequency(&self, i: usize, items: &[AtcItem]) -> bool {
+        let Some(pos) = self.position(Role::Approach) else {
+            return false;
+        };
+        let on = self.strips[i].approach_khz.unwrap_or(pos.khz);
+        matches!(items, [AtcItem::Contact { station, khz }]
+            if *station == pos.callsign && atc_proto::same_channel(*khz, on))
     }
 
     /// The descent due at `pos` before the hand-off to the destination's tower: 20 NM out,

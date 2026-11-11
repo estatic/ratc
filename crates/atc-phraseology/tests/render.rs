@@ -429,6 +429,10 @@ fn typed_items_render_as_before() {
             "unable, stand five Alpha unknown",
         ),
         (
+            AtcItem::Unable(UnableReason::NoFreeStand),
+            "unable, no stand available",
+        ),
+        (
             AtcItem::Taxi {
                 to: TaxiTo::HoldingPoint {
                     runway: "25".into(),
@@ -596,6 +600,25 @@ fn radar_phrases() {
     );
     assert_eq!(one(AtcItem::DistanceToGo(8)), "eight miles from touchdown");
     assert_eq!(one(AtcItem::DistanceToGo(1)), "one mile from touchdown");
+    assert_eq!(one(AtcItem::ContinueApproach), "continue approach");
+    assert_eq!(
+        one(AtcItem::OffFinal {
+            nm: 2,
+            side: Compass8::North
+        }),
+        "you are two miles north of the final approach course"
+    );
+    assert_eq!(
+        one(AtcItem::OffFinal {
+            nm: 1,
+            side: Compass8::SouthEast
+        }),
+        "you are one mile south east of the final approach course"
+    );
+    assert_eq!(Compass8::from_bearing(0.0), Compass8::North);
+    assert_eq!(Compass8::from_bearing(359.0), Compass8::North);
+    assert_eq!(Compass8::from_bearing(-90.0), Compass8::West);
+    assert_eq!(Compass8::from_bearing(140.0), Compass8::SouthEast);
     assert_eq!(
         one(AtcItem::OffTrack { nm: 2 }),
         "you are two miles off track, check position"

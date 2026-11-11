@@ -278,6 +278,22 @@ impl App {
                     self.say(&l);
                 }
             }
+            SimUpdate::Lost => {
+                if let Some(p) = &self.playback {
+                    let mut p = p.lock().unwrap();
+                    p.stop_all();
+                    p.set_heard(&[]);
+                }
+                self.com1 = None;
+                self.heard.clear();
+                // A held press ends with the radios: the server ends the transmission.
+                if self.tx.take().is_some() {
+                    self.ptt.reset();
+                }
+                let line = format!("{} lost - radios off until it is back", self.sim.name);
+                self.say(&line);
+                self.send(ClientMsg::SimLost).await;
+            }
             // used from phase 5 (traffic drawing range)
             SimUpdate::DrawRange { .. } => {}
         }
@@ -332,7 +348,9 @@ impl App {
         if let Some(tx) = self.tx.take() {
             self.send(ClientMsg::PttEnd).await;
             let secs = tx.samples as f64 / f64::from(PILOT_RATE);
-            if tx.samples == 0 {
+            if tx.samples == 0 && tx.blocked {
+                self.say("[ptt] off - nothing sent (frequency was busy)");
+            } else if tx.samples == 0 {
                 self.say("[ptt] off - no microphone audio was sent (check input_device)");
             } else {
                 self.say(&format!("[ptt] off - sent {secs:.1} s of audio"));
@@ -457,6 +475,7 @@ mod tests {
     use super::*;
 
     use crate::sim::xplane::info;
+    use atc_proto::TelemetryFrame;
 
     /// What reached the sim display.
     #[derive(Debug, Clone, PartialEq)]
@@ -493,6 +512,83 @@ mod tests {
         let shown = Arc::new(Mutex::new(Vec::new()));
         let app = app.with_sim_display(Box::new(FakeDisplay(shown.clone())));
         (app, shown)
+    }
+
+    fn telemetry() -> TelemetryFrame {
+        TelemetryFrame {
+            t: 1.0,
+            lat: 50.0,
+            lon: 19.0,
+            alt_ft_msl: 790.0,
+            heading_deg: 90.0,
+            ias_kt: 0.0,
+            gs_kt: 0.0,
+            vs_fpm: 0.0,
+            on_ground: true,
+            com1_khz: 118_105,
+            listen_khz: Vec::new(),
+            xpdr_code: None,
+            xpdr_mode: None,
+            paused: false,
+            utc_s: None,
+            day_of_year: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn lost_sim_turns_radios_off() {
+        let (mut app, printed, mut rx) = capture();
+        let playback = Arc::new(Mutex::new(Playback::new(16_000)));
+        app = app.with_playback(playback.clone());
+        app.sim(SimUpdate::Telemetry(telemetry())).await;
+        playback.lock().unwrap().set_heard(&[118_105]);
+        app.sim(SimUpdate::Lost).await;
+        assert_eq!(
+            printed.lock().unwrap().last().unwrap(),
+            "X-Plane lost - radios off until it is back"
+        );
+        assert_eq!(app.com1, None);
+        assert!(app.heard.is_empty());
+        let mut sent = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            sent.push(m);
+        }
+        assert!(matches!(
+            sent.last(),
+            Some(Outgoing::Msg(ClientMsg::SimLost))
+        ));
+        app.sim(SimUpdate::Telemetry(telemetry())).await;
+        let last = printed.lock().unwrap().last().cloned().unwrap();
+        assert!(last.starts_with("X-Plane connected, "), "{last}");
+    }
+
+    /// A press held when the sim is lost ends here: no microphone audio after `SimLost`,
+    /// and the release sends no `PttEnd` (the server ends the transmission itself).
+    #[tokio::test]
+    async fn lost_sim_ends_a_held_press() {
+        let (mut app, _printed, mut rx) = capture();
+        app.server(ServerEvent::Connected);
+        app.sim(SimUpdate::Telemetry(telemetry())).await;
+        app.ptt_press().await;
+        app.mic(vec![0; 160]).await;
+        app.sim(SimUpdate::Lost).await;
+        app.mic(vec![0; 160]).await;
+        app.ptt_release().await;
+        let mut sent = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            sent.push(m);
+        }
+        let lost = sent
+            .iter()
+            .position(|m| matches!(m, Outgoing::Msg(ClientMsg::SimLost)))
+            .expect("SimLost sent");
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, Outgoing::Msg(ClientMsg::PttStart { .. }))),
+            "{sent:?}"
+        );
+        assert_eq!(lost, sent.len() - 1, "{sent:?}");
+        assert!(app.tx.is_none());
     }
 
     #[test]

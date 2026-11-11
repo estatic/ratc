@@ -163,7 +163,9 @@ top-level `xplane_root` still works but must not be set together with `[sim_data
 
 1. **Create stations in an area.** Search by ICAO code or name, optionally load neighbouring
    countries (ISO codes, e.g. `SK CZ`), then pick airfields from the list of those within
-   100 km (closed ones cannot be picked). For each: pick the positions, review the value
+   100 km. Airfields that already have a station are marked `(station)` and not preselected;
+   closed ones and those without an X-Plane layout (most heliports and ultralight sites) are
+   shown but cannot be picked. For each: pick the positions, review the value
    screen, confirm. Neighbouring airfields' towers within 100 km become adjacent units.
 2. **Update data.** Downloads the OpenAIP changes and regenerates every station the wizard made
    (those with a `wizard.toml`). Your ticked positions are kept; one OpenAIP has moved to another
@@ -180,6 +182,9 @@ top-level `xplane_root` still works but must not be set together with `[sim_data
 4. **Remove a station.** Deletes `station.toml` and `wizard.toml`; `overrides.toml` only if you
    agree. EPKK falls back to its `procedures.toml`.
 5. **Set the OpenAIP API key.**
+6. **Remove a country.** Pick a downloaded country and confirm: only its cached OpenAIP data is
+   deleted, so Update no longer downloads it. Stations and the API key are kept.
+7. **Quit.**
 
 At start the wizard also checks every downloaded country for changes and asks whether to update.
 

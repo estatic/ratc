@@ -8,7 +8,7 @@
 //! newer messages (such as `FollowMe`) are ignored by older clients.
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 const MAGIC: &[u8; 4] = b"ATCA";
 const HEADER_LEN: usize = 12;
@@ -120,6 +120,8 @@ pub enum ClientMsg {
         freq_khz: u32,
     },
     PttEnd,
+    /// The simulator stopped sending data: the client hears nothing until its next telemetry.
+    SimLost,
     TextTransmission {
         freq_khz: u32,
         text: String,
@@ -531,9 +533,19 @@ mod tests {
     }
 
     #[test]
+    fn sim_lost_round_trips() {
+        let s = serde_json::to_string(&ClientMsg::SimLost).unwrap();
+        assert_eq!(s, r#"{"type":"sim_lost"}"#);
+        assert_eq!(
+            serde_json::from_str::<ClientMsg>(&s).unwrap(),
+            ClientMsg::SimLost
+        );
+    }
+
+    #[test]
     fn hello_json_shape() {
         let m = ClientMsg::Hello {
-            protocol: 2,
+            protocol: 3,
             callsign: "N1".into(),
             aircraft_type: "C172".into(),
             callsign_source: CallsignSource::Config,
@@ -541,7 +553,7 @@ mod tests {
         let v: serde_json::Value = serde_json::to_value(&m).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"type":"hello","protocol":2,"callsign":"N1","aircraft_type":"C172","callsign_source":"config"})
+            serde_json::json!({"type":"hello","protocol":3,"callsign":"N1","aircraft_type":"C172","callsign_source":"config"})
         );
         let m = ClientMsg::AircraftChanged {
             callsign: "SPABC".into(),

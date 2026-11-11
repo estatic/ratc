@@ -265,6 +265,38 @@ pub fn correction(result: &ReadbackResult, issued: &[AtcItem]) -> Vec<AtcItem> {
     }
 }
 
+/// What a controller restates when it accepts a readback still incorrect (asked for often
+/// enough): the `issued` items whose readback is wrong or missing ("check squawk" restated
+/// as "squawk"), so the pilot hears them once more. `Correct`: nothing.
+pub fn restatement(result: &ReadbackResult, issued: &[AtcItem]) -> Vec<AtcItem> {
+    let off: Vec<&ReadbackItem> = match result {
+        ReadbackResult::Correct => return Vec::new(),
+        ReadbackResult::Missing(m) => m.iter().collect(),
+        ReadbackResult::Wrong(w) => w.iter().map(|(r, _)| r).collect(),
+    };
+    issued
+        .iter()
+        .filter(|item| {
+            item_readback(item, Strictness::Standard)
+                .iter()
+                .any(|r| off.contains(&r))
+        })
+        .map(|item| match item {
+            AtcItem::CheckSquawk(c) => AtcItem::Squawk(*c),
+            other => other.clone(),
+        })
+        .collect()
+}
+
+/// The transmission heard as `result` against the `required` readback carries at least one
+/// of its items (right or wrong).
+pub fn carries_readback(result: &ReadbackResult, required: &[ReadbackItem]) -> bool {
+    match result {
+        ReadbackResult::Correct | ReadbackResult::Wrong(_) => true,
+        ReadbackResult::Missing(m) => m.len() < required.len(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +500,31 @@ mod tests {
             correction(&r, &issued),
             vec![AtcItem::Negative, issued[1].clone()]
         );
+    }
+
+    #[test]
+    fn restatement_repeats_the_item_not_read_back() {
+        let contact = AtcItem::Contact {
+            station: "Katowice Tower".into(),
+            khz: 129255,
+        };
+        let issued = [contact.clone(), AtcItem::CheckSquawk(4601)];
+        let missing = ReadbackResult::Missing(vec![ReadbackItem::Frequency(129255)]);
+        assert_eq!(restatement(&missing, &issued), vec![contact]);
+        let wrong = ReadbackResult::Wrong(vec![(ReadbackItem::Squawk(4601), "4610".into())]);
+        assert_eq!(restatement(&wrong, &issued), vec![AtcItem::Squawk(4601)]);
+        assert!(restatement(&ReadbackResult::Correct, &issued).is_empty());
+    }
+
+    #[test]
+    fn carries_readback_needs_one_item_heard() {
+        let req = [ReadbackItem::Frequency(129255), ReadbackItem::Squawk(4601)];
+        let none = ReadbackResult::Missing(req.to_vec());
+        assert!(!carries_readback(&none, &req));
+        let one = ReadbackResult::Missing(vec![req[1].clone()]);
+        assert!(carries_readback(&one, &req));
+        let wrong = ReadbackResult::Wrong(vec![(req[0].clone(), "129.250".into())]);
+        assert!(carries_readback(&wrong, &req));
     }
 
     #[test]

@@ -150,6 +150,10 @@ pub struct Strip {
     /// Everything said to this aircraft, in order.
     pub issued: Vec<AtcItem>,
     pub pending_readback: Option<Vec<ReadbackItem>>,
+    /// The readback the last clearance requiring one asked for, kept once it is complete: a
+    /// pilot who did not hear it accepted may read it back again.
+    #[serde(default)]
+    pub last_readback: Option<Vec<ReadbackItem>>,
     pub permissions: Permissions,
     pub first_contact_done: HashSet<Role>,
     pub full_stop_requested: bool,
@@ -157,6 +161,10 @@ pub struct Strip {
     pub pending_items: Vec<AtcItem>,
     /// Station the aircraft was told to contact, until the handover completes.
     pub handoff_to: Option<Role>,
+    /// The pending "contact" (`handoff_to`) sends a call made to the wrong position on (a
+    /// redirect), not a flight handed over: a request instead of its readback drops it.
+    #[serde(default)]
+    pub redirected: bool,
     /// Runway in use for this aircraft (re-read from the ATIS before each taxi-out clearance).
     pub runway: String,
     /// Stand the aircraft started from, the default taxi-in target.
@@ -273,6 +281,16 @@ pub struct Strip {
     /// unit, or called the unit.
     #[serde(default)]
     pub handoff_acked: bool,
+    /// Radar contact carries over a silent hand-off to the same unit on the same frequency
+    /// (another station's Approach of the same callsign): set on the strip handed off that
+    /// way (exported as [`crate::handover::FlightHandover::radar_contact`]) and on the strip
+    /// taken in that way until Approach has given its arrival instruction unprompted.
+    #[serde(default)]
+    pub radar_contact_kept: bool,
+    /// An IFR arrival worked by Tower turned onto the final without a landing clearance:
+    /// Tower clears it unprompted as soon as the runway is free, while it stays on the final.
+    #[serde(default)]
+    pub land_unprompted: bool,
     // Every field above that belongs to one flight is reset by `Strip::end_flight`.
     /// Transmissions taken for this aircraft without its callsign (the one aircraft in the
     /// exchange); from the third one the answer reminds the pilot to use it. Kept for the
@@ -303,7 +321,9 @@ impl Strip {
             first_contact_done: HashSet::new(),
             full_stop_requested: false,
             pending_items: Vec::new(),
+            last_readback: None,
             handoff_to: None,
+            redirected: false,
             runway: runway.to_string(),
             home_stand: None,
             home_stand_at: None,
@@ -342,6 +362,8 @@ impl Strip {
             handed_in: false,
             tower_inbound: false,
             handoff_acked: false,
+            radar_contact_kept: false,
+            land_unprompted: false,
             callsign_misses: 0,
             heard: 0,
         }
@@ -354,12 +376,14 @@ impl Strip {
     /// the session) and the radio failure (read from every sample).
     pub fn end_flight(&mut self) {
         self.pending_readback = None;
+        self.last_readback = None;
         self.pending_items.clear();
         self.readback_requests = 0;
         self.readback_due_s = None;
         self.readback_role = None;
         self.reminded = false;
         self.handoff_to = None;
+        self.redirected = false;
         self.permissions.may_enter_runway = false;
         self.permissions.may_take_off = false;
         self.permissions.may_land = false;
@@ -391,6 +415,8 @@ impl Strip {
         self.first_call_due = false;
         self.tower_inbound = false;
         self.handoff_acked = false;
+        self.radar_contact_kept = false;
+        self.land_unprompted = false;
     }
 
     /// Records a clearance just issued and the readback it requires. A clearance
@@ -405,9 +431,12 @@ impl Strip {
         self.readback_role = None;
         self.readback_moving = false;
         self.reminded = false;
+        self.redirected = false;
         if required.is_empty() {
+            self.last_readback = None;
             self.readback_complete();
         } else {
+            self.last_readback = Some(required.clone());
             self.pending_readback = Some(required);
         }
     }
@@ -420,6 +449,7 @@ impl Strip {
         self.readback_due_s = None;
         self.readback_role = None;
         self.reminded = false;
+        self.redirected = false;
         if let Some(role) = self.handoff_to.take() {
             self.owner = role;
         }
@@ -450,5 +480,25 @@ impl Strip {
             }
             _ => false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_readback_follows_the_last_clearance() {
+        let mut s = Strip::new(Callsign::new("SPTST"), "25");
+        let contact = AtcItem::Contact {
+            station: "Katowice Tower".into(),
+            khz: 129255,
+        };
+        s.expect_readback(&[contact], Strictness::Standard, 0.0);
+        s.readback_complete();
+        assert_eq!(s.last_readback, Some(vec![ReadbackItem::Frequency(129255)]));
+        // A newer clearance needing no readback: the old readback is no longer the last.
+        s.expect_readback(&[AtcItem::Roger], Strictness::Standard, 1.0);
+        assert_eq!(s.last_readback, None);
     }
 }

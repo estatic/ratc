@@ -221,27 +221,12 @@ fn unticked_positions_make_silent_station() {
 }
 
 #[test]
-fn no_xplane_layout_creates_nothing() {
-    let c = ctx("nolayout").with_key();
-    // Area pick 3 = YONDER FIELD, which has no apt.dat airport.
-    let out = c.run("1\nZZZZ\n1\n\n3\n6\n");
-    assert!(
-        out.contains(
-            "No X-Plane layout for YONDER FIELD: install its scenery or check xplane_root; \
-             nothing created."
-        ),
-        "{out}"
-    );
-    assert!(!c.station("YYYY").exists());
-
-    // Without an X-Plane install nothing can be created at all.
-    let mut c = c;
+fn no_xplane_install_creates_nothing() {
+    let mut c = ctx("nolayout").with_key();
+    // Without an X-Plane install no airfield can be built: picking one is refused.
     c.env.source = None;
-    let out = c.run(&format!("n\n{CREATE_ZZZZ}6\n"));
-    assert!(
-        out.contains("No X-Plane layout for ZETA INTERNATIONAL"),
-        "{out}"
-    );
+    let out = c.run("1\nZZZZ\n1\n\n1\nnone\n7\n");
+    assert!(out.contains("1 cannot be picked"), "{out}");
     assert!(!c.station("ZZZZ").exists());
 }
 
@@ -260,6 +245,121 @@ fn closed_airfield_is_listed_but_not_selectable() {
     let out = c.run("1\nZZZZ\n1\n\n2\nnone\n6\n");
     assert!(out.contains("OLD FIELD  aerodrome (closed)"), "{out}");
     assert!(out.contains("2 cannot be picked"), "{out}");
+}
+
+#[test]
+fn area_list_marks_existing_stations() {
+    let c = ctx("marked").with_key();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    assert!(c.station("ZZZZ").join("station.toml").is_file());
+    // Second run: ZZZZ already has a station; keep the default selection (nothing).
+    let out = c.run("n\n1\nZZZZ\n1\n\n\n7\n");
+    let row = out
+        .lines()
+        .find(|l| l.contains("ZETA INTERNATIONAL  airport"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(row.ends_with(" (station)"), "{row}");
+    assert!(row.contains("[ ]"), "not preselected: {row}");
+    assert!(out.contains("No airfield picked."), "{out}");
+    let other = out
+        .lines()
+        .find(|l| l.contains("NEARBY STRIP"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(!other.contains("(station)"), "{other}");
+}
+
+#[test]
+fn airfield_without_layout_is_not_selectable() {
+    let c = ctx("nolayoutpick").with_key();
+    // Area pick 3 = YONDER FIELD, which has no apt.dat airport: refused, then none.
+    let out = c.run("1\nZZZZ\n1\n\n3\nnone\n7\n");
+    assert!(out.contains("3 cannot be picked"), "{out}");
+    assert!(!out.contains("No X-Plane layout for"), "{out}");
+    assert!(!c.station("YYYY").exists());
+}
+
+/// Wraps a source and counts the calls the area list must keep to a minimum.
+struct Counting {
+    inner: Arc<dyn atc_navdata::source::SimDataSource>,
+    layouts: std::sync::atomic::AtomicUsize,
+    scans: std::sync::atomic::AtomicUsize,
+}
+
+impl atc_navdata::source::SimDataSource for Counting {
+    fn label(&self) -> String {
+        self.inner.label()
+    }
+    fn airport_layout(
+        &self,
+        icao: &str,
+    ) -> Result<atc_navdata::source::AirportLayout, atc_navdata::source::SourceError> {
+        self.layouts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.airport_layout(icao)
+    }
+    fn procedure_set(
+        &self,
+        icao: &str,
+    ) -> Result<atc_navdata::fixes::ProcedureSet, atc_navdata::source::SourceError> {
+        self.inner.procedure_set(icao)
+    }
+    fn airports(
+        &self,
+        around: atc_geo::LatLon,
+        radius_nm: f64,
+    ) -> Result<Vec<atc_navdata::model::Destination>, atc_navdata::source::SourceError> {
+        self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.airports(around, radius_nm)
+    }
+    fn cache_inputs(&self) -> Vec<PathBuf> {
+        self.inner.cache_inputs()
+    }
+}
+
+#[test]
+fn area_list_scans_the_simulator_once() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let mut c = ctx("scanonce").with_key();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    let counting = Arc::new(Counting {
+        inner: c.env.source.clone().unwrap(),
+        layouts: 0.into(),
+        scans: 0.into(),
+    });
+    c.env.source = Some(counting.clone());
+    // List only (pick none): no layout is read, the airports are scanned once.
+    let out = c.run("n\n1\nZZZZ\n1\n\nnone\n7\n");
+    assert!(out.contains("(station)"), "{out}");
+    assert_eq!(counting.layouts.load(SeqCst), 0);
+    assert_eq!(counting.scans.load(SeqCst), 1);
+}
+
+#[test]
+fn remove_country_stops_downloading_it() {
+    let c = ctx("rmcountry").with_key();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    c.api.set_airports("DE", airports());
+    c.env
+        .store
+        .fetch_country(&*c.api, "DE", "2026-10-01T00:00:00Z")
+        .unwrap();
+    assert_eq!(c.env.store.countries(), ["DE", "ZZ"]);
+    let station = std::fs::read_to_string(c.station("ZZZZ").join("station.toml")).unwrap();
+    // Menu 6, pick DE (1), confirm.
+    let out = c.run("n\nn\n6\n1\ny\n7\n");
+    assert!(out.contains("Removed DE."), "{out}");
+    assert!(!out.contains(KEY), "{out}");
+    assert_eq!(c.env.store.countries(), ["ZZ"]);
+    assert!(!c.root.join("store/DE").exists());
+    assert!(c.root.join("store/ZZ").exists());
+    assert_eq!(
+        std::fs::read_to_string(c.station("ZZZZ").join("station.toml")).unwrap(),
+        station
+    );
+    assert!(atc_stations::store::load_key_from(&c.env.key_dir).is_some());
+    // A later update does not touch DE.
+    let out = c.run("n\n2\n7\n");
+    assert!(!out.contains("DE"), "{out}");
 }
 
 #[test]
@@ -434,9 +534,9 @@ fn remove_asks_before_overrides() {
 #[test]
 fn bad_menu_input_reasks() {
     let c = ctx("badmenu");
-    let out = c.run("9\nabc\n1\n6\n");
+    let out = c.run("9\nabc\n1\n7\n");
     assert_eq!(
-        out.matches("Please enter a number from 1 to 6.").count(),
+        out.matches("Please enter a number from 1 to 7.").count(),
         2,
         "{out}"
     );
@@ -450,7 +550,8 @@ fn bad_menu_input_reasks() {
         "3 Edit a station",
         "4 Remove a station",
         "5 Set the OpenAIP API key",
-        "6 Quit",
+        "6 Remove a country",
+        "7 Quit",
     ] {
         assert!(out.contains(item), "{item}: {out}");
     }
@@ -468,7 +569,7 @@ fn invalid_key_is_reported_without_echoing_it() {
     let c = ctx("badkey");
     c.api.fail(Endpoint::Airports, ApiError::Auth);
     let typed = "my-typed-key-0042";
-    let out = c.run(&format!("5\n{typed}\nn\n6\n"));
+    let out = c.run(&format!("5\n{typed}\nn\n7\n"));
     assert!(out.contains("https://www.openaip.net"), "{out}");
     assert!(!out.contains(typed), "{out}");
     assert!(atc_stations::store::load_key_from(&c.env.key_dir).is_none());

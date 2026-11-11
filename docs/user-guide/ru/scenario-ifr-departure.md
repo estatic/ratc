@@ -18,7 +18,13 @@ target/release/atc-server airports
 
 Затем в `config/server.toml` убери (или закомментируй) строку `airport = "EPKK"`. Без неё сервер загружает все станции из `data_dir`. В логе при запуске должно быть `stations: EPKK, EPKT`. Если в `data/airports` есть другие станции, загрузятся и они: на этот полёт они не влияют. Отдельного списка станций в конфиге нет.
 
-Kraków Approach 121.075 есть в обеих станциях. Пока ты летишь от Кракова, с тобой работает Approach станции EPKK. За 30 NM до Катовице он передаёт тебя Approach станции EPKT: позывной и частота те же, но передачу объявляют, и её нужно повторить.
+Kraków Approach 121.075 есть в обеих станциях. Пока ты летишь от Кракова, с тобой работает Approach станции EPKK. За 30 NM до Катовице он передаёт тебя Approach станции EPKT: позывной и частота те же, поэтому передача беззвучная: вызова «contact» ты не услышишь и ничего не меняешь. Диспетчер EPKT просто продолжает вести тебя.
+
+## Твой позывной
+
+Клиент берёт позывной из симулятора: это бортовой номер загруженного самолёта (N172SP, SP-ABC). Чтобы летать под другим, впиши `callsign = "SP-ABC"` в `config/client.toml`: он главнее бортового номера. Если у самолёта нет бортового номера и `callsign` не задан, клиент сообщит об этом и не подключится.
+
+В первом контакте диспетчер называет позывной полностью, дальше сокращает: первый символ и последние два (SP-ABC превращается в «Sierra Bravo Charlie», N172SP — в «November Sierra Papa»). Делай так же: называй полностью, пока диспетчер не сократил, потом можно и тебе. В таблицах ниже используется SP-ABC.
 
 ## Подготовка
 
@@ -49,7 +55,7 @@ target/release/atc-client     # окно 2
 | KK599, первая точка SID | не ниже 3000 ft | CIFP, SUDOL 2J |
 | KK602, KK604 | не ниже 6000 ft и FL100 | CIFP, SUDOL 2J |
 | Передача Approach EPKT (30 NM до EPKT) | ещё набираешь; в записи ~4200 ft | правило передачи |
-| Первый вызов Approach EPKT | набор до 5000 ft («climb altitude five thousand feet») | `ifr.cruise_ft` станции EPKT |
+| Первая команда Approach EPKT | набор до 5000 ft («climb altitude five thousand feet») | `ifr.cruise_ft` станции EPKT |
 | ~15 NM до точки входа в курсовой | снижение до 3000 ft | Approach EPKT |
 | Векторение на ILS | 3000 ft, ниже не снижайся | высота FAF в CIFP |
 | KT537 (IF, 9.3 NM по DME IKTO) | 3000 ft | CIFP, ILS 27 |
@@ -59,6 +65,27 @@ target/release/atc-client     # окно 2
 | Стоянка EPKT | 995 ft (превышение аэродрома) | apt.dat X-Plane |
 
 На Cessna 172 до FL100 к передаче в Катовице не набрать: на ней ты будешь где-то на 4000–5000 ft. Это нормально, Approach EPKT задаст высоту сам.
+
+## Полёт с G1000
+
+- **FPL.** Нажми **FPL**. Если поля аэродромов пусты, нажми ручку **FMS**, чтобы включить курсор, набери EPKK как аэродром вылета и EPKT как аэродром назначения (для списка вылетов нужен аэродром вылета) малой и большой ручками FMS и нажми **ENT**.
+- **Вылет.** **PROC → Select Departure → SUDO2J** (SUDOL 2J, ВПП 25) → **Load**. ВПП и SID должны совпадать с тем, что выдал Delivery; для ВПП 07 это SUDO1F (SUDOL 1F).
+- **После взлёта.** Нажми **NAV**, чтобы автопилот вёл по SID. Когда диспетчер даёт курс, перейди на **HDG** и лети им; на NAV вернись, когда дадут «direct» или ты снова на маршруте.
+- **Высоты.** Выставь заданную высоту в окне выбранной высоты и набирай или снижайся по **ALT** / **VS** (что ждать, смотри в таблице высот выше).
+- **Переходная высота.** В EPKK она 6500 ft. Когда тебе разрешили эшелон выше неё, поставь **STD BARO** (1013); ниже — QNH от диспетчера.
+- **ILS.** Настрой курсовой маяк на **NAV1** (IKTO 109.90), проверь, что **CDI** показывает **LOC1** (он переключается сам, когда настроен ILS; если нет, нажми **CDI**) и включи **APR**, когда получишь разрешение на заход.
+
+## Пустой список вылетов
+
+Если **PROC → Select Departure** ничего не показывает для EPKK (или Select Approach — для EPKT), причина обычно в симуляторе, а не в этой программе. Навигационная база в папке `Custom Data` X-Plane (файл `earth_424.dat`) заменяет данные по умолчанию. Если в ней нет процедур этого аэродрома, G1000 их не покажет.
+
+Сервер проверяет это при запуске и выводит предупреждение для каждой затронутой станции:
+
+```
+X-Plane Custom Data replaces the default navigation data and has no procedures for EPKK: the aircraft GPS will list no departures or arrivals there. Move "Custom Data" aside or install a navigation database that covers EPKK.
+```
+
+Убери `Custom Data` в сторону (переименуй) и перезапусти X-Plane либо поставь базу, которая покрывает аэродром.
 
 ## Delivery 121.980
 
@@ -122,21 +149,18 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 |---|---|
 | Ты (на 1500 ft) | Krakow Approach, Sierra Papa Alpha Bravo Charlie, Sudol two Juliett departure, passing one thousand five hundred feet, climbing flight level one zero zero |
 | Approach | Sierra Papa Alpha Bravo Charlie, identified |
-| Approach (30 NM до EPKT, ~7 мин после взлёта, ещё до KK602) | Sierra Bravo Charlie, contact Kraków Approach one two one decimal zero seven five |
-| Ты | Approach one two one decimal zero seven five, Sierra Bravo Charlie |
 
 В первом вызове назови свою текущую высоту.
 
-Частота та же, COM1 не трогай. Это передача диспетчеру Approach станции EPKT. Продолжай лететь по SID и набирать высоту, пока он не задаст маршрут. «Direct Katowice» и 20-мильного снижения от Approach Кракова в этом полёте нет: передача происходит раньше.
+Примерно за 30 NM до EPKT (~7 мин после взлёта, ещё до KK602) тебя принимает Approach станции EPKT. Частота та же, передача беззвучная: COM1 не трогай и ничего не говори. Продолжай лететь по SID и набирать высоту, пока он не задаст маршрут. «Direct Katowice» и 20-мильного снижения от Approach Кракова в этом полёте нет: передача происходит раньше.
 
 ## Kraków Approach 121.075: прилёт и заход ILS 27
 
-Перед вызовом послушай ATIS Катовице на COM2, 120.230 (в записи: information Alpha, runway in use two seven). Затем вызови Approach. Назови высоту, которую проходишь, и разрешённый эшелон:
+Пока ждёшь, послушай ATIS Катовице на COM2, 120.230 (в записи: information Alpha, runway in use two seven). Не вызывай: передача от Approach Кракова была беззвучной, ты уже опознан. Жди. Approach EPKT сам один раз вызовет тебя с курсом, высотой и ожидаемым заходом, а ты повторишь:
 
 | Кто | Фраза |
 |---|---|
-| Ты | Kraków Approach, Sierra Papa Alpha Bravo Charlie, passing four thousand seven hundred feet, climbing flight level one zero zero, inbound to Katowice, information Alpha |
-| Approach | Sierra Papa Alpha Bravo Charlie, identified, turn right heading three four five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two seven |
+| Approach | Sierra Papa Alpha Bravo Charlie, turn right heading three four five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two seven |
 | Ты | Right heading three four five, climb five thousand feet, QNH one zero one three, expect ILS approach runway two seven, Sierra Bravo Charlie |
 | Approach (~15 NM до точки входа в курсовой) | Sierra Bravo Charlie, descend to altitude three thousand feet |
 | Ты | Descend three thousand feet, Sierra Bravo Charlie |
@@ -146,6 +170,8 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 | Ты | Left heading two niner five, cleared ILS approach runway two seven, wilco, Sierra Bravo Charlie |
 | Approach (на курсовом, внутри FAF) | Sierra Bravo Charlie, contact Katowice Tower one two niner decimal two five five |
 | Ты | Tower one two niner decimal two five five, Sierra Bravo Charlie |
+
+Если два Approach на разных частотах (другие данные станций), действует старый порядок: голосовая передача («contact ...», повтори её), затем твой собственный первый вызов с проходимой высотой, разрешённым эшелоном и «inbound to Katowice, information Alpha»; ответ тогда начинается с «identified».
 
 Это векторение: STAR нет. Курс 345 ведёт тебя на север, восточнее Катовице; затем 005 и разворот влево на курсовой ВПП 27 с востока. Набор останови на 5000 ft: это высота прилёта станции EPKT. Если на вызове ты уже выше 5000 ft, услышишь «descend to altitude five thousand feet». Если ты уже близко к точке входа в курсовой, сразу дадут 3000 ft.
 
@@ -158,6 +184,8 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 Если ты уже на курсовом и вошёл в глиссаду, Approach может передать тебя Tower, не дожидаясь доклада «established». Тогда доложи «established» уже Tower.
 
 ## Katowice Tower 129.255: посадка
+
+После передачи от Approach вызови Tower (фраза ниже). После этого вызова доклад «final» не нужен: Tower сам разрешает посадку заходящему по приборам на прямой. Если вызвать Tower до прямой, на осевой он скажет «continue approach, N miles from touchdown», вне её — «you are N miles <north, south, ...> of the final approach course». Посадку он разрешит, когда будешь на прямой.
 
 | Кто | Фраза |
 |---|---|
@@ -185,7 +213,7 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 
 Стоянку можно назвать сразу: «runway vacated, request taxi to stand apron four GA» — ответ тот же, без «say stand». Без названной стоянки Ground ведёт тебя на твою (если она известна) или спрашивает «say stand». Руление после посадки — всегда к стоянке, без QNH и кода.
 
-Имена стоянок из сценария сравниваются по буквам и цифрам: «APRON4 GA» можно назвать как «apron four GA» или «apron four golf alpha». Стоянок с этим именем несколько, Ground выбирает ближайшую свободную. Ground произносит имя так: «apron four Golf Alpha».
+Имена стоянок из сценария сравниваются по буквам и цифрам: «APRON4 GA» можно назвать как «apron four GA» или «apron four golf alpha». Стоянок с этим именем несколько, Ground выбирает ближайшую свободную. Ground произносит имя так: «apron four Golf Alpha». Если попросить «any stand» («any available spot»), Ground назначит свободную стоянку авиации общего назначения или скажет «unable, no stand available», если свободных нет.
 
 Полёт окончен: выключи транспондер (STBY) и двигатель. В записи от запроса разрешения до стоянки прошло ~40 минут: взлёт на 3-й минуте, посадка на 34-й.
 

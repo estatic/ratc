@@ -30,12 +30,13 @@ use create::create;
 use update::{startup_check, update_all};
 use values::{edit, remove};
 
-const MENU: [&str; 6] = [
+const MENU: [&str; 7] = [
     "Create stations in an area",
     "Update data",
     "Edit a station",
     "Remove a station",
     "Set the OpenAIP API key",
+    "Remove a country",
     "Quit",
 ];
 const NO_KEY: &str = "Set the OpenAIP API key first (menu 5).";
@@ -116,12 +117,13 @@ pub fn run<R: BufRead, W: Write>(
     }
     while !prompt.eof() {
         match prompt.menu("Airport wizard", &MENU) {
-            0 | 6 => break,
+            0 | 7 => break,
             5 => {
                 if let Some(new) = set_key(env, &api_factory, prompt) {
                     api = Some(new);
                 }
             }
+            6 => remove_country(env, prompt),
             n => match api.as_deref() {
                 None => prompt.say(NO_KEY),
                 Some(a) => match n {
@@ -178,6 +180,35 @@ fn set_key<R: BufRead, W: Write>(
                 None
             }
         };
+    }
+}
+
+/// Forgets a stored country so updates stop downloading it. Stations and the key stay.
+fn remove_country<R: BufRead, W: Write>(env: &WizardEnv, p: &mut Prompt<R, W>) {
+    let countries = env.store.countries();
+    if countries.is_empty() {
+        p.say("No OpenAIP data downloaded yet; nothing to remove.");
+        return;
+    }
+    let mut items: Vec<&str> = countries.iter().map(String::as_str).collect();
+    items.push("Cancel");
+    let n = p.menu("Remove the downloaded data of", &items);
+    if n == 0 || n > countries.len() {
+        return;
+    }
+    let cc = &countries[n - 1];
+    if !p.confirm(
+        &format!(
+            "Remove {cc}? It will no longer be downloaded or used when stations are \
+             generated; existing stations are kept."
+        ),
+        false,
+    ) {
+        return;
+    }
+    match env.store.remove_country(cc) {
+        Ok(_) => p.say(format!("Removed {cc}.")),
+        Err(e) => p.say(format!("Could not remove {cc}: {e}")),
     }
 }
 

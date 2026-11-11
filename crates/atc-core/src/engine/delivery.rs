@@ -374,7 +374,7 @@ impl AtcEngine {
         }
         let mut items = vec![AtcItem::ReadbackCorrect];
         if role == Role::Delivery {
-            items.extend(self.redirect(i, Role::Ground));
+            items.extend(self.hand_over(i, Role::Ground));
         }
         items
     }

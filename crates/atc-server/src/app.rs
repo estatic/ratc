@@ -47,6 +47,39 @@ pub struct AppState {
     pub radio: RadioTiming,
 }
 
+/// Words of a Whisper prompt (a proxy for its 224-token window).
+const PROMPT_WORDS: usize = 170;
+
+/// `prompt`, the expected phrases `hints` (comma separated) and the controller's last words
+/// `said`, within [`PROMPT_WORDS`]: the hints at the end are dropped first (stands before
+/// the speaker's callsign).
+fn fit_prompt(prompt: &str, mut hints: Vec<String>, said: Option<&str>) -> String {
+    let words = |s: &str| s.split_whitespace().count();
+    // Over the cap without any hint: the last words of the transmission matter most.
+    let said_owned: Option<String> = said.map(|t| {
+        let all: Vec<&str> = t.split_whitespace().collect();
+        let room = PROMPT_WORDS.saturating_sub(words(prompt));
+        all[all.len().saturating_sub(room)..].join(" ")
+    });
+    let said = said_owned.as_deref().filter(|s| !s.is_empty());
+    let fixed = words(prompt) + said.map_or(0, words);
+    while !hints.is_empty() && fixed + hints.iter().map(|h| words(h)).sum::<usize>() > PROMPT_WORDS
+    {
+        hints.pop();
+    }
+    let mut out = prompt.to_string();
+    if !hints.is_empty() {
+        out.push(' ');
+        out.push_str(&hints.join(", "));
+        out.push('.');
+    }
+    if let Some(said) = said {
+        out.push(' ');
+        out.push_str(said);
+    }
+    out
+}
+
 /// The static Whisper prompt ([`atc_voice::initial_prompt`]) in each language.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SttPrompts {
@@ -606,10 +639,9 @@ impl Server {
             .and_then(|o| self.state.owner_prompts.get(o))
             .unwrap_or(&self.state.stt_prompts)
             .get(lang);
-        match self.last_said.lock().unwrap().get(&freq_khz) {
-            Some(said) => format!("{prompt} {said}"),
-            None => prompt.to_string(),
-        }
+        let said = self.last_said.lock().unwrap().get(&freq_khz).cloned();
+        let hints = network.stt_hints(freq_khz, from);
+        fit_prompt(prompt, hints, said.as_deref())
     }
 
     /// Unique for the server's lifetime (the hub must never see an id twice).
@@ -694,6 +726,47 @@ async fn ws_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_drops_stands_before_callsigns() {
+        let hints: Vec<String> = ["November one Sierra Papa", "November Sierra Papa"]
+            .into_iter()
+            .map(String::from)
+            .chain((0..60).map(|i| format!("apron {i} Golf Alpha")))
+            .collect();
+        let p = fit_prompt(
+            "Kraków Ground",
+            hints.clone(),
+            Some("taxi to holding point"),
+        );
+        assert!(p.starts_with("Kraków Ground November one Sierra Papa, November Sierra Papa"));
+        assert!(p.ends_with("taxi to holding point"));
+        assert!(p.split_whitespace().count() <= PROMPT_WORDS, "{p}");
+        assert!(p.contains("apron 0 Golf Alpha"));
+        assert!(!p.contains("apron 59 Golf Alpha"));
+        let long = "word ".repeat(PROMPT_WORDS);
+        let p = fit_prompt(&long, hints, None);
+        assert!(!p.contains("Sierra"));
+    }
+
+    #[test]
+    fn prompt_truncates_long_transmission_to_its_last_words() {
+        let said = (0..200)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let p = fit_prompt(
+            "Kraków Ground",
+            vec!["November Sierra Papa".into()],
+            Some(&said),
+        );
+        assert!(p.split_whitespace().count() <= PROMPT_WORDS, "{p}");
+        assert!(p.ends_with("w199") && !p.contains("w0 "), "{p}");
+        assert!(!p.contains("Sierra"));
+        // No room left for any of it: the prompt alone, without a trailing space.
+        let full = vec!["word"; PROMPT_WORDS].join(" ");
+        assert_eq!(fit_prompt(&full, Vec::new(), Some(&said)), full);
+    }
 
     #[test]
     fn airtime_from_audio_or_words() {

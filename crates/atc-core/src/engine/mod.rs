@@ -49,8 +49,12 @@ mod ground;
 mod snapshot;
 mod stand;
 mod stand_match;
+mod stand_pick;
 mod tower;
 mod vfr;
+
+/// Stand names offered to speech recognition on a Ground frequency.
+pub const STT_HINT_STANDS: usize = 20;
 
 pub use delivery::DestinationSet;
 pub(crate) use delivery::direct_key;
@@ -66,14 +70,17 @@ use atc_navdata::model::{Airport, Destination};
 use atc_navdata::procedures::{AdjacentUnit, PositionDef, Procedures};
 use atc_phraseology::{
     AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
-    PilotIntent, PilotMessage, Token, UnableReason, Vocabulary, normalize, parse_pilot_in, render,
+    PilotIntent, PilotMessage, ReadbackItem, Token, UnableReason, Vocabulary, normalize,
+    parse_pilot_in, render,
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
 use crate::compliance::{ComplianceMonitor, Deviation, hold_line_cross_m};
 use crate::handover::FlightHandover;
 use crate::phase::{FlightPhase, PhaseTracker};
-use crate::readback::{ReadbackResult, Strictness, check_readback, correction};
+use crate::readback::{
+    ReadbackResult, Strictness, carries_readback, check_readback, correction, restatement,
+};
 use crate::runway::RunwayResource;
 use crate::squawk::{DEFAULT_POOL, discrete_codes};
 use crate::state::{AircraftState, SimTime};
@@ -262,6 +269,21 @@ fn readback_reminder(
     Some((role, items))
 }
 
+/// The words besides station names that a fragment of a hand-off readback may hold:
+/// "contact" and the words of a frequency ("decimal", as Whisper also writes it).
+const FRAGMENT_WORDS: [&str; 4] = ["contact", "decimal", "dot", "point"];
+
+/// The words of `text` as heard (normalised, folded), without numbers or letters.
+fn spoken_words(text: &str) -> Vec<String> {
+    normalize(text)
+        .into_iter()
+        .filter_map(|t| match t {
+            Token::Word(w) => Some(fold(&w)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Midpoint of the first runway (latitude, longitude).
 fn runway_midpoint(ap: &Airport) -> Option<(f64, f64)> {
     let [a, b] = &ap.runways.first()?.ends;
@@ -377,6 +399,7 @@ impl AtcEngine {
             }),
             squawk: strip.squawk,
             callsign_misses: strip.callsign_misses,
+            radar_contact: strip.radar_contact_kept,
             plan,
         };
         self.remove_pilot(cs);
@@ -387,7 +410,9 @@ impl AtcEngine {
     /// strip of the same callsign) with its plan (without the departure airport's SID,
     /// runway and direct), cleared level and transponder code; its first call is answered as
     /// a flight handed over ([`Strip::handed_in`]). The owner is set to Approach (IFR) or
-    /// Tower and moves to the position it first calls.
+    /// Tower and moves to the position it first calls. An IFR flight handed over silently
+    /// ([`FlightHandover::radar_contact`]) is identified already and expects no first call:
+    /// Approach goes on with its next instruction unprompted.
     pub fn import_flight(&mut self, h: FlightHandover) {
         self.remove_pilot(&h.callsign);
         self.register_pilot(PilotProfile {
@@ -412,8 +437,16 @@ impl AtcEngine {
         strip.plan = plan;
         strip.squawk = h.squawk;
         strip.callsign_misses = h.callsign_misses;
-        strip.handed_in = true;
-        strip.first_call_due = true;
+        if h.radar_contact && ifr {
+            // Handed over silently by the same unit on the same frequency: identified
+            // already, no first call; Approach goes on unprompted
+            // ([`Strip::radar_contact_kept`]).
+            strip.identified = true;
+            strip.radar_contact_kept = true;
+        } else {
+            strip.handed_in = true;
+            strip.first_call_due = true;
+        }
     }
 
     /// The frequency (kHz) of the adjacent unit flight `cs` was handed off to, once the
@@ -682,6 +715,7 @@ impl AtcEngine {
         out.extend(self.follow_me_update(i, t));
         out.extend(self.handover(i, gs_kt));
         out.extend(self.tower_call(i));
+        out.extend(self.landing_unprompted(i, prev));
         out.extend(self.vfr_exit_update(i));
         out.extend(self.establish_check(i));
         out.extend(self.approach_update(i));
@@ -715,6 +749,13 @@ impl AtcEngine {
             .filter(|(r, _, ft)| *r == role && (t.0 - ft).abs() <= FRAGMENT_S)
             .map(|(_, prev, _)| format!("{prev}, {text}"));
         let alone = self.hear(text, lang);
+        // A callsign naming no aircraft, one letter or digit off the only one working here.
+        let near = alone
+            .0
+            .callsign
+            .as_deref()
+            .filter(|_| alone.1.is_none())
+            .and_then(|h| self.near_aircraft(role, h));
         if alone.0.intent == PilotIntent::SayAgain {
             if let Some(i) = alone.1 {
                 self.understood_in(i, alone.2);
@@ -730,6 +771,9 @@ impl AtcEngine {
             ((msg, Some(i), l), _) => (text.to_string(), msg, i, l),
             (_, Some(((jmsg, Some(ji), jl), j))) => (j, jmsg, ji, jl),
             _ => {
+                if let Some(i) = near {
+                    return self.taken_for(role, freq_khz, text, lang, i, t);
+                }
                 if let Some(i) = self.only_addressed(role) {
                     return self.inferred(role, freq_khz, text, lang, i, t);
                 }
@@ -741,10 +785,9 @@ impl AtcEngine {
     }
 
     /// A transmission naming no aircraft, taken for aircraft `i`, the one in the exchange
-    /// ([`AtcEngine::only_addressed`]); counted on its strip. It is answered as if it named
-    /// it: what would go unanswered (a correct readback, an acknowledgement) gets
-    /// "<callsign>, roger", so the pilot hears who it was taken for, and from the third such
-    /// transmission the answer ends with "use your callsign in every transmission".
+    /// ([`AtcEngine::only_addressed`]); counted on its strip. It is answered as
+    /// [`AtcEngine::taken_for`], and from the third such transmission the answer ends with
+    /// "use your callsign in every transmission".
     fn inferred(
         &mut self,
         role: Role,
@@ -754,16 +797,33 @@ impl AtcEngine {
         i: usize,
         t: SimTime,
     ) -> Vec<AtcOutput> {
-        let (msg, _, heard_lang) = self.hear_as(text, lang, Some(i));
         self.strips[i].callsign_misses += 1;
+        let mut out = self.taken_for(role, freq_khz, text, lang, i, t);
+        if self.strips[i].callsign_misses >= CALLSIGN_REMINDER_AT {
+            self.remind_callsign(i, role, &mut out);
+        }
+        out
+    }
+
+    /// A transmission naming no aircraft (or one letter off it, [`AtcEngine::near_aircraft`])
+    /// taken for aircraft `i`, answered as if it named it: what would go unanswered (a
+    /// correct readback, an acknowledgement) gets "<callsign>, roger", so the pilot hears
+    /// who it was taken for.
+    fn taken_for(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        lang: Lang,
+        i: usize,
+        t: SimTime,
+    ) -> Vec<AtcOutput> {
+        let (msg, _, heard_lang) = self.hear_as(text, lang, Some(i));
         let mut out = self.answer(role, freq_khz, text, msg, i, heard_lang, t);
         // Approach does not talk to an aircraft with a radio failure.
         let silenced = role == Role::Approach && self.strips[i].radio_failure;
         if out.is_empty() && !silenced {
             out = self.transmit(i, role, vec![AtcItem::Roger]);
-        }
-        if self.strips[i].callsign_misses >= CALLSIGN_REMINDER_AT {
-            self.remind_callsign(i, role, &mut out);
         }
         out
     }
@@ -789,7 +849,9 @@ impl AtcEngine {
     }
 
     /// Pilot transmission `text` (heard as `msg` in `heard_lang`) of aircraft `i` on
-    /// `freq_khz`, answered by `role` at sim time `t`.
+    /// `freq_khz`, answered by `role` at sim time `t`. A request naming another open
+    /// position of this airport is served here like any other, and the answer says which
+    /// position this is.
     #[allow(clippy::too_many_arguments)]
     fn answer(
         &mut self,
@@ -801,6 +863,39 @@ impl AtcEngine {
         heard_lang: Lang,
         t: SimTime,
     ) -> Vec<AtcOutput> {
+        // (A call `called_elsewhere` answers says who this is itself.)
+        let named_elsewhere = is_request(&msg.intent)
+            && self.named_position(role, &msg).is_some()
+            && self.called_elsewhere(i, role, &msg).is_none();
+        let mut items = self.answer_items(role, freq_khz, text, msg, i, heard_lang, t);
+        if named_elsewhere && !items.is_empty() {
+            // After a greeting: "good morning, this is Kraków Delivery, cleared ...".
+            let at = usize::from(matches!(items[0], AtcItem::Courtesy(_)));
+            items.splice(at..at, self.this_is(role));
+        }
+        self.transmit(i, role, items)
+    }
+
+    /// `ThisIs` the position of `role` (empty when it has none).
+    fn this_is(&self, role: Role) -> Option<AtcItem> {
+        self.position(role).map(|p| AtcItem::ThisIs {
+            station: p.callsign.clone(),
+        })
+    }
+
+    /// What `role` answers to the transmission (see [`AtcEngine::answer`]); empty for no
+    /// answer.
+    #[allow(clippy::too_many_arguments)]
+    fn answer_items(
+        &mut self,
+        role: Role,
+        freq_khz: u32,
+        text: &str,
+        msg: PilotMessage,
+        i: usize,
+        heard_lang: Lang,
+        t: SimTime,
+    ) -> Vec<AtcItem> {
         self.strips[i].heard += 1;
         let first_call_now = self.strips[i].first_call_due && understood(&msg);
         if understood(&msg) {
@@ -812,16 +907,16 @@ impl AtcEngine {
                 self.strips[i].handoff_acked = true;
             }
         }
-        if let Some(to) = self.called_elsewhere(role, &msg) {
-            let mut items: Vec<AtcItem> = self
-                .position(role)
-                .map(|p| AtcItem::ThisIs {
-                    station: p.callsign.clone(),
-                })
-                .into_iter()
-                .collect();
-            items.extend(self.redirect(i, to));
-            return self.transmit(i, role, items);
+        if let Some(to) = self.called_elsewhere(i, role, &msg) {
+            let mut items: Vec<AtcItem> = self.this_is(role).into_iter().collect();
+            // A call to the station the flight is being sent to repeats that "contact" as it
+            // was given (a hand-over stays a hand-over).
+            if self.strips[i].handoff_to == Some(to) && !self.strips[i].redirected {
+                items.extend(self.hand_over(i, to));
+            } else {
+                items.extend(self.redirect(i, to));
+            }
+            return items;
         }
         if self.starts_new_flight(i, role, &msg) {
             self.strips[i].end_flight();
@@ -836,6 +931,26 @@ impl AtcEngine {
         }
         if mentions_full_stop(text, heard_lang) {
             strip.full_stop_requested = true;
+        }
+        // A request instead of the readback of a redirect's "contact X" drops the redirect:
+        // the request is served as it is. A flight handed over keeps its hand-over.
+        if strip.redirected
+            && strip.handoff_to.is_some()
+            && is_request(&msg.intent)
+            && !strip.pending_items.is_empty()
+            && strip
+                .pending_items
+                .iter()
+                .all(|item| matches!(item, AtcItem::Contact { .. }))
+        {
+            strip.pending_readback = None;
+            strip.pending_items.clear();
+            strip.readback_requests = 0;
+            strip.readback_due_s = None;
+            strip.readback_role = None;
+            strip.reminded = false;
+            strip.handoff_to = None;
+            strip.redirected = false;
         }
         // Calling the station it was sent to completes the handover; calling a station on
         // the pilot's own initiative makes it the owner.
@@ -856,7 +971,7 @@ impl AtcEngine {
         if role == Role::Tower && was_handed_in && self.is_tower_inbound_call(i) {
             let mut items = self.handed_in_ifr_inbound(i);
             self.greet_back(i, role, msg.greeting, &mut items);
-            return self.transmit(i, role, items);
+            return items;
         }
         let strip = &mut self.strips[i];
         // Taxi help replaces an open taxi clearance with the route from where it is now; a
@@ -871,7 +986,11 @@ impl AtcEngine {
         if let Some(pending) = strip.pending_readback.clone().filter(|_| !help) {
             let result = check_readback(&pending, &msg.items);
             let request = is_request(&msg.intent);
-            if result == ReadbackResult::Correct || strip.readback_requests >= MAX_READBACK_REQUESTS
+            let at_limit = strip.readback_requests >= MAX_READBACK_REQUESTS;
+            // Asked for often enough, a readback is taken as it is; a transmission carrying
+            // none of its items (a garbled fragment) is no readback and does not complete it.
+            if result == ReadbackResult::Correct
+                || (at_limit && (request || carries_readback(&result, &pending)))
             {
                 // Correct, or asked for often enough: accept and move on.
                 let issued = std::mem::take(&mut strip.pending_items);
@@ -881,13 +1000,18 @@ impl AtcEngine {
                     if items.is_empty() && result == ReadbackResult::Correct {
                         items = self.clearance_confirmed(i, role, &issued);
                     }
+                    // Accepted still incorrect: what was not read back right is said once
+                    // more, so the pilot knows.
+                    if items.is_empty() {
+                        items = restatement(&result, &issued);
+                    }
                     if items.is_empty() {
                         items = msg.farewell.into_iter().map(AtcItem::Courtesy).collect();
                     }
                     self.greet_back(i, role, msg.greeting, &mut items);
-                    return self.transmit(i, role, items);
+                    return items;
                 }
-            } else {
+            } else if !at_limit {
                 strip.readback_requests += 1;
                 // The correction is the prompt; no reminder follows it.
                 strip.reminded = true;
@@ -902,8 +1026,10 @@ impl AtcEngine {
                 };
                 let mut items = items;
                 self.greet_back(i, role, msg.greeting, &mut items);
-                return self.transmit(i, role, items);
+                return items;
             }
+            // At the limit, a transmission carrying none of the readback's items is heard as
+            // any other; the readback stays open.
         }
         // The readback of a VFR entry or exit instruction is not answered.
         if role == Role::Tower && self.vfr_readback(i, &msg) {
@@ -925,15 +1051,28 @@ impl AtcEngine {
         if items.is_empty() && role == Role::Tower && self.repeated_ready(i, &msg.intent) {
             return Vec::new();
         }
+        // A request this position does not serve, made to another open position: sent there.
+        if items.is_empty()
+            && is_request(&msg.intent)
+            && let Some(to) = self.named_position(role, &msg)
+        {
+            items = self.redirect(i, to);
+        }
         // Every call gets an answer, except acknowledgements (also repeated readbacks: only
-        // words it was told); a farewell is returned.
+        // words it was told, or the readback the last clearance asked for); a farewell is
+        // returned.
         if items.is_empty()
             && let Some(negative) = self.clearance_not_given(i, &msg)
         {
             items.push(negative);
         }
         if items.is_empty() {
-            let reply = match self.content(i, &msg) {
+            let content = if self.repeated_readback(role, i, &msg) {
+                Content::Acknowledgement
+            } else {
+                self.content(i, &msg)
+            };
+            let reply = match content {
                 // A handed-in flight's first call is understood as its first contact.
                 Content::Message if first_call => {
                     items.extend(self.position(role).map(|p| AtcItem::Station {
@@ -954,7 +1093,7 @@ impl AtcEngine {
             }
         }
         self.greet_back(i, role, msg.greeting, &mut items);
-        self.transmit(i, role, items)
+        items
     }
 
     /// Spec 3.6: a call to `role` that begins a new flight of aircraft `i`, whose last flight
@@ -964,8 +1103,9 @@ impl AtcEngine {
     /// handed off.
     fn starts_new_flight(&self, i: usize, role: Role, msg: &PilotMessage) -> bool {
         let strip = &self.strips[i];
-        // A flight handed in from another station carries its plan into its first call.
-        if !strip.phase.is_airborne() || strip.handed_in {
+        // A flight handed in from another station carries its plan into its first call; one
+        // handed in silently in radar contact keeps it until Approach goes on.
+        if !strip.phase.is_airborne() || strip.handed_in || strip.radar_contact_kept {
             return false;
         }
         match (role, &msg.intent) {
@@ -1022,6 +1162,21 @@ impl AtcEngine {
         });
         let only = on_freq.next().filter(|_| on_freq.next().is_none())?;
         (self.last_addressed.get(&role) == Some(&self.strips[only].callsign)).then_some(only)
+    }
+
+    /// The only aircraft `role` works on its frequency (owned, with surveillance) whose
+    /// callsign is one letter or digit off the heard callsign `heard` ([`near_callsign`]).
+    /// Unlike [`AtcEngine::only_addressed`] it need not be the one `role` last spoke to:
+    /// the transmission names it, nearly. `None`: no such aircraft, or more than one.
+    fn near_aircraft(&self, role: Role, heard: &str) -> Option<usize> {
+        let mut hits = (0..self.strips.len()).filter(|&k| {
+            let s = &self.strips[k];
+            s.owner == role
+                && self.tracks.contains_key(&s.callsign)
+                && near_callsign(heard, &s.callsign.0)
+        });
+        let first = hits.next()?;
+        hits.next().is_none().then_some(first)
     }
 
     /// A greeting is returned once per station, in front of the reply.
@@ -1148,6 +1303,64 @@ impl AtcEngine {
         alone.intent == PilotIntent::Unknown && is_request(&joined.intent)
     }
 
+    /// `msg` (no request) repeats the readback of the last clearance aircraft `i` was asked
+    /// to read back, already complete: read back again by a pilot who did not hear it
+    /// accepted (the acceptance is silence), it is an acknowledgement, however the
+    /// controller's words since ("read back frequency", "say again") or the station it
+    /// names ("Katowice Tower") make it look. A correct readback is one; so is a garbled
+    /// fragment of one ("Conta Katowice-Krácow Tower") naming the other station that
+    /// clearance sent the aircraft to and nothing else: a report naming that station ("no
+    /// answer from Katowice Tower") is heard as any other call.
+    fn repeated_readback(&self, role: Role, i: usize, msg: &PilotMessage) -> bool {
+        let strip = &self.strips[i];
+        let Some(last) = strip.last_readback.as_ref() else {
+            return false;
+        };
+        if is_request(&msg.intent) {
+            return false;
+        }
+        if check_readback(last, &msg.items) == ReadbackResult::Correct {
+            return true;
+        }
+        let own = self.position(role).map(|p| p.callsign.as_str());
+        let Some(sent_to) = strip.issued.iter().rev().find_map(|item| match item {
+            AtcItem::Contact { station, khz } if last.contains(&ReadbackItem::Frequency(*khz)) => {
+                Some(station.as_str())
+            }
+            _ => None,
+        }) else {
+            return false;
+        };
+        let station = spoken_words(sent_to);
+        let said = spoken_words(&msg.raw);
+        if Some(sent_to) == own || !station.iter().all(|w| said.contains(w)) {
+            return false;
+        }
+        // Only a fragment of the readback: the station, "contact" and the frequency's words,
+        // besides the callsign (letters, not words) and the station called.
+        let mut allowed: Vec<String> = self
+            .procs
+            .positions
+            .iter()
+            .flat_map(|p| spoken_words(&p.callsign))
+            .chain(station)
+            .collect();
+        allowed.extend(FRAGMENT_WORDS.iter().map(|w| w.to_string()));
+        let fits = |w: &String| {
+            allowed.contains(w)
+                // A word cut short ("conta" for "contact").
+                || (w.chars().count() >= 4 && allowed.iter().any(|a| a.starts_with(w.as_str())))
+        };
+        // A place name with a garble glued on ("Katowice-Krácow") stands for the place.
+        msg.raw
+            .split_whitespace()
+            .filter(|chunk| {
+                !(chunk.contains('-') && spoken_words(chunk).first().is_some_and(&fits))
+            })
+            .flat_map(spoken_words)
+            .all(|w| fits(&w))
+    }
+
     /// The correction when the pilot reads back a take-off or landing clearance aircraft
     /// `i` does not have.
     fn clearance_not_given(&self, i: usize, msg: &PilotMessage) -> Option<AtcItem> {
@@ -1209,15 +1422,7 @@ impl AtcEngine {
     /// and the last transmission to the aircraft are known only here. In Polish a word
     /// repeats a told word in another form ("kołuję" for "kołuj", see [`inflected`]).
     fn content(&self, i: usize, msg: &PilotMessage) -> Content {
-        let words = |text: &str| -> Vec<String> {
-            normalize(text)
-                .into_iter()
-                .filter_map(|t| match t {
-                    Token::Word(w) => Some(fold(&w)),
-                    _ => None,
-                })
-                .collect()
-        };
+        let words = spoken_words;
         let told = self
             .last_told
             .get(&self.strips[i].callsign)
@@ -1256,6 +1461,32 @@ impl AtcEngine {
         } else {
             Content::Acknowledgement
         }
+    }
+
+    /// What the controller expects to hear from `cs` on `freq_khz`, as spoken phrases to
+    /// prime speech recognition: the aircraft's own callsign in full and abbreviated, and on
+    /// a Ground position the airport's stand names (at most [`STT_HINT_STANDS`], nearest
+    /// the aircraft first).
+    pub fn stt_hints(&self, cs: &Callsign, freq_khz: u32) -> Vec<String> {
+        let lang = self.strip(cs).map_or(Lang::En, |s| s.lang);
+        let mut hints = vec![
+            atc_phraseology::callsign_spoken(cs, true, lang),
+            atc_phraseology::callsign_spoken(cs, false, lang),
+        ];
+        hints.dedup();
+        if self.role_at(freq_khz) == Some(Role::Ground) {
+            let mut stands: Vec<&atc_navdata::model::Stand> = self.airport.stands.iter().collect();
+            if let Some(at) = self.tracks.get(cs).map(|t| t.last.pos) {
+                stands.sort_by(|a, b| distance_m(a.pos, at).total_cmp(&distance_m(b.pos, at)));
+            }
+            hints.extend(
+                stands
+                    .iter()
+                    .take(STT_HINT_STANDS)
+                    .map(|st| atc_phraseology::stand_spoken(&st.name)),
+            );
+        }
+        hints
     }
 
     fn strip_index(&self, cs: &Callsign) -> Option<usize> {
@@ -1683,10 +1914,21 @@ impl AtcEngine {
         amended
     }
 
-    /// A call naming another open position of this airport ("Krakow Approach, ..." on the
-    /// Tower frequency): that position. A readback naming a station carries its frequency and
+    /// A call without a request naming another open position of this airport ("Krakow
+    /// Approach, ..." on the Tower frequency), or any call naming the position aircraft `i`
+    /// is being handed over to (not redirected to): that position. Another request is served by the position it was
+    /// made to (its role handler sends on what it does not serve).
+    fn called_elsewhere(&self, i: usize, role: Role, msg: &PilotMessage) -> Option<Role> {
+        let to = self.named_position(role, msg)?;
+        let strip = &self.strips[i];
+        let handed_over_to = strip.handoff_to == Some(to) && !strip.redirected;
+        (!is_request(&msg.intent) || handed_over_to).then_some(to)
+    }
+
+    /// Another open position of this airport that the transmission names ("Krakow Approach,
+    /// ..." on the Tower frequency). A readback naming a station carries its frequency and
     /// is not a call.
-    fn called_elsewhere(&self, role: Role, msg: &PilotMessage) -> Option<Role> {
+    fn named_position(&self, role: Role, msg: &PilotMessage) -> Option<Role> {
         if !msg.station_called || !msg.items.freqs_khz.is_empty() {
             return None;
         }
@@ -1701,8 +1943,19 @@ impl AtcEngine {
         (to != role && open && self.position(to).is_some()).then_some(to)
     }
 
-    /// A request made to the wrong position: "contact" the one that handles it.
+    /// A request made to the wrong position: "contact" the one that handles it. A request
+    /// this position serves, made instead of the readback, drops the redirect.
     fn redirect(&mut self, i: usize, to: Role) -> Vec<AtcItem> {
+        let items = self.hand_over(i, to);
+        // After `expect_readback`, which clears it for every new clearance.
+        if !items.is_empty() {
+            self.strips[i].redirected = true;
+        }
+        items
+    }
+
+    /// "Contact" the position `to`, which takes the flight over once read back.
+    pub(super) fn hand_over(&mut self, i: usize, to: Role) -> Vec<AtcItem> {
         let Some(pos) = self.position(to) else {
             return Vec::new();
         };
@@ -1901,6 +2154,18 @@ fn letters_lost(full: &str, heard: &str) -> bool {
     }
     let mut rest = f.iter();
     h.iter().all(|c| rest.any(|x| x == c))
+}
+
+/// `heard` differs from the callsign `known` by exactly one letter or digit (a
+/// substitution), in full or abbreviated form ("NSB" for N172SP, abbreviated "NSP").
+fn near_callsign(heard: &str, known: &str) -> bool {
+    let heard = Callsign::new(heard).0;
+    let known = Callsign::new(known);
+    let one_off = |k: &str| {
+        heard.chars().count() == k.chars().count()
+            && heard.chars().zip(k.chars()).filter(|(a, b)| a != b).count() == 1
+    };
+    one_off(&known.0) || one_off(&known.abbreviated())
 }
 
 /// "full stop" anywhere in the transmission (also inside a position report), heard in

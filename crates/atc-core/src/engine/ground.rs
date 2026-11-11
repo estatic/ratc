@@ -75,6 +75,9 @@ impl AtcEngine {
             PilotIntent::RequestTaxi { atis, .. } => {
                 self.taxi_to_holding_point(i, *atis, Vec::new())
             }
+            PilotIntent::RequestTaxiToStand { .. } if msg.items.any_stand => {
+                self.taxi_to_any_stand(i)
+            }
             PilotIntent::RequestTaxiToStand { stand } => self.taxi_to_stand(i, stand.clone()),
             PilotIntent::RequestTaxiHelp => self.taxi_help(i, t),
             PilotIntent::RequestFollowMe => self.follow_me(i, t),
@@ -216,11 +219,35 @@ impl AtcEngine {
         self.taxi_to_holding_point(i, Some(letter), prefix)
     }
 
+    /// Not taxiing anywhere yet: airborne, on the runway or rolling.
+    fn cannot_taxi_to_stand(&self, i: usize) -> bool {
+        let phase = self.strips[i].phase;
+        phase.is_airborne() || matches!(phase, FlightPhase::OnRunway | FlightPhase::TakeoffRoll)
+    }
+
+    /// "Any stand": taxi to the free stand [`Self::pick_stand`] chooses; none -> unable,
+    /// say stand.
+    fn taxi_to_any_stand(&mut self, i: usize) -> Vec<AtcItem> {
+        if self.cannot_taxi_to_stand(i) {
+            return Vec::new();
+        }
+        let Some(pos) = self.last_pos(i) else {
+            return standby();
+        };
+        let Some(k) = self.pick_stand(i) else {
+            return vec![
+                AtcItem::Unable(UnableReason::NoFreeStand),
+                AtcItem::SayStand,
+            ];
+        };
+        let st = &self.airport.stands[k];
+        let (name, at) = (st.name.clone(), Some(st.pos));
+        self.taxi_to_stand_at(i, pos, name, at)
+    }
+
     /// Taxi to the requested stand, or back to the stand the aircraft started from.
     fn taxi_to_stand(&mut self, i: usize, stand: Option<String>) -> Vec<AtcItem> {
-        let phase = self.strips[i].phase;
-        if phase.is_airborne() || matches!(phase, FlightPhase::OnRunway | FlightPhase::TakeoffRoll)
-        {
+        if self.cannot_taxi_to_stand(i) {
             return Vec::new();
         }
         let Some(pos) = self.last_pos(i) else {
@@ -241,16 +268,25 @@ impl AtcEngine {
                 None => return vec![AtcItem::SayStand],
             },
         };
-        let target = TaxiTarget::Stand {
-            name: name.clone(),
-            at,
-        };
+        self.taxi_to_stand_at(i, pos, name, at)
+    }
+
+    /// The taxi clearance from `pos` to stand `name` (at `at`, when known).
+    fn taxi_to_stand_at(
+        &mut self,
+        i: usize,
+        pos: LatLon,
+        name: String,
+        at: Option<LatLon>,
+    ) -> Vec<AtcItem> {
+        let to = TaxiTo::Stand { name: name.clone() };
+        let target = TaxiTarget::Stand { name, at };
         let route = match self.graph.route(&self.airport, pos, &target) {
             Ok(r) => r,
             Err(e) => return vec![unable(&e)],
         };
         self.new_taxi_clearance(i, target);
-        let items = vec![self.taxi_item(i, TaxiTo::Stand { name: name.clone() }, &route)];
+        let items = vec![self.taxi_item(i, to, &route)];
         self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
         items
     }

@@ -210,6 +210,7 @@ impl Session {
             ClientMsg::Weather(w) => self.on_weather(w),
             ClientMsg::PttStart { freq_khz } => self.on_ptt_start(canonical(freq_khz)),
             ClientMsg::PttEnd => self.on_ptt_end(),
+            ClientMsg::SimLost => self.on_sim_lost(),
             ClientMsg::TextTransmission { freq_khz, text } => {
                 self.on_text(canonical(freq_khz), text)
             }
@@ -290,6 +291,18 @@ impl Session {
         let orders = network.take_vehicle_orders();
         server.send_vehicle_orders(orders);
         server.enqueue_back(outputs);
+    }
+
+    /// The simulator stopped: the client hears nothing (no ATIS, no controller audio) until
+    /// its next telemetry, and a transmission in progress is dropped, freeing the frequency.
+    fn on_sim_lost(&mut self) {
+        self.server.state.hub.lock().unwrap().tune(self.id, &[]);
+        self.tuned.clear();
+        self.press_refused = false;
+        self.server.state.hub.lock().unwrap().ptt_end(self.id);
+        if let Some(ptt) = self.end_relay() {
+            self.server.pilot_done(ptt.freq_khz, self.id);
+        }
     }
 
     /// Only the weather source's reports are used (by every station); a new ATIS letter goes
