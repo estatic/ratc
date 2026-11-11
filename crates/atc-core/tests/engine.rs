@@ -6151,6 +6151,93 @@ mod approach_arrival {
         });
     }
 
+    /// The silent hand-off chained to the landing: handed in in radar contact, Approach goes
+    /// on unprompted with the arrival instruction, clears the approach and hands the flight
+    /// over to Tower on the final; the pilot checks in with Tower and is cleared to land.
+    #[test]
+    fn silent_import_to_landing_clearance() {
+        let mut e = engine();
+        let mut h = atc_core::handover::FlightHandover {
+            callsign: cs(),
+            aircraft_type: "C172".into(),
+            plan: None,
+            squawk: Some(4601),
+            cleared_ft: Some(5000),
+            rules: Some(atc_phraseology::FlightRules::Ifr),
+            callsign_misses: 0,
+            radar_contact: true,
+        };
+        h.plan = Some(atc_core::strip::FlightPlan {
+            ifr: true,
+            destination: "ZZZZ".into(),
+            dest_name: "Zeta".into(),
+            cruise_ft: 5000,
+            sid: None,
+            dep_runway: None,
+            star: None,
+            approach: None,
+            vectors: false,
+            cleared_ft: 5000,
+            direct: None,
+            heading: None,
+            approach_cleared: false,
+            pattern: None,
+            established_check: false,
+        });
+        e.import_flight(h);
+        let mut p = Pilot::new(WEST, 5000.0, 90.0);
+        p.f.xpdr = Some(4601);
+        // The first sample: the arrival instruction, unprompted, from Approach.
+        p.tick(&mut e);
+        let first = p.f.heard.first().expect("an unprompted instruction");
+        assert_eq!(
+            (first.station.as_str(), first.freq_khz),
+            ("Zeta Approach", APP)
+        );
+        assert!(
+            !first.message.items.contains(&AtcItem::Identified),
+            "{:?}",
+            first.message.items
+        );
+        assert!(
+            first
+                .message
+                .items
+                .iter()
+                .any(|i| matches!(i, AtcItem::ExpectApproach { .. })),
+            "{:?}",
+            first.message.items
+        );
+        p.until(&mut e, 600, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        });
+        let centreline = destination(THR_27, 90.0, 7.0 * M_PER_NM);
+        p.to = Some(centreline);
+        p.until(&mut e, 300, |p| distance_m(p.f.pos, centreline) < 300.0);
+        p.to = Some(THR_27);
+        p.target = 1500.0;
+        let n = p.f.heard.len();
+        p.until(&mut e, 200, |p| p.f.heard.len() > n);
+        assert_eq!(
+            contact_of(&p.f.heard[n]),
+            Some(("Zeta Tower".to_string(), TWR)),
+            "{:?}",
+            p.f.heard
+        );
+        assert_eq!(p.f.com1, TWR);
+        assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        let out = p.call(
+            &mut e,
+            TWR,
+            "Zeta Tower, Sierra Sierra Tango, established ILS runway two seven",
+        );
+        assert!(
+            matches!(items(&out).as_slice(), [AtcItem::ClearedLand { runway, .. }] if runway == "27"),
+            "{out:?}"
+        );
+        assert!(e.strip(&cs()).unwrap().permissions.may_land);
+    }
+
     /// The first call of the EPKK -> EPKT flight, handed in climbing to FL100.
     const CLIMBING_FL100: &str = "Zeta Approach, Sierra Papa Tango Sierra Tango, passing four \
                                   thousand seven hundred feet, climbing flight level one zero \
