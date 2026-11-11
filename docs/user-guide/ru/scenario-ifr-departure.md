@@ -55,7 +55,7 @@ target/release/atc-client     # окно 2
 | KK599, первая точка SID | не ниже 3000 ft | CIFP, SUDOL 2J |
 | KK602, KK604 | не ниже 6000 ft и FL100 | CIFP, SUDOL 2J |
 | Передача Approach EPKT (30 NM до EPKT) | ещё набираешь; в записи ~4200 ft | правило передачи |
-| Первый вызов Approach EPKT | набор до 5000 ft («climb altitude five thousand feet») | `ifr.cruise_ft` станции EPKT |
+| Первая команда Approach EPKT | набор до 5000 ft («climb altitude five thousand feet») | `ifr.cruise_ft` станции EPKT |
 | ~15 NM до точки входа в курсовой | снижение до 3000 ft | Approach EPKT |
 | Векторение на ILS | 3000 ft, ниже не снижайся | высота FAF в CIFP |
 | KT537 (IF, 9.3 NM по DME IKTO) | 3000 ft | CIFP, ILS 27 |
@@ -68,12 +68,12 @@ target/release/atc-client     # окно 2
 
 ## Полёт с G1000
 
-- **FPL.** Нажми **FPL**. Если пункт назначения пуст, нажми ручку **FMS**, чтобы включить курсор, набери EPKT малой и большой ручками FMS и нажми **ENT**.
+- **FPL.** Нажми **FPL**. Если поля аэродромов пусты, нажми ручку **FMS**, чтобы включить курсор, набери EPKK как аэродром вылета и EPKT как аэродром назначения (для списка вылетов нужен аэродром вылета) малой и большой ручками FMS и нажми **ENT**.
 - **Вылет.** **PROC → Select Departure → SUDO2J** (SUDOL 2J, ВПП 25) → **Load**. ВПП и SID должны совпадать с тем, что выдал Delivery; для ВПП 07 это SUDO1F (SUDOL 1F).
 - **После взлёта.** Нажми **NAV**, чтобы автопилот вёл по SID. Когда диспетчер даёт курс, перейди на **HDG** и лети им; на NAV вернись, когда дадут «direct» или ты снова на маршруте.
 - **Высоты.** Выставь заданную высоту в окне выбранной высоты и набирай или снижайся по **ALT** / **VS** (что ждать, смотри в таблице высот выше).
 - **Переходная высота.** В EPKK она 6500 ft. Когда тебе разрешили эшелон выше неё, поставь **STD BARO** (1013); ниже — QNH от диспетчера.
-- **ILS.** Настрой курсовой маяк на **NAV1** (IKTO 109.90), переключи **CDI** на **LOC** и включи **APR**, когда получишь разрешение на заход.
+- **ILS.** Настрой курсовой маяк на **NAV1** (IKTO 109.90), проверь, что **CDI** показывает **LOC1** (он переключается сам, когда настроен ILS; если нет, нажми **CDI**) и включи **APR**, когда получишь разрешение на заход.
 
 ## Пустой список вылетов
 
@@ -156,12 +156,11 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 
 ## Kraków Approach 121.075: прилёт и заход ILS 27
 
-Перед вызовом послушай ATIS Катовице на COM2, 120.230 (в записи: information Alpha, runway in use two seven). Затем вызови Approach. Назови высоту, которую проходишь, и разрешённый эшелон:
+Перед вызовом послушай ATIS Катовице на COM2, 120.230 (в записи: information Alpha, runway in use two seven). Не вызывай: передача от Approach Кракова была беззвучной, ты уже опознан. Жди. Approach EPKT сам один раз вызовет тебя с курсом, высотой и ожидаемым заходом, а ты повторишь:
 
 | Кто | Фраза |
 |---|---|
-| Ты | Kraków Approach, Sierra Papa Alpha Bravo Charlie, passing four thousand seven hundred feet, climbing flight level one zero zero, inbound to Katowice, information Alpha |
-| Approach | Sierra Papa Alpha Bravo Charlie, identified, turn right heading three four five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two seven |
+| Approach | Sierra Papa Alpha Bravo Charlie, turn right heading three four five, climb altitude five thousand feet, QNH one zero one three, expect ILS approach runway two seven |
 | Ты | Right heading three four five, climb five thousand feet, QNH one zero one three, expect ILS approach runway two seven, Sierra Bravo Charlie |
 | Approach (~15 NM до точки входа в курсовой) | Sierra Bravo Charlie, descend to altitude three thousand feet |
 | Ты | Descend three thousand feet, Sierra Bravo Charlie |
@@ -171,6 +170,8 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 | Ты | Left heading two niner five, cleared ILS approach runway two seven, wilco, Sierra Bravo Charlie |
 | Approach (на курсовом, внутри FAF) | Sierra Bravo Charlie, contact Katowice Tower one two niner decimal two five five |
 | Ты | Tower one two niner decimal two five five, Sierra Bravo Charlie |
+
+Если два Approach на разных частотах (другие данные станций), действует старый порядок: голосовая передача («contact ...», повтори её), затем твой собственный первый вызов с проходимой высотой, разрешённым эшелоном и «inbound to Katowice, information Alpha»; ответ тогда начинается с «identified».
 
 Это векторение: STAR нет. Курс 345 ведёт тебя на север, восточнее Катовице; затем 005 и разворот влево на курсовой ВПП 27 с востока. Набор останови на 5000 ft: это высота прилёта станции EPKT. Если на вызове ты уже выше 5000 ft, услышишь «descend to altitude five thousand feet». Если ты уже близко к точке входа в курсовой, сразу дадут 3000 ft.
 
@@ -184,7 +185,7 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 
 ## Katowice Tower 129.255: посадка
 
-Tower сам разрешает посадку заходящему по приборам на прямой, вызов «final» не нужен. Если вызвать Tower до прямой, он скажет, где ты в очереди, и разрешит посадку, когда дойдёшь.
+Tower сам разрешает посадку заходящему по приборам на прямой, вызов «final» не нужен. Если вызвать Tower до прямой, на осевой он скажет «continue approach, N miles from touchdown», вне её — «you are N miles <north, south, ...> of the final approach course». Посадку он разрешит, когда будешь на прямой.
 
 | Кто | Фраза |
 |---|---|
