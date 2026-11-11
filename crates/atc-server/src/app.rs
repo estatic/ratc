@@ -61,7 +61,7 @@ fn fit_prompt(prompt: &str, mut hints: Vec<String>, said: Option<&str>) -> Strin
         let room = PROMPT_WORDS.saturating_sub(words(prompt));
         all[all.len().saturating_sub(room)..].join(" ")
     });
-    let said = said_owned.as_deref();
+    let said = said_owned.as_deref().filter(|s| !s.is_empty());
     let fixed = words(prompt) + said.map_or(0, words);
     while !hints.is_empty() && fixed + hints.iter().map(|h| words(h)).sum::<usize>() > PROMPT_WORDS
     {
@@ -763,6 +763,9 @@ mod tests {
         assert!(p.split_whitespace().count() <= PROMPT_WORDS, "{p}");
         assert!(p.ends_with("w199") && !p.contains("w0 "), "{p}");
         assert!(!p.contains("Sierra"));
+        // No room left for any of it: the prompt alone, without a trailing space.
+        let full = vec!["word"; PROMPT_WORDS].join(" ");
+        assert_eq!(fit_prompt(&full, Vec::new(), Some(&said)), full);
     }
 
     #[test]
