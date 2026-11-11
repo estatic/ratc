@@ -185,7 +185,7 @@ QNH 1013 поставь в альтиметр: на стоянке он пока
 
 ## Katowice Tower 129.255: посадка
 
-Tower сам разрешает посадку заходящему по приборам на прямой, вызов «final» не нужен. Если вызвать Tower до прямой, на осевой он скажет «continue approach, N miles from touchdown», вне её — «you are N miles <north, south, ...> of the final approach course». Посадку он разрешит, когда будешь на прямой.
+После передачи от Approach вызови Tower (фраза ниже). После этого вызова доклад «final» не нужен: Tower сам разрешает посадку заходящему по приборам на прямой. Если вызвать Tower до прямой, на осевой он скажет «continue approach, N miles from touchdown», вне её — «you are N miles <north, south, ...> of the final approach course». Посадку он разрешит, когда будешь на прямой.
 
 | Кто | Фраза |
 |---|---|

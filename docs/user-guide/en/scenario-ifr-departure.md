@@ -185,7 +185,7 @@ If you are already on the localizer and on the glideslope, Approach may hand you
 
 ## Katowice Tower 129.255: landing
 
-Tower clears an IFR arrival to land on final on its own: you do not need a "final" call. If you call Tower before final, on the centreline it says "continue approach, N miles from touchdown"; off it, "you are N miles <north, south, ...> of the final approach course". It clears you to land when you are on final.
+After Approach hands you over, check in with Tower (the phrase below). After the check-in you do not need a "final" call: Tower clears an IFR arrival to land on final on its own. If you check in before final, on the centreline it says "continue approach, N miles from touchdown"; off it, "you are N miles <north, south, ...> of the final approach course". It clears you to land when you are on final.
 
 | Who | Phrase |
 |---|---|
