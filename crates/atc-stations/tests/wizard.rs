@@ -278,6 +278,62 @@ fn airfield_without_layout_is_not_selectable() {
     assert!(!c.station("YYYY").exists());
 }
 
+/// Wraps a source and counts the calls the area list must keep to a minimum.
+struct Counting {
+    inner: Arc<dyn atc_navdata::source::SimDataSource>,
+    layouts: std::sync::atomic::AtomicUsize,
+    scans: std::sync::atomic::AtomicUsize,
+}
+
+impl atc_navdata::source::SimDataSource for Counting {
+    fn label(&self) -> String {
+        self.inner.label()
+    }
+    fn airport_layout(
+        &self,
+        icao: &str,
+    ) -> Result<atc_navdata::source::AirportLayout, atc_navdata::source::SourceError> {
+        self.layouts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.airport_layout(icao)
+    }
+    fn procedure_set(
+        &self,
+        icao: &str,
+    ) -> Result<atc_navdata::fixes::ProcedureSet, atc_navdata::source::SourceError> {
+        self.inner.procedure_set(icao)
+    }
+    fn airports(
+        &self,
+        around: atc_geo::LatLon,
+        radius_nm: f64,
+    ) -> Result<Vec<atc_navdata::model::Destination>, atc_navdata::source::SourceError> {
+        self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.airports(around, radius_nm)
+    }
+    fn cache_inputs(&self) -> Vec<PathBuf> {
+        self.inner.cache_inputs()
+    }
+}
+
+#[test]
+fn area_list_scans_the_simulator_once() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let mut c = ctx("scanonce").with_key();
+    c.run(&format!("{CREATE_ZZZZ}\n1\n6\n"));
+    let counting = Arc::new(Counting {
+        inner: c.env.source.clone().unwrap(),
+        layouts: 0.into(),
+        scans: 0.into(),
+    });
+    c.env.source = Some(counting.clone());
+    // List only (pick none): no layout is read, the airports are scanned once.
+    let out = c.run("n\n1\nZZZZ\n1\n\nnone\n7\n");
+    assert!(out.contains("(station)"), "{out}");
+    assert_eq!(counting.layouts.load(SeqCst), 0);
+    assert_eq!(counting.scans.load(SeqCst), 1);
+}
+
 #[test]
 fn remove_country_stops_downloading_it() {
     let c = ctx("rmcountry").with_key();

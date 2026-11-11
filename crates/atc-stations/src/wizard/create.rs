@@ -4,6 +4,7 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 
 use atc_geo::{M_PER_NM, distance_m};
+use atc_navdata::model::Destination;
 use atc_navdata::procedures::{PositionDef, Procedures};
 use atc_navdata::source::{AirportLayout, SimDataSource};
 
@@ -114,39 +115,45 @@ pub(super) fn create<R: BufRead, W: Write>(
     }
     near.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
     let existing = existing_stations(env);
-    let has_station = |a: &OaAirport| {
-        existing.iter().any(|(id, openaip)| {
-            openaip.as_deref() == Some(a.id.as_str())
-                || env
-                    .source
-                    .as_deref()
-                    .and_then(|src| match_layout(src, a))
-                    .is_some_and(|(sid, _)| sid == *id)
+    // One scan of the simulator's airports decides, in memory, which airfields can be built
+    // and under which station id; the layouts themselves are not read here.
+    let known = env
+        .source
+        .as_deref()
+        .and_then(|src| src.airports(centre, (AREA_M + MATCH_M) / M_PER_NM).ok())
+        .unwrap_or_default();
+    let ident: Vec<Option<String>> = near.iter().map(|(_, a)| ident_in(&known, a)).collect();
+    let has_station: Vec<bool> = near
+        .iter()
+        .zip(&ident)
+        .map(|((_, a), id)| {
+            existing.iter().any(|(sid, openaip)| {
+                openaip.as_deref() == Some(a.id.as_str()) || id.as_deref() == Some(sid.as_str())
+            })
         })
-    };
+        .collect();
     let items: Vec<String> = near
         .iter()
-        .map(|(d, a)| {
-            let mark = if has_station(a) { " (station)" } else { "" };
-            format!("{}{mark}", area_line(*d, a))
+        .zip(&has_station)
+        .map(|((d, a), st)| {
+            format!(
+                "{}{}",
+                area_line(*d, a),
+                if *st { " (station)" } else { "" }
+            )
         })
         .collect();
     // Closed airfields and those the wizard cannot build (no X-Plane layout: heliports,
     // ultralight sites, scenery not installed) are shown but cannot be picked.
     let selectable: Vec<bool> = near
         .iter()
-        .map(|(_, a)| {
-            a.kind != CLOSED
-                && env
-                    .source
-                    .as_deref()
-                    .is_some_and(|src| match_layout(src, a).is_some())
-        })
+        .zip(&ident)
+        .map(|((_, a), id)| a.kind != CLOSED && id.is_some())
         .collect();
     let pre: Vec<usize> = near
         .iter()
         .enumerate()
-        .position(|(i, (_, a))| a.id == home.id && selectable[i] && !has_station(a))
+        .position(|(i, (_, a))| a.id == home.id && selectable[i] && !has_station[i])
         .into_iter()
         .collect();
     let picked = p.pick_some("Airfields within 100 km:", &items, &pre, &selectable);
@@ -367,6 +374,22 @@ fn apt_dat_text(resolved: &AirportLayout, id: &str) -> String {
     }
     out.push_str("99\n");
     out
+}
+
+/// The simulator ident an airfield maps to in `known` (the same rule as [`match_layout`]):
+/// its ICAO code when listed, else the nearest airport within 300 m.
+fn ident_in(known: &[Destination], ap: &OaAirport) -> Option<String> {
+    if let Some(icao) = ap.icao_code.as_deref().filter(|s| !s.trim().is_empty())
+        && known.iter().any(|d| d.icao == icao)
+    {
+        return Some(icao.to_string());
+    }
+    let at = lat_lon(ap);
+    known
+        .iter()
+        .filter(|d| distance_m(at, d.pos) <= MATCH_M)
+        .min_by(|a, b| distance_m(at, a.pos).total_cmp(&distance_m(at, b.pos)))
+        .map(|d| d.icao.clone())
 }
 
 /// Station id and X-Plane block: by ICAO, else the nearest airport within 300 m.
