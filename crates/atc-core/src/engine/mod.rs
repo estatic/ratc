@@ -269,6 +269,10 @@ fn readback_reminder(
     Some((role, items))
 }
 
+/// The words besides station names that a fragment of a hand-off readback may hold:
+/// "contact" and the words of a frequency ("decimal", as Whisper also writes it).
+const FRAGMENT_WORDS: [&str; 4] = ["contact", "decimal", "dot", "point"];
+
 /// The words of `text` as heard (normalised, folded), without numbers or letters.
 fn spoken_words(text: &str) -> Vec<String> {
     normalize(text)
@@ -1304,8 +1308,9 @@ impl AtcEngine {
     /// accepted (the acceptance is silence), it is an acknowledgement, however the
     /// controller's words since ("read back frequency", "say again") or the station it
     /// names ("Katowice Tower") make it look. A correct readback is one; so is a garbled
-    /// one ("Conta Katowice-Krácow Tower") naming the other station that clearance sent
-    /// the aircraft to.
+    /// fragment of one ("Conta Katowice-Krácow Tower") naming the other station that
+    /// clearance sent the aircraft to and nothing else: a report naming that station ("no
+    /// answer from Katowice Tower") is heard as any other call.
     fn repeated_readback(&self, role: Role, i: usize, msg: &PilotMessage) -> bool {
         let strip = &self.strips[i];
         let Some(last) = strip.last_readback.as_ref() else {
@@ -1326,8 +1331,34 @@ impl AtcEngine {
         }) else {
             return false;
         };
+        let station = spoken_words(sent_to);
         let said = spoken_words(&msg.raw);
-        Some(sent_to) != own && spoken_words(sent_to).iter().all(|w| said.contains(w))
+        if Some(sent_to) == own || !station.iter().all(|w| said.contains(w)) {
+            return false;
+        }
+        // Only a fragment of the readback: the station, "contact" and the frequency's words,
+        // besides the callsign (letters, not words) and the station called.
+        let mut allowed: Vec<String> = self
+            .procs
+            .positions
+            .iter()
+            .flat_map(|p| spoken_words(&p.callsign))
+            .chain(station)
+            .collect();
+        allowed.extend(FRAGMENT_WORDS.iter().map(|w| w.to_string()));
+        let fits = |w: &String| {
+            allowed.contains(w)
+                // A word cut short ("conta" for "contact").
+                || (w.chars().count() >= 4 && allowed.iter().any(|a| a.starts_with(w.as_str())))
+        };
+        // A place name with a garble glued on ("Katowice-Krácow") stands for the place.
+        msg.raw
+            .split_whitespace()
+            .filter(|chunk| {
+                !(chunk.contains('-') && spoken_words(chunk).first().is_some_and(&fits))
+            })
+            .flat_map(spoken_words)
+            .all(|w| fits(&w))
     }
 
     /// The correction when the pilot reads back a take-off or landing clearance aircraft

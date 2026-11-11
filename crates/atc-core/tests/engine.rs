@@ -5125,6 +5125,29 @@ mod approach_departure {
             accepted(&e, &log, &[asked(), vec![]]);
         }
 
+        /// A report naming the station the aircraft was sent to is no readback fragment:
+        /// after the hand-off is complete, "no answer from Katowice Tower" and "unable to
+        /// contact Katowice Tower" are answered, not taken for a repeat of the readback.
+        #[test]
+        fn report_naming_the_handoff_station_is_answered() {
+            for report in [
+                "Zeta Approach, {CS_ABBR}, no answer from Katowice Tower",
+                "Zeta Approach, {CS_ABBR}, unable to contact Katowice Tower",
+            ] {
+                let mut e = katowice_engine();
+                handed_to_katowice(&mut e);
+                let log = replay(
+                    &mut e,
+                    &[
+                        "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
+                        report,
+                    ],
+                );
+                assert_eq!(log[0].1, Vec::<AtcItem>::new(), "{log:#?}");
+                assert!(!log[1].1.is_empty(), "{log:#?}");
+            }
+        }
+
         /// The station-name rule is for another unit only: after Tower's hand-off to this
         /// airport's Approach, a bare call to Approach on the Tower frequency is still told
         /// who this is and sent on, as before.
