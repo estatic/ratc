@@ -4741,6 +4741,24 @@ mod approach_departure {
         }
     }
 
+    /// Whisper's rendering of "stand apron four golf alpha" still finds the stand (B5).
+    #[test]
+    fn stand_misheard_by_whisper_is_matched() {
+        for said in [
+            "stand Aparon 4, Gulf Alpha",
+            "stand Apron for Golf Alpha",
+            "stand Upron for GALPHA",
+        ] {
+            let mut e = engine_with_stands(&[("APRON4 GA", NEAR_GA)]);
+            parked_on_stand_1(&mut e);
+            let out = items(&say(&mut e, GND, &format!("{CS}, request taxi to {said}")));
+            assert!(
+                matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "APRON4 GA"),
+                "{said}: {out:?}"
+            );
+        }
+    }
+
     /// Ground says the stand `APRON4 GA` as "apron four Golf Alpha"; the pilot asking for it
     /// that way and reading the clearance back as it was said is understood.
     #[test]

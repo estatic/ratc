@@ -1099,3 +1099,17 @@ fn whisper_stand_ride_is_right() {
         assert_eq!(heard_stand(said), "stand 9 R", "{said}");
     }
 }
+
+#[test]
+fn stand_as_whisper_mishears_it() {
+    for said in [
+        "stand Aparon 4, Gulf Alpha",
+        "stand a prone for Golf Alpha",
+        "stand Upron for GALPHA",
+        "stand Apron for Golf Alpha",
+    ] {
+        let s = heard_stand(&format!("Sierra Bravo Charlie, request taxi to {said}"));
+        assert!(squash(&s).starts_with("STAND"), "{said}: {s}");
+        assert!(squash(&s).len() > 8, "{said}: {s}");
+    }
+}

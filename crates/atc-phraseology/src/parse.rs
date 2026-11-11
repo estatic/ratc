@@ -333,6 +333,11 @@ fn is_stand_word(w: &str) -> bool {
             ))
 }
 
+/// "apron" as Whisper mishears it ("a prone" is two words: `prone` after `a`).
+fn is_apron_misheard(w: &str) -> bool {
+    matches!(w, "aparon" | "upron" | "aprone" | "apran" | "prone")
+}
+
 /// Any form of "request": "request taxi", "requests taxi", "requesting departure".
 fn is_request_word(w: &str) -> bool {
     matches!(w, "request" | "requests" | "requesting" | "requested")
@@ -1372,8 +1377,26 @@ impl<'a> Scan<'a> {
                 let mut parts = vec![keyword.to_string()];
                 // The pilot's callsign (already taken) ends the stand; "left" / "right" /
                 // "centre" right after a number is the stand's letter ("nine right" is 9R).
+                let mut skip = 0;
                 for j in s + 1..n.min(s + 11) {
-                    if self.used.get(j).copied().unwrap_or(false) {
+                    if j < skip {
+                        continue;
+                    }
+                    // "GALPHA" in capitals is read as a registration, its letters taken.
+                    const GALPHA: [char; 6] = ['G', 'A', 'L', 'P', 'H', 'A'];
+                    if parts.len() > 1
+                        && (0..GALPHA.len()).all(|k| {
+                            matches!(self.toks.get(j + k), Some(Token::Letter(c)) if *c == GALPHA[k])
+                        })
+                    {
+                        parts.push("galpha".to_string());
+                        skip = j + GALPHA.len();
+                        continue;
+                    }
+                    // ("for galpha" may have been taken for a destination.)
+                    if self.used.get(j).copied().unwrap_or(false)
+                        && !matches!(&self.toks[j], Token::Word(w) if w == "for")
+                    {
                         break;
                     }
                     let after_number = matches!(self.toks[j - 1], Token::Number(_));
@@ -1383,7 +1406,25 @@ impl<'a> Scan<'a> {
                         Token::Word(w) if after_number && side_letter(w).is_some() => {
                             parts.extend(side_letter(w).map(String::from));
                         }
-                        Token::Word(w) if is_stand_word(w) => parts.push(w.clone()),
+                        Token::Word(w) if is_stand_word(w) || is_apron_misheard(w) => {
+                            parts.push(w.clone());
+                        }
+                        // "apron for Golf Alpha": the 4 of the stand; "galpha": two letters
+                        // run together.
+                        Token::Word(w)
+                            if (w == "for"
+                                && parts
+                                    .last()
+                                    .is_some_and(|p| p == "apron" || is_apron_misheard(p)))
+                                || w == "galpha" =>
+                        {
+                            parts.push(w.clone());
+                        }
+                        // A comma inside the stand name ("Aparon 4, Gulf Alpha").
+                        Token::Break
+                            if parts.len() > 1
+                                && matches!(self.toks.get(j + 1), Some(Token::Letter(_)))
+                                && !self.used.get(j + 1).copied().unwrap_or(false) => {}
                         Token::Word(_) | Token::Break => break,
                     }
                 }
