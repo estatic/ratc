@@ -15,7 +15,7 @@ pub enum Token {
     Break,
 }
 
-const PHONETIC: [(&str, char); 29] = [
+const PHONETIC: [(&str, char); 28] = [
     ("alfa", 'A'),
     ("alpha", 'A'),
     ("bravo", 'B'),
@@ -24,8 +24,6 @@ const PHONETIC: [(&str, char); 29] = [
     ("echo", 'E'),
     ("foxtrot", 'F'),
     ("golf", 'G'),
-    // Whisper's mishearing of "golf".
-    ("gulf", 'G'),
     ("hotel", 'H'),
     ("india", 'I'),
     ("juliett", 'J'),

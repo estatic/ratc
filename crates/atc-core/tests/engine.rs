@@ -4746,6 +4746,7 @@ mod approach_departure {
     fn stand_misheard_by_whisper_is_matched() {
         for said in [
             "stand Aparon 4, Gulf Alpha",
+            "stand a prone for Golf Alpha",
             "stand Apron for Golf Alpha",
             "stand Upron for GALPHA",
         ] {

@@ -1102,14 +1102,27 @@ fn whisper_stand_ride_is_right() {
 
 #[test]
 fn stand_as_whisper_mishears_it() {
-    for said in [
-        "stand Aparon 4, Gulf Alpha",
-        "stand a prone for Golf Alpha",
-        "stand Upron for GALPHA",
-        "stand Apron for Golf Alpha",
+    for (said, want) in [
+        ("stand Aparon 4, Gulf Alpha", "STANDAPARON4GULFA"),
+        ("stand a prone for Golf Alpha", "STANDAPRONEFORGA"),
+        ("stand Upron for GALPHA", "STANDUPRONFORGALPHA"),
+        ("stand Apron for Golf Alpha", "STANDAPRONFORGA"),
     ] {
         let s = heard_stand(&format!("Sierra Bravo Charlie, request taxi to {said}"));
-        assert!(squash(&s).starts_with("STAND"), "{said}: {s}");
-        assert!(squash(&s).len() > 8, "{said}: {s}");
+        assert_eq!(squash(&s), want, "{said}: {s}");
     }
+}
+
+#[test]
+fn gulf_stays_a_word_for_places() {
+    let v = Vocabulary {
+        places: vec![Place::new("gulf coast", "KGCX")].into(),
+        ..Vocabulary::default()
+    };
+    let m = parse_pilot_with(
+        "Ground, Sierra Bravo Charlie, request IFR to Gulf Coast",
+        Lang::En,
+        &v,
+    );
+    assert_eq!(m.items.destination.as_deref(), Some("KGCX"), "{m:?}");
 }

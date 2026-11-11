@@ -1416,14 +1416,20 @@ impl<'a> Scan<'a> {
                                 && parts
                                     .last()
                                     .is_some_and(|p| p == "apron" || is_apron_misheard(p)))
-                                || w == "galpha" =>
+                                || w == "galpha"
+                                || w == "gulf" =>
                         {
                             parts.push(w.clone());
                         }
                         // A comma inside the stand name ("Aparon 4, Gulf Alpha").
                         Token::Break
                             if parts.len() > 1
-                                && matches!(self.toks.get(j + 1), Some(Token::Letter(_)))
+                                && matches!(
+                                    self.toks.get(j + 1),
+                                    Some(Token::Letter(_)) | Some(Token::Word(_))
+                                )
+                                && (matches!(self.toks.get(j + 1), Some(Token::Letter(_)))
+                                    || self.w(j + 1) == Some("gulf"))
                                 && !self.used.get(j + 1).copied().unwrap_or(false) => {}
                         Token::Word(_) | Token::Break => break,
                     }
