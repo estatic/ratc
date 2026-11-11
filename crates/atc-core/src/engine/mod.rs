@@ -43,9 +43,6 @@
 //! the adjacent units say (spec 3.1, `lang_for`).
 
 mod approach;
-/// Stand names offered to speech recognition on a Ground frequency.
-pub const STT_HINT_STANDS: usize = 20;
-
 mod delivery;
 mod follow_me;
 mod ground;
@@ -54,6 +51,9 @@ mod stand;
 mod stand_match;
 mod tower;
 mod vfr;
+
+/// Stand names offered to speech recognition on a Ground frequency.
+pub const STT_HINT_STANDS: usize = 20;
 
 pub use delivery::DestinationSet;
 pub(crate) use delivery::direct_key;

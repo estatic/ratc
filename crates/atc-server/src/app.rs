@@ -55,6 +55,13 @@ const PROMPT_WORDS: usize = 170;
 /// the speaker's callsign).
 fn fit_prompt(prompt: &str, mut hints: Vec<String>, said: Option<&str>) -> String {
     let words = |s: &str| s.split_whitespace().count();
+    // Over the cap without any hint: the last words of the transmission matter most.
+    let said_owned: Option<String> = said.map(|t| {
+        let all: Vec<&str> = t.split_whitespace().collect();
+        let room = PROMPT_WORDS.saturating_sub(words(prompt));
+        all[all.len().saturating_sub(room)..].join(" ")
+    });
+    let said = said_owned.as_deref();
     let fixed = words(prompt) + said.map_or(0, words);
     while !hints.is_empty() && fixed + hints.iter().map(|h| words(h)).sum::<usize>() > PROMPT_WORDS
     {
@@ -739,6 +746,22 @@ mod tests {
         assert!(!p.contains("apron 59 Golf Alpha"));
         let long = "word ".repeat(PROMPT_WORDS);
         let p = fit_prompt(&long, hints, None);
+        assert!(!p.contains("Sierra"));
+    }
+
+    #[test]
+    fn prompt_truncates_long_transmission_to_its_last_words() {
+        let said = (0..200)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let p = fit_prompt(
+            "Kraków Ground",
+            vec!["November Sierra Papa".into()],
+            Some(&said),
+        );
+        assert!(p.split_whitespace().count() <= PROMPT_WORDS, "{p}");
+        assert!(p.ends_with("w199") && !p.contains("w0 "), "{p}");
         assert!(!p.contains("Sierra"));
     }
 
