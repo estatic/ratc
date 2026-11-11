@@ -204,6 +204,24 @@ impl Store {
         out
     }
 
+    /// Forgets a downloaded country: deletes its cached data so updates no longer fetch it.
+    /// Returns whether there was anything to delete. Only a two-letter code names a store
+    /// directory; anything else is refused so a path can never escape the store.
+    pub fn remove_country(&self, cc: &str) -> io::Result<bool> {
+        if cc.len() != 2 || !cc.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{cc:?} is not a two-letter country code"),
+            ));
+        }
+        let dir = self.dir(cc);
+        if !dir.join(SYNC).is_file() {
+            return Ok(false);
+        }
+        std::fs::remove_dir_all(&dir)?;
+        Ok(true)
+    }
+
     /// Upstream changes since the last sync; `None` when the country was never
     /// downloaded.
     pub fn changes(

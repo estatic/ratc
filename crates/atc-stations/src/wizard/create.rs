@@ -10,7 +10,7 @@ use atc_navdata::source::{AirportLayout, SimDataSource};
 use super::values::value_screen;
 use super::{
     APT_DAT, Meta, OVERRIDES, PROCEDURES, Prompt, STATION, WizardEnv, combined, download_country,
-    fetched_on, lat_lon, mhz, write_enroute, write_meta,
+    fetched_on, lat_lon, mhz, stations, write_enroute, write_meta,
 };
 use crate::generate::{
     Choice, StationDoc, generate, offered_positions, write_atomic, write_station,
@@ -113,11 +113,40 @@ pub(super) fn create<R: BufRead, W: Write>(
         near.push((0.0, home));
     }
     near.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
-    let items: Vec<String> = near.iter().map(|(d, a)| area_line(*d, a)).collect();
-    let selectable: Vec<bool> = near.iter().map(|(_, a)| a.kind != CLOSED).collect();
+    let existing = existing_stations(env);
+    let has_station = |a: &OaAirport| {
+        existing.iter().any(|(id, openaip)| {
+            openaip.as_deref() == Some(a.id.as_str())
+                || env
+                    .source
+                    .as_deref()
+                    .and_then(|src| match_layout(src, a))
+                    .is_some_and(|(sid, _)| sid == *id)
+        })
+    };
+    let items: Vec<String> = near
+        .iter()
+        .map(|(d, a)| {
+            let mark = if has_station(a) { " (station)" } else { "" };
+            format!("{}{mark}", area_line(*d, a))
+        })
+        .collect();
+    // Closed airfields and those the wizard cannot build (no X-Plane layout: heliports,
+    // ultralight sites, scenery not installed) are shown but cannot be picked.
+    let selectable: Vec<bool> = near
+        .iter()
+        .map(|(_, a)| {
+            a.kind != CLOSED
+                && env
+                    .source
+                    .as_deref()
+                    .is_some_and(|src| match_layout(src, a).is_some())
+        })
+        .collect();
     let pre: Vec<usize> = near
         .iter()
-        .position(|(_, a)| a.id == home.id && a.kind != CLOSED)
+        .enumerate()
+        .position(|(i, (_, a))| a.id == home.id && selectable[i] && !has_station(a))
         .into_iter()
         .collect();
     let picked = p.pick_some("Airfields within 100 km:", &items, &pre, &selectable);
@@ -133,6 +162,15 @@ pub(super) fn create<R: BufRead, W: Write>(
             return;
         }
     }
+}
+
+/// Ids of the stations that already exist, with the OpenAIP airfield each was made from.
+fn existing_stations(env: &WizardEnv) -> Vec<(String, Option<String>)> {
+    stations(&env.data_dir)
+        .into_iter()
+        .filter(|s| s.dir.join(STATION).is_file())
+        .map(|s| (s.id, s.meta.map(|m| m.openaip_id)))
+        .collect()
 }
 
 /// Uses the stored country, downloading it when it was never fetched.
