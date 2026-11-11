@@ -14,6 +14,7 @@ use crate::apt::{NavdataError, parse_apt_dat};
 use crate::cifp::parse_cifp;
 use crate::fixes::{ProcedureSet, resolve, scan_fix_file, scan_nav_file, wanted_of};
 use crate::model::{Airport, Destination};
+use crate::source::{AirportLayout, SimDataSource, SourceError};
 
 const CUSTOM_SCENERY: &str = "Custom Scenery";
 const GLOBAL_AIRPORTS: &str = "Global Airports";
@@ -416,6 +417,44 @@ pub fn load_destinations(
     }
     out.sort_by(|a, b| a.icao.cmp(&b.icao));
     Ok(out)
+}
+
+/// X-Plane's scenery and navdata as a [`SimDataSource`].
+pub struct XPlaneSource {
+    root: PathBuf,
+}
+
+impl XPlaneSource {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+
+impl SimDataSource for XPlaneSource {
+    fn label(&self) -> String {
+        format!("X-Plane scenery at {}", self.root.display())
+    }
+
+    fn airport_layout(&self, icao: &str) -> Result<AirportLayout, SourceError> {
+        let r = resolve_airport(&self.root, icao)?;
+        Ok(AirportLayout {
+            origin: r.source.display().to_string(),
+            ident: r.ident,
+            apt_dat: r.text,
+        })
+    }
+
+    fn procedure_set(&self, icao: &str) -> Result<ProcedureSet, SourceError> {
+        Ok(load_procedure_set(&self.root, icao)?)
+    }
+
+    fn airports(&self, around: LatLon, radius_nm: f64) -> Result<Vec<Destination>, SourceError> {
+        Ok(load_destinations(&self.root, around, radius_nm, &[])?)
+    }
+
+    fn cache_inputs(&self) -> Vec<PathBuf> {
+        apt_dat_candidates(&self.root)
+    }
 }
 
 #[cfg(test)]

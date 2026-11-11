@@ -3,10 +3,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atc_client::XpUpdate;
 use atc_client::app::{App, Input};
 use atc_client::connection::{Outgoing, ServerEvent};
 use atc_client::ptt::PttInput;
+use atc_client::sim::SimUpdate;
 use atc_proto::{ClientMsg, ServerMsg, TelemetryFrame};
 use tokio::sync::mpsc;
 
@@ -41,7 +41,11 @@ fn start() -> Harness {
     let (to_conn, out) = mpsc::channel(64);
     let printed = Arc::new(Mutex::new(Vec::new()));
     let p = printed.clone();
-    let app = App::new(to_conn, Box::new(move |s| p.lock().unwrap().push(s.into())));
+    let app = App::new(
+        to_conn,
+        Box::new(move |s| p.lock().unwrap().push(s.into())),
+        atc_client::sim::xplane::info("127.0.0.1:49000"),
+    );
     let (inputs, rx) = mpsc::channel(64);
     tokio::spawn(app.run(rx));
     Harness {
@@ -77,7 +81,8 @@ async fn ptt_flow_and_frequency_busy() {
     let mut h = start();
     // disconnected: PTT ignored
     h.feed(Input::Ptt(PttInput::KeyToggle)).await;
-    h.feed(Input::Xp(XpUpdate::Telemetry(frame(118_105)))).await;
+    h.feed(Input::Sim(SimUpdate::Telemetry(frame(118_105))))
+        .await;
     assert!(matches!(
         h.next_out().await,
         Outgoing::Msg(ClientMsg::Telemetry(_))
@@ -119,7 +124,8 @@ async fn ptt_flow_and_frequency_busy() {
 async fn text_lines_need_telemetry_and_connection() {
     let mut h = start();
     h.feed(Input::Line("request taxi".into())).await;
-    h.feed(Input::Xp(XpUpdate::Telemetry(frame(118_105)))).await;
+    h.feed(Input::Sim(SimUpdate::Telemetry(frame(118_105))))
+        .await;
     assert!(matches!(
         h.next_out().await,
         Outgoing::Msg(ClientMsg::Telemetry(_))

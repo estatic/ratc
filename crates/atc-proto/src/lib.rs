@@ -44,14 +44,15 @@ pub struct TelemetryFrame {
     /// Transponder code as dialled (`4201`); `None` when the sim does not report it.
     #[serde(default)]
     pub xpdr_code: Option<u16>,
-    /// Transponder mode as X-Plane 11 reports it: 0 off, 1 standby, 2 on, 3 alt, 4 test.
+    /// Transponder mode, protocol codes: 0 off, 1 standby, 2 on, 3 test. Each simulator adapter
+    /// maps its own values onto these.
     #[serde(default)]
     pub xpdr_mode: Option<u8>,
-    /// Sim UTC time of day in seconds (`sim/time/zulu_time_sec`); `None` from peers that do
+    /// UTC seconds of the day, converted by the client; `None` from peers that do
     /// not send it.
     #[serde(default)]
     pub utc_s: Option<f64>,
-    /// Sim day of the year, 0 = 1 January (`sim/time/local_date_days`); `None` from peers
+    /// UTC day of the year, 0 = 1 January; `None` from peers
     /// that do not send it.
     #[serde(default)]
     pub day_of_year: Option<u16>,
@@ -198,8 +199,8 @@ pub enum ServerMsg {
 /// takes no more (about 20 KB of JSON, well inside its 64 KiB datagram buffer).
 pub const FOLLOW_ME_MAX_POINTS: usize = 500;
 
-/// Prefix of a vehicle command on the client -> X-Plane plugin UDP channel; the rest of the
-/// datagram is the `ServerMsg` as JSON. Every other datagram is an overlay text line.
+/// Prefix of a vehicle command on the client -> the X-Plane adapter's plugin UDP channel; the
+/// rest of the datagram is the `ServerMsg` as JSON. Every other datagram is an overlay text line.
 pub const OVERLAY_COMMAND_PREFIX: &str = "FOLLOWME ";
 
 /// The overlay datagram relaying `msg` to the plugin; `None` for messages it does not take.

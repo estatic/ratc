@@ -18,7 +18,7 @@ pub struct ClientConfig {
     aircraft_type: Option<toml::Value>,
     /// Ignored (cloud bases are sent above sea level); accepted so old files still load.
     field_elev_ft: Option<toml::Value>,
-    /// host:port of the X-Plane overlay plugin; [`crate::overlay::DEFAULT_ADDR`] when absent.
+    /// host:port of the X-Plane overlay plugin; [`crate::sim::xplane::overlay::DEFAULT_ADDR`] when absent.
     pub overlay: Option<String>,
     pub ptt: PttConfig,
     /// Substring of the capture device name; the default device when absent.

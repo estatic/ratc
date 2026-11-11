@@ -7,14 +7,19 @@ airport = "EPKK"
 # answer on their frequencies instead of the stations' emulated adjacent units, even when
 # `airport` runs a single station.
 data_dir = "data/airports"
-# Airport layout (runways, taxiways, stands) from the scenery this X-Plane actually loads, so
-# taxi routes match the sim; without it (or if not found) data_dir/<airport>/apt.dat is used.
-# Procedures and frequencies always come from data_dir.
-# Linux (Steam): "/home/<you>/.local/share/Steam/steamapps/common/X-Plane 11"
-# Windows: "C:/X-Plane 11"   macOS: "/Users/<you>/X-Plane 11"
-# xplane_root = "/path/to/X-Plane 11"
 # "standard" | "training"
 strictness = "standard"
+
+# Simulator data: the airport layout (runways, taxiways, stands) from the scenery this X-Plane
+# actually loads, so taxi routes match the sim, plus SID/STAR/approaches from its CIFP and the
+# destination airports. Without it (or if not found) data_dir/<airport>/apt.dat is used and IFR
+# is unavailable. Positions and frequencies always come from data_dir.
+# Linux (Steam): "/home/<you>/.local/share/Steam/steamapps/common/X-Plane 11"
+# Windows: "C:/X-Plane 11"   macOS: "/Users/<you>/X-Plane 11"
+# The old top-level `xplane_root = "<dir>"` is still accepted.
+# [sim_data]
+# sim = "xplane"
+# root = "/path/to/X-Plane 11"
 
 [whisper]
 # provisional — see docs/benchmarks/2026-10-voice.md; re-check with X-Plane running

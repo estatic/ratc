@@ -16,6 +16,7 @@ use anyhow::{Context, Result, bail};
 use atc_core::engine::EngineConfig;
 use atc_core::readback::Strictness;
 use atc_navdata::enroute::{EnrouteUnitDef, load_enroute};
+use atc_navdata::source::SimDataConfig;
 use atc_server::config::{ServerConfig, StrictnessSetting, check_models, load_config};
 use atc_server::floor::RadioTiming;
 use atc_server::hub::Hub;
@@ -90,7 +91,12 @@ fn run_wizard(config: &Path) -> Result<()> {
     let store =
         Store::default_location().context("no home directory for the OpenAIP data store")?;
     let key_dir = config_dir().context("no home directory for the OpenAIP key")?;
-    let env = WizardEnv::new(cfg.data_dir, cfg.xplane_root, store, key_dir);
+    let env = WizardEnv::new(
+        cfg.data_dir,
+        cfg.sim_data.as_ref().map(SimDataConfig::open),
+        store,
+        key_dir,
+    );
     let stdin = std::io::stdin();
     let mut prompt = Prompt::new(stdin.lock(), std::io::stdout());
     run(&env, |key| Box::new(HttpApi::new(key)), &mut prompt)?;
@@ -124,10 +130,11 @@ fn build_state(cfg: &ServerConfig) -> Result<AppState> {
         language: cfg.whisper.language_mode()?,
         ..EngineConfig::new(strictness)
     };
+    let sim_data = cfg.sim_data.as_ref().map(SimDataConfig::open);
     let loaded = load_stations(
         &cfg.data_dir,
         cfg.airport.as_deref(),
-        cfg.xplane_root.as_deref(),
+        sim_data.as_deref(),
         &engine_cfg,
     )?;
     let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();

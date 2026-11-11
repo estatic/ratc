@@ -246,7 +246,7 @@ impl Transponder {
             self.code = Some(code);
         }
         if let Some(m) = def.mode {
-            let mode = TransponderMode::from_xplane(m)
+            let mode = TransponderMode::from_code(m)
                 .ok_or_else(|| anyhow!("bad transponder mode {m} (expected 0 to 3)"))?;
             self.mode = Some(mode);
         }
@@ -562,7 +562,7 @@ fn parse_track_row(line: &str, columns: &[&str]) -> Result<AircraftState> {
         Some(m) => Some(
             u8::try_from(m)
                 .ok()
-                .and_then(TransponderMode::from_xplane)
+                .and_then(TransponderMode::from_code)
                 .ok_or_else(|| anyhow!("bad `xpdr_mode` value `{m}` (expected 0 to 3)"))?,
         ),
     };

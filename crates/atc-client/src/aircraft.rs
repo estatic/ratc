@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use atc_proto::CallsignSource;
 use tokio::sync::watch;
 
-/// What X-Plane says about the loaded aircraft; `None` is unknown or empty.
+/// What the sim says about the loaded aircraft; `None` is unknown or empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SimAircraft {
     pub icao: Option<String>,
@@ -47,16 +47,21 @@ impl ChangeFilter {
     }
 }
 
-/// Type sent while X-Plane has not reported one.
+/// Type sent while the sim has not reported one.
 pub const UNKNOWN_TYPE: &str = "ZZZZ";
 
-/// Printed (once) when there is neither a config callsign nor a tail number.
-pub const MISSING_CALLSIGN: &str =
-    "X-Plane has no tail number for this aircraft; set callsign in config/client.toml";
+/// Printed (once) when there is neither a config callsign nor a tail number from the sim
+/// named `sim_name`.
+pub fn missing_callsign(sim_name: &str) -> String {
+    format!("{sim_name} has no tail number for this aircraft; set callsign in config/client.toml")
+}
 
-/// Appended to [`MISSING_CALLSIGN`] when a connection under another identity exists.
-pub fn still_flying(callsign: &str, aircraft_type: &str) -> String {
-    format!("{MISSING_CALLSIGN}; still flying as {callsign} ({aircraft_type})")
+/// [`missing_callsign`] when a connection under another identity exists.
+pub fn still_flying(sim_name: &str, callsign: &str, aircraft_type: &str) -> String {
+    format!(
+        "{}; still flying as {callsign} ({aircraft_type})",
+        missing_callsign(sim_name)
+    )
 }
 
 /// Who the client tells the server it is.
@@ -109,16 +114,23 @@ pub struct IdentityTracker {
     tx: watch::Sender<Option<Identity>>,
     /// The sim aircraft the missing-callsign line was last printed for.
     missing_for: Option<SimAircraft>,
+    /// The sim's name, for the missing-callsign line.
+    sim_name: &'static str,
 }
 
 impl IdentityTracker {
-    pub fn new(config_callsign: Option<String>, tx: watch::Sender<Option<Identity>>) -> Self {
+    pub fn new(
+        config_callsign: Option<String>,
+        tx: watch::Sender<Option<Identity>>,
+        sim_name: &'static str,
+    ) -> Self {
         Self {
             config_callsign,
             filter: ChangeFilter::new(Duration::from_secs(2)),
             last: None,
             tx,
             missing_for: None,
+            sim_name,
         }
     }
 
@@ -151,8 +163,8 @@ impl IdentityTracker {
             Err(MissingCallsign) if self.missing_for.as_ref() != Some(&sim) => {
                 self.missing_for = Some(sim);
                 Some(match &*self.tx.borrow() {
-                    Some(id) => still_flying(&id.callsign, &id.aircraft_type),
-                    None => MISSING_CALLSIGN.to_string(),
+                    Some(id) => still_flying(self.sim_name, &id.callsign, &id.aircraft_type),
+                    None => missing_callsign(self.sim_name),
                 })
             }
             Err(MissingCallsign) => None,
@@ -203,7 +215,7 @@ mod tests {
     #[test]
     fn tracker_releases_a_stable_value_on_ticks_alone() {
         let (tx, rx) = watch::channel(None);
-        let mut t = IdentityTracker::new(None, tx);
+        let mut t = IdentityTracker::new(None, tx, "X-Plane");
         let t0 = Instant::now();
         let s = Duration::from_secs;
         assert_eq!(t.observe(t0, sim(Some("C1"), Some("SP-A"))), None);
@@ -222,12 +234,12 @@ mod tests {
     #[test]
     fn tracker_reports_a_missing_callsign_once() {
         let (tx, rx) = watch::channel(None);
-        let mut t = IdentityTracker::new(None, tx);
+        let mut t = IdentityTracker::new(None, tx, "X-Plane");
         let t0 = Instant::now();
         t.observe(t0, sim(Some("C172"), None));
         assert_eq!(
             t.tick(t0 + Duration::from_secs(2)),
-            Some(MISSING_CALLSIGN.to_string())
+            Some(missing_callsign("X-Plane"))
         );
         assert_eq!(t.tick(t0 + Duration::from_secs(3)), None);
         assert_eq!(*rx.borrow(), None);
@@ -236,7 +248,7 @@ mod tests {
     #[test]
     fn missing_callsign_mid_session_says_still_flying() {
         let (tx, rx) = watch::channel(None);
-        let mut t = IdentityTracker::new(None, tx);
+        let mut t = IdentityTracker::new(None, tx, "X-Plane");
         let t0 = Instant::now();
         let s = Duration::from_secs;
         t.observe(t0, sim(Some("C172"), Some("SP-ABC")));

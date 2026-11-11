@@ -98,26 +98,33 @@ In `config/server.toml`, section `[whisper]`:
 Other server settings: `listen` (default `127.0.0.1:8740`), `airport = "EPKK"`,
 `strictness = "standard" | "training"`.
 
-### Airport layout from X-Plane (`xplane_root`)
+### Airport layout from X-Plane (`[sim_data]`)
 
-`xplane_root = "/path/to/X-Plane 11"` in `config/server.toml`: the server takes the airport
-layout (runways, taxiways, stands, the apt.dat part) from the scenery X-Plane itself loads, so
-that taxi routes name the taxiways you see in the simulator. The search order is X-Plane's:
-`Custom Scenery` folders not yet in `scenery_packs.ini` (X-Plane adds them at the top on its next
-start), then the enabled `SCENERY_PACK` lines of the ini in order (`SCENERY_PACK_DISABLED` is
-skipped), then `Custom Scenery/Global Airports`, then
-`Resources/default scenery/default apt dat`. Frequencies and procedures always come from
-`data/airports/<ICAO>/`. At start the log shows
-`airport layout: <file> (X-Plane scenery): ...; taxiways: ...`. Without `xplane_root`, or if the
-airport is not found, there is a warning and the repository's `data/airports/<ICAO>/apt.dat` is
-used. After installing or removing airport scenery, restart both X-Plane and the server.
+```toml
+[sim_data]
+sim = "xplane"
+root = "/path/to/X-Plane 11"
+```
+
+in `config/server.toml`: the server takes the airport layout (runways, taxiways, stands, the
+apt.dat part) from the scenery X-Plane itself loads, so that taxi routes name the taxiways you
+see in the simulator. The old top-level `xplane_root = "/path/to/X-Plane 11"` still works
+(setting both is an error). The search order is X-Plane's: `Custom Scenery` folders not yet in
+`scenery_packs.ini` (X-Plane adds them at the top on its next start), then the enabled
+`SCENERY_PACK` lines of the ini in order (`SCENERY_PACK_DISABLED` is skipped), then
+`Custom Scenery/Global Airports`, then `Resources/default scenery/default apt dat`. Frequencies
+and procedures always come from `data/airports/<ICAO>/`. At start the log shows
+`airport layout: <file> (X-Plane scenery at <root>): ...; taxiways: ...`. Without `[sim_data]`,
+or if the airport is not found, there is a warning and the repository's
+`data/airports/<ICAO>/apt.dat` is used. After installing or removing airport scenery, restart
+both X-Plane and the server.
 
 ### IFR and VFR points
 
 - Three more English voices (Delivery, Approach, Radar) are downloaded by the same
   `tools/fetch-piper.sh`; run it once before starting the server (`tools/MODELS.md`).
 - The server reads the procedures (SID, STAR, approaches) from the X-Plane install's CIFP
-  (`Resources/default data/CIFP/EPKK.dat`) through `xplane_root`. Without CIFP the controller
+  (`Resources/default data/CIFP/EPKK.dat`) through `[sim_data]`. Without CIFP the controller
   answers an IFR request with `IFR not available, VFR only`.
 - A step-by-step guide to instrument departures and arrivals and to VFR entry via the reporting
   points on a C172 G1000: `docs/user-guide/en/ifr-and-vfr-points.md` (Russian:
@@ -146,9 +153,11 @@ from OpenAIP and the X-Plane layout:
 target/release/atc-server airports        # Windows: atc-server.exe airports
 ```
 
-Requirements: `xplane_root` in `config/server.toml` (the wizard reads the airport layout from
-your scenery and refuses to create a station without it) and an OpenAIP API key (openaip.net ->
-register -> Profile -> API clients; free). Menu 5 asks for the key and checks it.
+Requirements: `[sim_data]` (or the old `xplane_root`) in `config/server.toml` (the wizard
+reads the airport layout from your scenery and refuses to create a station without it) and an
+OpenAIP API key (openaip.net -> register -> Profile -> API clients; free). Menu 5 asks for the
+key and checks it. Set `[sim_data]` with `sim = "xplane"` and `root = "<X-Plane dir>"`; the old
+top-level `xplane_root` still works but must not be set together with `[sim_data]` (config error).
 
 ### Menu
 
@@ -244,10 +253,10 @@ one that does not load is skipped with a warning naming the file. The log starts
 - **Outside coverage.** Where nothing takes you over, the controller says "frequency change
   approved" once; after that nobody answers until you call a station or unit. This also applies
   to a station whose procedures name no adjacent FIS or ACC.
-- **Destinations.** Any airfield in the apt.dat files X-Plane loads (`xplane_root`) can be named
+- **Destinations.** Any airfield in the apt.dat files X-Plane loads (`[sim_data]`) can be named
   as the destination of a clearance, anywhere in the world. The scan takes a few seconds, so it
   is cached in `data/cache/destinations.json` and rebuilt when the size or modification time of
-  one of the apt.dat files changes. Without `xplane_root` no destination is known and the
+  one of the apt.dat files changes. Without `[sim_data]` no destination is known and the
   clearance asks "say again destination".
 - **Speech recognition.** The prompt given to Whisper comes from whoever works the frequency you
   transmit on: the names of that station, or a unit's callsign and its nearest stations. On a
@@ -524,4 +533,4 @@ reference transcripts are `scenarios/*.expected.txt`. Checking the standard scen
 | `no telemetry from X-Plane yet` | X-Plane is not running, wrong `xplane` in `config/client.toml`, or a firewall blocks UDP 49000 |
 | error reading `config/...` or `data/airports/...` | not started from the repository root |
 | the client cannot connect from a browser / with `Origin` | on purpose, see section 4 |
-| Ground names taxiways that are not in the simulator | `xplane_root` not set, or X-Plane not restarted after installing scenery; see `airport layout:` in the server log |
+| Ground names taxiways that are not in the simulator | `[sim_data]` (or the old `xplane_root`) not set, or X-Plane not restarted after installing scenery; see `airport layout:` in the server log |

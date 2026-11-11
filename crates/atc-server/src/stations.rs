@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use atc_core::engine::{AtcEngine, DestinationSet, EngineConfig};
 use atc_navdata::model::Airport;
 use atc_navdata::procedures::Procedures;
+use atc_navdata::source::SimDataSource;
 
 use tracing::warn;
 
@@ -14,7 +15,7 @@ use crate::layout::{
     adjacent_names, load_airport, load_all_destinations, load_procedure_set_for, load_procedures,
 };
 
-/// The scan of the install's airports (see [`load_all_destinations`]).
+/// The scan of the source's airports (see [`load_all_destinations`]).
 pub const DESTINATIONS_CACHE: &str = "data/cache/destinations.json";
 
 /// One airport the server answers for. `id` is the name of its directory in `data_dir`.
@@ -35,10 +36,10 @@ struct Parts {
 }
 
 /// Reads the station `id` from `data_dir/<id>`.
-fn read_parts(data_dir: &Path, id: &str, xplane_root: Option<&Path>) -> Result<Parts> {
+fn read_parts(data_dir: &Path, id: &str, source: Option<&dyn SimDataSource>) -> Result<Parts> {
     let dir = data_dir.join(id);
     let procs = load_procedures(&dir)?;
-    let airport = load_airport(xplane_root, &dir, id)?;
+    let airport = load_airport(source, &dir, id)?;
     Ok(Parts {
         id: id.to_string(),
         dir,
@@ -49,7 +50,7 @@ fn read_parts(data_dir: &Path, id: &str, xplane_root: Option<&Path>) -> Result<P
 
 fn build(
     parts: Parts,
-    xplane_root: Option<&Path>,
+    source: Option<&dyn SimDataSource>,
     cfg: &EngineConfig,
     destinations: &DestinationSet,
 ) -> LoadedStation {
@@ -61,7 +62,7 @@ fn build(
     } = parts;
     let mut engine = AtcEngine::new(airport.clone(), procs.clone(), cfg.clone())
         .with_destinations(destinations.clone());
-    if let Some(set) = load_procedure_set_for(xplane_root, &id) {
+    if let Some(set) = load_procedure_set_for(source, &id) {
         engine = engine.with_procedure_set(set);
     }
     LoadedStation {
@@ -73,11 +74,14 @@ fn build(
     }
 }
 
-/// The destinations of every engine: all airports of the install, scanned once (cached in
+/// The destinations of every engine: all airports of the source, scanned once (cached in
 /// [`DESTINATIONS_CACHE`]), the adjacent towers of all stations by their spoken names.
-fn shared_destinations(xplane_root: Option<&Path>, parts: &[Parts]) -> DestinationSet {
-    let Some(root) = xplane_root else {
-        warn!("destinations: xplane_root not set; clearances cannot name a destination");
+fn shared_destinations(source: Option<&dyn SimDataSource>, parts: &[Parts]) -> DestinationSet {
+    let Some(source) = source else {
+        warn!(
+            "destinations: no simulator data source configured ([sim_data] in \
+             config/server.toml); clearances cannot name a destination"
+        );
         return DestinationSet::new(Vec::new());
     };
     let mut names = Vec::new();
@@ -89,7 +93,7 @@ fn shared_destinations(xplane_root: Option<&Path>, parts: &[Parts]) -> Destinati
         }
     }
     DestinationSet::new(load_all_destinations(
-        root,
+        source,
         Path::new(DESTINATIONS_CACHE),
         &names,
     ))
@@ -101,7 +105,7 @@ fn shared_destinations(xplane_root: Option<&Path>, parts: &[Parts]) -> Destinati
 pub fn load_stations(
     data_dir: &Path,
     only: Option<&str>,
-    xplane_root: Option<&Path>,
+    source: Option<&dyn SimDataSource>,
     cfg: &EngineConfig,
 ) -> Result<Vec<LoadedStation>> {
     let ids: Vec<String> = match only {
@@ -123,7 +127,7 @@ pub fn load_stations(
     let mut parts = Vec::new();
     let mut errors = Vec::new();
     for id in &ids {
-        match read_parts(data_dir, id, xplane_root) {
+        match read_parts(data_dir, id, source) {
             Ok(p) => parts.push(p),
             Err(e) => {
                 tracing::warn!("station {} skipped: {e:#}", data_dir.join(id).display());
@@ -142,9 +146,9 @@ pub fn load_stations(
             }
         );
     }
-    let destinations = shared_destinations(xplane_root, &parts);
+    let destinations = shared_destinations(source, &parts);
     Ok(parts
         .into_iter()
-        .map(|p| build(p, xplane_root, cfg, &destinations))
+        .map(|p| build(p, source, cfg, &destinations))
         .collect())
 }
