@@ -21,7 +21,7 @@ fn golden_transcripts_match() {
     let (xplane, plain): (Vec<PathBuf>, Vec<PathBuf>) = scenarios
         .into_iter()
         .partition(|p| needs_xplane(p).unwrap_or_else(|e| panic!("{}: {e:#}", p.display())));
-    assert_eq!((plain.len(), xplane.len()), (8, 8), "{plain:?} {xplane:?}");
+    assert_eq!((plain.len(), xplane.len()), (8, 9), "{plain:?} {xplane:?}");
     let run = if xplane_root().is_some() {
         plain.into_iter().chain(xplane).collect::<Vec<_>>()
     } else {

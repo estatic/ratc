@@ -993,3 +993,57 @@ fn landing_words_are_never_destinations() {
         assert_eq!(m.items.destination, None, "{said}");
     }
 }
+
+fn ifr_destination(text: &str) -> Option<String> {
+    with(text).items.destination
+}
+
+#[test]
+fn ifr_2_place_is_destination() {
+    assert_eq!(
+        ifr_destination(
+            "Delivery, Sierra Papa Alpha Bravo Charlie, IFR 2 Katowice, request clearance"
+        )
+        .as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn ifr_glued_to_place_is_destination() {
+    assert_eq!(
+        ifr_destination(
+            "Delivery, Sierra Papa Alpha Bravo Charlie, IFR Tokatowice, request clearance"
+        )
+        .as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn ifr_two_place_is_destination() {
+    assert_eq!(
+        ifr_destination("Delivery, Sierra Papa Alpha Bravo Charlie, IFR two Katowice").as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn clearance_with_one_place_takes_it() {
+    assert_eq!(
+        ifr_destination(
+            "Delivery, Sierra Papa Alpha Bravo Charlie, IFR Katowice, request clearance"
+        )
+        .as_deref(),
+        Some("EPKT")
+    );
+}
+
+#[test]
+fn stand_number_is_not_destination() {
+    let m = with(
+        "Delivery, Sierra Papa Alpha Bravo Charlie, stand 2, IFR to Katowice, request clearance",
+    );
+    assert_eq!(m.items.destination.as_deref(), Some("EPKT"));
+    assert!(m.items.runways.is_empty() && m.items.altitudes_ft.is_empty());
+}

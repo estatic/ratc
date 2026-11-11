@@ -129,6 +129,7 @@ pub fn parse_pilot_in(
     scan.scan_addressee();
     let found = scan.scan_known_callsign(known);
     scan.scan_items();
+    scan.single_place_destination();
     msg.callsign = found.or_else(|| scan.find_callsign());
     msg.intent = scan.intent();
     msg.addressee = scan.addressee;
@@ -780,6 +781,7 @@ impl<'a> Scan<'a> {
             }
             "direct" | "proceed" => self.direct_at(i),
             "to" | "do" | "for" | "destination" | "into" => self.destination_at(i),
+            "ifr" | "vfr" => self.rules_destination_at(i),
             "ils" | "vor" | "rnav" | "i" | "r" => self.approach_at(i),
             _ => {}
         }
@@ -846,6 +848,51 @@ impl<'a> Scan<'a> {
         }
     }
 
+    /// The destination right after "IFR"/"VFR", where the speech recogniser often turns "to"
+    /// into "2", "two" or "do", or glues it to the name: "IFR 2 Katowice", "IFR Tokatowice".
+    fn rules_destination_at(&mut self, i: usize) {
+        if self.items.destination.is_some() {
+            return;
+        }
+        let mut j = self.skip_break(i + 1);
+        if self.num(j) == Some("2") || matches!(self.w(j), Some("two" | "to" | "do")) {
+            j = self.skip_break(j + 1);
+        }
+        let found = self.icao_at(j).or_else(|| self.place_at(j));
+        if let Some((icao, end)) = found {
+            self.items.destination = Some(icao);
+            self.mark(i + 1, end);
+        }
+    }
+
+    /// A clearance request ("request ... clearance", or "clearance" in an IFR call).
+    fn is_clearance_request(&self) -> bool {
+        self.request_then(4, |k| self.w(k) == Some("clearance"))
+            || ((0..self.toks.len()).any(|i| self.w(i) == Some("clearance")) && self.is_ifr())
+    }
+
+    /// A clearance request that names no destination by a keyword: a single known place said
+    /// anywhere in it ("IFR Katowice, request clearance") is the destination.
+    fn single_place_destination(&mut self) {
+        if self.items.destination.is_some() || !self.is_clearance_request() {
+            return;
+        }
+        let mut found: Vec<(String, usize, usize)> = Vec::new();
+        for i in 0..self.toks.len() {
+            if !self.used[i]
+                && let Some((icao, end)) = self.place_at(i)
+                && !found.iter().any(|(c, ..)| *c == icao)
+            {
+                found.push((icao, i, end));
+            }
+        }
+        if let [(icao, from, end)] = found.as_slice() {
+            self.items.destination = Some(icao.clone());
+            let (from, end) = (*from, *end);
+            self.mark(from, end);
+        }
+    }
+
     /// Four spelled letters ("echo papa kilo tango"), or one word that is the ICAO code of a
     /// known place.
     fn icao_at(&self, j: usize) -> Option<(String, usize)> {
@@ -897,7 +944,12 @@ impl<'a> Scan<'a> {
                 if NOT_PLACES.contains(&last_said.as_str()) {
                     return None;
                 }
-                inflected_place(&last_said, last).then(|| {
+                let glued = last_said
+                    .strip_prefix("to")
+                    .filter(|rest| init.is_empty() && !rest.is_empty());
+                (inflected_place(&last_said, last)
+                    || glued.is_some_and(|r| inflected_place(r, last)))
+                .then(|| {
                     (
                         words.len(),
                         dist(place),
@@ -1233,9 +1285,7 @@ impl<'a> Scan<'a> {
         }) {
             return Some(PilotIntent::ReportEstablished);
         }
-        if self.request_then(4, |k| self.w(k) == Some("clearance"))
-            || (has(&["clearance"]) && self.is_ifr())
-        {
+        if self.is_clearance_request() {
             let level_ft = self.items.altitudes_ft.first().copied().or_else(|| {
                 self.items
                     .flight_levels

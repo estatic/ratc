@@ -1,0 +1,17 @@
+[    0.0] PILOT: Kraków Delivery, November 172, Sierra Papa, Cessna 172, stand 35, information Alpha, IFR 2 Katowice, request clearance
+[    0.0] Kraków Delivery: November one seven two Sierra Papa, cleared to Katowice, SUDOL two Juliett departure, climb flight level one zero zero, squawk four two zero one
+[    0.0] PILOT: Cleared to Katowice, Sudol two Juliett departure, climb flight level one zero zero, squawk four two zero one, November Sierra Papa
+[    0.0] Kraków Delivery: November Sierra Papa, readback correct, contact Kraków Ground one one eight decimal one zero five
+[    0.0] PILOT: Ground one one eight decimal one zero five, November Sierra Papa
+[    0.0] PILOT: Krakow Ground, November one seven two Sierra Papa, stand three five, information Alpha, request start up
+[    0.0] Kraków Ground: November one seven two Sierra Papa, start-up approved, QNH one zero one three
+[    0.0] PILOT: Start up approved, QNH one zero one three, November Sierra Papa
+[    0.0] PILOT: Krakow Ground, November Sierra Papa, information Alpha, request taxi
+[    0.0] Kraków Ground: November Sierra Papa, taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five
+[    0.0] PILOT: Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, November Sierra Papa
+[  140.0] Kraków Ground: November Sierra Papa, contact Kraków Tower one two three decimal two five five, have a nice flight
+[  140.0] PILOT: Tower one two three decimal two five five, November Sierra Papa
+[  141.0] Kraków Tower: November one seven two Sierra Papa, wind two five zero degrees, eight knots, runway two five, cleared for take-off
+[  141.0] PILOT: Runway two five, cleared for take-off, November Sierra Papa
+[  221.0] Kraków Tower: November Sierra Papa, contact Kraków Approach one two one decimal zero seven five
+[  221.0] PILOT: Approach one two one decimal zero seven five, November Sierra Papa

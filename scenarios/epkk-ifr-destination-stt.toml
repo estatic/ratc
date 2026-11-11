@@ -1,0 +1,71 @@
+# Flight test 2026-11-11 (plan 14a B3): the speech recogniser wrote "IFR to Katowice" as "IFR 2
+# Katowice" and "IFR Tokatowice"; Delivery still takes Katowice as the destination and issues
+# the IFR clearance. The first two calls and "IFR, destination Katowice" are the flight's own;
+# the track starts on stand 35 of the committed EPKK data.
+airport = "EPKK"
+navdata = "xplane"
+utc = "14:30"
+day = 200
+pilot = { callsign = "N172SP", type = "C172" }
+weather = { wind_dir_deg = 250, wind_speed_kt = 8, visibility_m = 10000, temp_c = 15, dewpoint_c = 10, qnh_hpa = 1013 }
+transponder = { code = 2000, mode = 1 }
+track = "path"
+
+[path]
+start = { stand = "35" }
+runway = "25"
+waypoints = [
+  { fix = "KK599", alt = 3000, kt = 90 },
+]
+
+[[say]]
+at = "phase:Parked"
+freq = "delivery"
+text = "Kraków Delivery, November 172, Sierra Papa, Cessna 172, stand 35, information Alpha, IFR 2 Katowice, request clearance"
+
+[[say]]
+at = "heard:cleared to"
+freq = "delivery"
+transponder = { code = 4201 }
+text = "Cleared to Katowice, Sudol two Juliett departure, climb flight level one zero zero, squawk four two zero one, November Sierra Papa"
+
+[[say]]
+at = "heard:ground"
+freq = "delivery"
+text = "Ground one one eight decimal one zero five, November Sierra Papa"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, November one seven two Sierra Papa, stand three five, information Alpha, request start up"
+
+[[say]]
+at = "heard:start-up approved"
+freq = "ground"
+text = "Start up approved, QNH one zero one three, November Sierra Papa"
+
+[[say]]
+at = "phase:Parked"
+freq = "ground"
+text = "Krakow Ground, November Sierra Papa, information Alpha, request taxi"
+
+[[say]]
+at = "heard:taxi to"
+freq = "ground"
+transponder = { mode = 3 }
+text = "Taxi to holding point runway two five via Bravo five, Bravo six, Alpha, hold short runway two five, November Sierra Papa"
+
+[[say]]
+at = "heard:contact kraków tower"
+freq = "ground"
+text = "Tower one two three decimal two five five, November Sierra Papa"
+
+[[say]]
+at = "heard:cleared for take-off"
+freq = "tower"
+text = "Runway two five, cleared for take-off, November Sierra Papa"
+
+[[say]]
+at = "heard:contact kraków approach"
+freq = "tower"
+text = "Approach one two one decimal zero seven five, November Sierra Papa"
