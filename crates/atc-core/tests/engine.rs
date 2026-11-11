@@ -1008,14 +1008,19 @@ fn misheard_takeoff_readback_does_not_lock_session() {
     );
     assert!(matches!(tower[2][..], [AtcItem::ClearedLand { .. }]));
 
-    // A readback asked for twice without success is then accepted.
+    // A readback asked for twice without success is then accepted, the clearance said
+    // once more so the pilot knows what stands.
     let mut e = engine();
     let clearance = taxi_cleared(&mut e, "Alpha");
     let wrong = format!("hold short runway zero seven, {CS_ABBR}");
     for _ in 0..2 {
         assert_eq!(items(&say(&mut e, GROUND, &wrong))[0], AtcItem::Negative);
     }
-    assert!(say(&mut e, GROUND, &wrong).is_empty());
+    let restated = items(&say(&mut e, GROUND, &wrong));
+    assert!(
+        restated.first().is_some_and(is_taxi_to_holding_point),
+        "{restated:?}"
+    );
     let cs = Callsign::new("SPTST");
     assert_eq!(e.strip(&cs).unwrap().pending_readback, None);
     assert!(is_taxi_to_holding_point(&clearance[0]));
@@ -1132,7 +1137,8 @@ fn hold_position_must_be_read_back() {
     assert!(say(&mut e, GROUND, &format!("holding position, {CS_ABBR}")).is_empty());
     assert_eq!(e.strip(&cs).unwrap().pending_readback, None);
 
-    // No readback: asked twice, then accepted.
+    // No readback: asked twice; a bare callsign after that carries none of it and does
+    // not complete it, the readback does.
     let mut e = engine();
     roll_onto_runway(&mut e);
     for _ in 0..2 {
@@ -1140,6 +1146,8 @@ fn hold_position_must_be_read_back() {
         assert_eq!(items(&out), vec![AtcItem::ReadBack(hold.clone())]);
     }
     assert!(say(&mut e, GROUND, CS_ABBR).is_empty());
+    assert_eq!(e.strip(&cs).unwrap().pending_readback, Some(hold.clone()));
+    assert!(say(&mut e, GROUND, &format!("holding position, {CS_ABBR}")).is_empty());
     assert_eq!(e.strip(&cs).unwrap().pending_readback, None);
 }
 
@@ -2345,14 +2353,15 @@ fn misdetected_short_phrase_keeps_language() {
     assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
     assert!(out[0].text.contains("powtórz"), "{}", out[0].text);
     assert_eq!(spabc_lang(&e), Lang::Pl);
-    // Not understood in either language: answered in the session language (the first
-    // time it closes the readback, asked for twice already).
+    // Not understood in either language: answered in the session language (the readback,
+    // asked for twice already, stays open: this carries none of it).
     let blah = format!("{PL_CS_ABBR}, blah blah");
-    assert!(say_in(&mut e, GROUND, &blah, Lang::En).is_empty());
-    let out = say_in(&mut e, GROUND, &blah, Lang::En);
-    assert_eq!(out.len(), 1, "{out:?}");
-    assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
-    assert_eq!(spabc_lang(&e), Lang::Pl);
+    for _ in 0..2 {
+        let out = say_in(&mut e, GROUND, &blah, Lang::En);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].message.lang, Lang::Pl, "{}", out[0].text);
+        assert_eq!(spabc_lang(&e), Lang::Pl);
+    }
 }
 
 /// Auto, English session: English words tagged `pl` (the Polish parser passes them
@@ -4980,9 +4989,16 @@ mod approach_departure {
                 .collect()
         }
 
-        fn accepted(e: &AtcEngine, log: &[(String, Vec<AtcItem>)]) {
+        /// Each transmission got `answers` (in order), never "say again" or "pass your
+        /// message", and the hand-off is complete in the end.
+        fn accepted(e: &AtcEngine, log: &[(String, Vec<AtcItem>)], answers: &[Vec<AtcItem>]) {
+            let got: Vec<Vec<AtcItem>> = log.iter().map(|(_, o)| o.clone()).collect();
+            assert_eq!(got, answers, "{log:#?}");
             assert!(
-                !log.iter().any(|(_, o)| o.contains(&AtcItem::SayAgain)),
+                !got.iter().flatten().any(|i| matches!(
+                    i,
+                    AtcItem::SayAgain | AtcItem::SayAgainCallsign { .. } | AtcItem::PassYourMessage
+                )),
                 "{log:#?}"
             );
             let cs = Callsign::new("SPTST");
@@ -4990,6 +5006,13 @@ mod approach_departure {
             assert_eq!(e.handoff_target(&cs), Some(KTW_TWR), "{log:#?}");
         }
 
+        /// "Read back frequency".
+        fn asked() -> Vec<AtcItem> {
+            vec![AtcItem::ReadBack(vec![ReadbackItem::Frequency(KTW_TWR)])]
+        }
+
+        /// The transmissions as flown, as read today: the first readback is accepted, the
+        /// repeat is no new call, the fragment is taken for the aircraft ("roger").
         #[test]
         fn clean_readback_after_garbled_ones_is_accepted() {
             let mut e = katowice_engine();
@@ -5004,13 +5027,17 @@ mod approach_departure {
                     "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
                 ],
             );
-            accepted(&e, &log);
+            accepted(
+                &e,
+                &log,
+                &[vec![], vec![], vec![AtcItem::Roger], vec![], vec![]],
+            );
         }
 
         /// The exchange as it went in flight, before "ninea" and "129, decimal 255" were
-        /// read: two readbacks with the frequency not understood are asked for again, the
-        /// fragment then completes the hand-off (asked for often enough), and the clean
-        /// readbacks after it repeat an accepted readback.
+        /// read: two readbacks with the frequency not understood are asked for again; the
+        /// fragment carries no frequency and does not complete the hand-off although asked
+        /// for often enough; the clean readback does, and its repeat is no new call.
         #[test]
         fn clean_readback_after_two_wrong_ones_is_accepted() {
             let mut e = katowice_engine();
@@ -5020,19 +5047,45 @@ mod approach_departure {
                 &[
                     "Contact Katowice Tower one two nina decimal two five five {CS_ABBR}",
                     "Contact Katowice Tower 129 dot 255 {CS_ABBR}",
+                    "Conta Katowice-Krácow Tower",
                 ],
             );
-            let asked = vec![AtcItem::ReadBack(vec![ReadbackItem::Frequency(KTW_TWR)])];
-            assert!(log.iter().all(|(_, o)| *o == asked), "{log:#?}");
+            assert_eq!(
+                log.iter().map(|(_, o)| o.clone()).collect::<Vec<_>>(),
+                vec![asked(), asked(), vec![]],
+                "{log:#?}"
+            );
+            let cs = Callsign::new("SPTST");
+            assert!(e.strip(&cs).unwrap().pending_readback.is_some(), "{log:#?}");
             let log = replay(
                 &mut e,
                 &[
-                    "Conta Katowice-Krácow Tower",
                     "Contact Katowice Tower 129, decimal two five five, {CS_ABBR}",
                     "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
                 ],
             );
-            accepted(&e, &log);
+            accepted(&e, &log, &[vec![], vec![]]);
+        }
+
+        /// Asked for often enough, a readback still wrong is accepted and the hand-off said
+        /// once more.
+        #[test]
+        fn wrong_readback_at_the_limit_is_accepted_and_restated() {
+            let mut e = katowice_engine();
+            handed_to_katowice(&mut e);
+            let log = replay(
+                &mut e,
+                &[
+                    "Contact Katowice Tower one two nina decimal two five five {CS_ABBR}",
+                    "Contact Katowice Tower 129 dot 255 {CS_ABBR}",
+                    "Contact Katowice Tower one two eight decimal two five five {CS_ABBR}",
+                ],
+            );
+            let contact = AtcItem::Contact {
+                station: "Katowice Tower".into(),
+                khz: KTW_TWR,
+            };
+            accepted(&e, &log, &[asked(), asked(), vec![contact]]);
         }
 
         #[test]
@@ -5046,7 +5099,37 @@ mod approach_departure {
                     "Contact Katowice Tower, one two nine decimal two five five, {CS_ABBR}",
                 ],
             );
-            accepted(&e, &log);
+            accepted(&e, &log, &[asked(), vec![]]);
+        }
+
+        /// The station-name rule is for another unit only: after Tower's hand-off to this
+        /// airport's Approach, a bare call to Approach on the Tower frequency is still told
+        /// who this is and sent on, as before.
+        #[test]
+        fn call_to_own_approach_on_the_old_frequency_is_still_answered() {
+            let mut e = katowice_engine();
+            let mut f = departed(&mut e, "Testville", true);
+            let tower = std::mem::take(&mut f.heard);
+            assert_eq!(
+                tower.iter().filter_map(contact_of).collect::<Vec<_>>(),
+                vec![("Zeta Approach".to_string(), APP)],
+                "{tower:?}"
+            );
+            assert!(say(&mut e, TWR, &readback(&tower[0].message.items, CS_ABBR)).is_empty());
+            let out = items(&say(&mut e, TWR, &format!("Zeta Approach, {CS}")));
+            assert_eq!(
+                out,
+                vec![
+                    AtcItem::ThisIs {
+                        station: "Zeta Tower".into()
+                    },
+                    AtcItem::Contact {
+                        station: "Zeta Approach".into(),
+                        khz: APP
+                    }
+                ],
+                "{out:?}"
+            );
         }
     }
 

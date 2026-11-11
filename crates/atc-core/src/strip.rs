@@ -427,6 +427,7 @@ impl Strip {
         self.reminded = false;
         self.redirected = false;
         if required.is_empty() {
+            self.last_readback = None;
             self.readback_complete();
         } else {
             self.last_readback = Some(required.clone());
@@ -473,5 +474,25 @@ impl Strip {
             }
             _ => false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_readback_follows_the_last_clearance() {
+        let mut s = Strip::new(Callsign::new("SPTST"), "25");
+        let contact = AtcItem::Contact {
+            station: "Katowice Tower".into(),
+            khz: 129255,
+        };
+        s.expect_readback(&[contact], Strictness::Standard, 0.0);
+        s.readback_complete();
+        assert_eq!(s.last_readback, Some(vec![ReadbackItem::Frequency(129255)]));
+        // A newer clearance needing no readback: the old readback is no longer the last.
+        s.expect_readback(&[AtcItem::Roger], Strictness::Standard, 1.0);
+        assert_eq!(s.last_readback, None);
     }
 }

@@ -74,7 +74,9 @@ use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwin
 use crate::compliance::{ComplianceMonitor, Deviation, hold_line_cross_m};
 use crate::handover::FlightHandover;
 use crate::phase::{FlightPhase, PhaseTracker};
-use crate::readback::{ReadbackResult, Strictness, check_readback, correction};
+use crate::readback::{
+    ReadbackResult, Strictness, carries_readback, check_readback, correction, restatement,
+};
 use crate::runway::RunwayResource;
 use crate::squawk::{DEFAULT_POOL, discrete_codes};
 use crate::state::{AircraftState, SimTime};
@@ -949,7 +951,11 @@ impl AtcEngine {
         if let Some(pending) = strip.pending_readback.clone().filter(|_| !help) {
             let result = check_readback(&pending, &msg.items);
             let request = is_request(&msg.intent);
-            if result == ReadbackResult::Correct || strip.readback_requests >= MAX_READBACK_REQUESTS
+            let at_limit = strip.readback_requests >= MAX_READBACK_REQUESTS;
+            // Asked for often enough, a readback is taken as it is; a transmission carrying
+            // none of its items (a garbled fragment) is no readback and does not complete it.
+            if result == ReadbackResult::Correct
+                || (at_limit && (request || carries_readback(&result, &pending)))
             {
                 // Correct, or asked for often enough: accept and move on.
                 let issued = std::mem::take(&mut strip.pending_items);
@@ -959,13 +965,18 @@ impl AtcEngine {
                     if items.is_empty() && result == ReadbackResult::Correct {
                         items = self.clearance_confirmed(i, role, &issued);
                     }
+                    // Accepted still incorrect: what was not read back right is said once
+                    // more, so the pilot knows.
+                    if items.is_empty() {
+                        items = restatement(&result, &issued);
+                    }
                     if items.is_empty() {
                         items = msg.farewell.into_iter().map(AtcItem::Courtesy).collect();
                     }
                     self.greet_back(i, role, msg.greeting, &mut items);
                     return items;
                 }
-            } else {
+            } else if !at_limit {
                 strip.readback_requests += 1;
                 // The correction is the prompt; no reminder follows it.
                 strip.reminded = true;
@@ -982,6 +993,8 @@ impl AtcEngine {
                 self.greet_back(i, role, msg.greeting, &mut items);
                 return items;
             }
+            // At the limit, a transmission carrying none of the readback's items is heard as
+            // any other; the readback stays open.
         }
         // The readback of a VFR entry or exit instruction is not answered.
         if role == Role::Tower && self.vfr_readback(i, &msg) {
