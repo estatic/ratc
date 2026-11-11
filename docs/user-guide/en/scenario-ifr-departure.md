@@ -69,7 +69,7 @@ A Cessna 172 will not reach FL100 before the hand-off to Katowice; expect to be 
 ## Flying it with the G1000
 
 - **FPL.** Press **FPL**. If the destination is empty, press the **FMS** knob to activate the cursor, enter EPKT with the small and large FMS knobs, then **ENT**.
-- **Departure.** **PROC → Select Departure → SUDOL 2J** (runway 25) → **Load**. The runway and the SID must match what Delivery clears you to; for runway 07 it is SUDOL 1F.
+- **Departure.** **PROC → Select Departure → SUDO2J** (SUDOL 2J, runway 25) → **Load**. The runway and the SID must match what Delivery clears you to; for runway 07 it is SUDO1F (SUDOL 1F).
 - **After take-off.** Press **NAV** so the autopilot follows the SID. When a controller gives you a heading, switch to **HDG** and fly it; go back to NAV when you are cleared direct or back on the route.
 - **Altitudes.** Set the assigned level in the selected altitude window and climb or descend with **ALT** / **VS** (the altitude table above lists what to expect).
 - **Transition altitude.** At EPKK it is 6500 ft. When you are cleared to a flight level above it, set **STD BARO** (1013); below it, keep the QNH from the controller.
