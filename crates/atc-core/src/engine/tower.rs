@@ -157,7 +157,7 @@ impl AtcEngine {
             if follow {
                 items.push(AtcItem::FollowMissedApproach);
             }
-            items.extend(self.redirect(i, Role::Approach));
+            items.extend(self.hand_over(i, Role::Approach));
             return items;
         }
         if follow {

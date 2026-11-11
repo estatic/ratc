@@ -3855,6 +3855,37 @@ mod delivery {
             assert_eq!(strip.handoff_to, None);
         }
 
+        /// A genuine hand-over is not a redirect: after Tower sends the airborne departure to
+        /// Approach, a request on the Tower frequency still gets the readback asked for, and
+        /// the hand-over stays.
+        #[test]
+        fn request_during_genuine_handoff_keeps_it() {
+            use crate::approach_departure::{APP, TWR, departed, engine};
+            let mut e = engine();
+            departed(&mut e, "Testville", true);
+            let cs = Callsign::new("SPTST");
+            let strip = e.strip(&cs).unwrap();
+            assert_eq!(strip.handoff_to, Some(Role::Approach));
+            assert_eq!(
+                strip.pending_items,
+                vec![AtcItem::Contact {
+                    station: "Zeta Approach".into(),
+                    khz: APP,
+                }]
+            );
+            let out = say(
+                &mut e,
+                TWR,
+                &format!("Zeta Tower, {CS}, airborne, passing one thousand two hundred feet"),
+            );
+            let got = items(&out);
+            assert!(
+                got.iter().any(|i| matches!(i, AtcItem::ReadBack(_))),
+                "{got:?}"
+            );
+            assert_eq!(e.strip(&cs).unwrap().handoff_to, Some(Role::Approach));
+        }
+
         /// Review Focus 2: with Delivery closed, Ground clears a request naming Delivery or
         /// Ground alike, and never sends it to Delivery.
         #[test]

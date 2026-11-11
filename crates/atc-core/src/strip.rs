@@ -157,6 +157,10 @@ pub struct Strip {
     pub pending_items: Vec<AtcItem>,
     /// Station the aircraft was told to contact, until the handover completes.
     pub handoff_to: Option<Role>,
+    /// The pending "contact" (`handoff_to`) sends a call made to the wrong position on (a
+    /// redirect), not a flight handed over: a request instead of its readback drops it.
+    #[serde(default)]
+    pub redirected: bool,
     /// Runway in use for this aircraft (re-read from the ATIS before each taxi-out clearance).
     pub runway: String,
     /// Stand the aircraft started from, the default taxi-in target.
@@ -304,6 +308,7 @@ impl Strip {
             full_stop_requested: false,
             pending_items: Vec::new(),
             handoff_to: None,
+            redirected: false,
             runway: runway.to_string(),
             home_stand: None,
             home_stand_at: None,
@@ -360,6 +365,7 @@ impl Strip {
         self.readback_role = None;
         self.reminded = false;
         self.handoff_to = None;
+        self.redirected = false;
         self.permissions.may_enter_runway = false;
         self.permissions.may_take_off = false;
         self.permissions.may_land = false;
@@ -405,6 +411,7 @@ impl Strip {
         self.readback_role = None;
         self.readback_moving = false;
         self.reminded = false;
+        self.redirected = false;
         if required.is_empty() {
             self.readback_complete();
         } else {
@@ -420,6 +427,7 @@ impl Strip {
         self.readback_due_s = None;
         self.readback_role = None;
         self.reminded = false;
+        self.redirected = false;
         if let Some(role) = self.handoff_to.take() {
             self.owner = role;
         }

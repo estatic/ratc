@@ -803,7 +803,10 @@ impl AtcEngine {
         heard_lang: Lang,
         t: SimTime,
     ) -> Vec<AtcOutput> {
-        let named_elsewhere = is_request(&msg.intent) && self.named_position(role, &msg).is_some();
+        // (A call `called_elsewhere` answers says who this is itself.)
+        let named_elsewhere = is_request(&msg.intent)
+            && self.named_position(role, &msg).is_some()
+            && self.called_elsewhere(i, role, &msg).is_none();
         let mut items = self.answer_items(role, freq_khz, text, msg, i, heard_lang, t);
         if named_elsewhere && !items.is_empty() {
             items.splice(0..0, self.this_is(role));
@@ -842,9 +845,15 @@ impl AtcEngine {
                 self.strips[i].handoff_acked = true;
             }
         }
-        if let Some(to) = self.called_elsewhere(role, &msg) {
+        if let Some(to) = self.called_elsewhere(i, role, &msg) {
             let mut items: Vec<AtcItem> = self.this_is(role).into_iter().collect();
-            items.extend(self.redirect(i, to));
+            // A call to the station the flight is being sent to repeats that "contact" as it
+            // was given (a hand-over stays a hand-over).
+            if self.strips[i].handoff_to == Some(to) && !self.strips[i].redirected {
+                items.extend(self.hand_over(i, to));
+            } else {
+                items.extend(self.redirect(i, to));
+            }
             return items;
         }
         if self.starts_new_flight(i, role, &msg) {
@@ -861,9 +870,10 @@ impl AtcEngine {
         if mentions_full_stop(text, heard_lang) {
             strip.full_stop_requested = true;
         }
-        // A request instead of the readback of a bare "contact X" (a redirect, or a
-        // hand-over without a clearance) drops it: the request is served as it is.
-        if strip.handoff_to.is_some()
+        // A request instead of the readback of a redirect's "contact X" drops the redirect:
+        // the request is served as it is. A flight handed over keeps its hand-over.
+        if strip.redirected
+            && strip.handoff_to.is_some()
             && is_request(&msg.intent)
             && !strip.pending_items.is_empty()
             && strip
@@ -878,6 +888,7 @@ impl AtcEngine {
             strip.readback_role = None;
             strip.reminded = false;
             strip.handoff_to = None;
+            strip.redirected = false;
         }
         // Calling the station it was sent to completes the handover; calling a station on
         // the pilot's own initiative makes it the owner.
@@ -1733,13 +1744,12 @@ impl AtcEngine {
     }
 
     /// A call without a request naming another open position of this airport ("Krakow
-    /// Approach, ..." on the Tower frequency): that position. A request is served by the
-    /// position it was made to (its role handler sends on what it does not serve).
-    fn called_elsewhere(&self, role: Role, msg: &PilotMessage) -> Option<Role> {
-        if is_request(&msg.intent) {
-            return None;
-        }
-        self.named_position(role, msg)
+    /// Approach, ..." on the Tower frequency), or any call naming the position aircraft `i`
+    /// is being sent to: that position. Another request is served by the position it was
+    /// made to (its role handler sends on what it does not serve).
+    fn called_elsewhere(&self, i: usize, role: Role, msg: &PilotMessage) -> Option<Role> {
+        let to = self.named_position(role, msg)?;
+        (!is_request(&msg.intent) || self.strips[i].handoff_to == Some(to)).then_some(to)
     }
 
     /// Another open position of this airport that the transmission names ("Krakow Approach,
@@ -1760,8 +1770,18 @@ impl AtcEngine {
         (to != role && open && self.position(to).is_some()).then_some(to)
     }
 
-    /// A request made to the wrong position: "contact" the one that handles it.
+    /// A request made to the wrong position: "contact" the one that handles it. A request
+    /// this position serves, made instead of the readback, drops the redirect.
     fn redirect(&mut self, i: usize, to: Role) -> Vec<AtcItem> {
+        let items = self.hand_over(i, to);
+        let strip = &mut self.strips[i];
+        // After `expect_readback`, which clears it for every new clearance.
+        strip.redirected = strip.handoff_to.is_some();
+        items
+    }
+
+    /// "Contact" the position `to`, which takes the flight over once read back.
+    pub(super) fn hand_over(&mut self, i: usize, to: Role) -> Vec<AtcItem> {
         let Some(pos) = self.position(to) else {
             return Vec::new();
         };
