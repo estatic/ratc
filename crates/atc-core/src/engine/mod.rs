@@ -1354,9 +1354,7 @@ impl AtcEngine {
         // A place name with a garble glued on ("Katowice-Krácow") stands for the place.
         msg.raw
             .split_whitespace()
-            .filter(|chunk| {
-                !(chunk.contains('-') && spoken_words(chunk).first().is_some_and(&fits))
-            })
+            .filter(|chunk| !(chunk.contains('-') && spoken_words(chunk).first().is_some_and(fits)))
             .flat_map(spoken_words)
             .all(|w| fits(&w))
     }
