@@ -352,6 +352,17 @@ fn qnh_and_squawk_digits_continue_across_commas() {
     assert_eq!(m.items.squawk, vec![7000]);
 }
 
+/// A QNH below 1000 is read without the leading zero; a stray "and" from the
+/// transcriber inside the digits is tolerated.
+#[test]
+fn qnh_below_1000_without_leading_zero() {
+    assert_eq!(en("QNH niner niner two").items.qnh, vec![992]);
+    assert_eq!(en("QNH zero niner niner two").items.qnh, vec![992]);
+    assert_eq!(en("QNH one zero one three").items.qnh, vec![1013]);
+    assert_eq!(en("QNH zero nine and nine two").items.qnh, vec![992]);
+    assert!(en("QNH one zero one").items.qnh.is_empty());
+}
+
 /// Common Whisper mishearings of "via" and "Zulu" (heard in X-Plane acceptance).
 #[test]
 fn misheard_via_and_zulu() {

@@ -7275,8 +7275,13 @@ mod approach_arrival {
         /// the aircraft level at `alt` ft indicated; the items heard once the pilot has
         /// read the clearance back and had time to react.
         fn heard_at(alt: f64) -> Vec<AtcItem> {
+            heard_at_qnh(992, alt)
+        }
+
+        /// [`heard_at`] with another QNH.
+        fn heard_at_qnh(qnh: u16, alt: f64) -> Vec<AtcItem> {
             let mut e = engine();
-            e.on_weather(weather(992));
+            e.on_weather(weather(qnh));
             let mut p = Pilot::new(WEST, 5000.0, 0.0);
             p.tick(&mut e);
             p.reads_back = false;
@@ -7288,10 +7293,7 @@ mod approach_arrival {
             p.tick(&mut e);
             p.f.alt = alt;
             p.target = alt;
-            // A QNH below 1000 is read back with the leading zero.
-            let rb = ifr_readback(&got)
-                .expect("a readback")
-                .replace("QNH niner", "QNH zero niner");
+            let rb = ifr_readback(&got).expect("a readback");
             let out = e.on_transmission(APP, &rb, Lang::En, SimTime(p.f.t));
             assert!(out.is_empty(), "{out:?}");
             let accepted = p.f.t;
@@ -7316,6 +7318,35 @@ mod approach_arrival {
             );
             assert!(
                 !heard.iter().any(|i| matches!(i, AtcItem::CheckLevel(_))),
+                "{heard:?}"
+            );
+        }
+
+        /// QNH 992: 580 ft high is above the assigned level, so the sign rules out
+        /// the standard-pressure error.
+        #[test]
+        fn high_with_low_qnh_is_check_level() {
+            let heard = heard_at(5580.0);
+            assert!(
+                heard.contains(&AtcItem::CheckLevel(Level::Altitude(5000))),
+                "{heard:?}"
+            );
+            assert!(
+                !heard
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::CheckAltimeter { .. })),
+                "{heard:?}"
+            );
+        }
+
+        /// QNH 1035: standard pressure reads about 600 ft high.
+        #[test]
+        fn high_with_high_qnh_is_check_altimeter() {
+            let heard = heard_at_qnh(1035, 5600.0);
+            assert!(
+                heard
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::CheckAltimeter { qnh_hpa: 1035, .. })),
                 "{heard:?}"
             );
         }

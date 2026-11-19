@@ -480,6 +480,30 @@ impl<'a> Scan<'a> {
         (out.len() == len).then_some((out, k))
     }
 
+    /// A QNH value from `j`: four digits, or three for 900 to 999 ("QNH niner niner two").
+    /// Pause commas and a stray "and" between the digit groups are read over.
+    fn qnh_value(&self, j: usize) -> Option<(u16, usize)> {
+        let mut out = String::new();
+        let mut k = j;
+        let mut end = j;
+        while out.len() < 4 {
+            let Some(d) = self.num(k) else { break };
+            out.push_str(d);
+            k += 1;
+            end = k;
+            k = self.skip_break(k);
+            if self.w(k) == Some("and") && self.num(k + 1).is_some() {
+                k += 1;
+            }
+        }
+        let v: u16 = out.parse().ok()?;
+        match out.len() {
+            4 => Some((v, end)),
+            3 if (900..=999).contains(&v) => Some((v, end)),
+            _ => None,
+        }
+    }
+
     /// Number of designators from `j` up to a Break, a word, the callsign or the end; `None` when no
     /// designator starts at `j` or the run ends in something else.
     fn designator_run(&self, j: usize) -> Option<usize> {
@@ -758,9 +782,7 @@ impl<'a> Scan<'a> {
                 self.mark(i, j);
             }
             "qnh" => {
-                if let Some((d, end)) = self.digits(self.skip_break(i + 1), 4)
-                    && let Ok(v) = d.parse()
-                {
+                if let Some((v, end)) = self.qnh_value(self.skip_break(i + 1)) {
                     self.items.qnh.push(v);
                     self.mark(i, end);
                 }
