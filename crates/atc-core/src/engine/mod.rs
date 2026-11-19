@@ -69,13 +69,15 @@ use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::{Airport, Destination};
 use atc_navdata::procedures::{AdjacentUnit, PositionDef, Procedures};
 use atc_phraseology::{
-    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
+    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang, Level,
     PilotIntent, PilotMessage, ReadbackItem, Token, UnableReason, Vocabulary, normalize,
     parse_pilot_in, render,
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
-use crate::compliance::{ComplianceMonitor, Deviation, REACTION_S, hold_line_cross_m};
+use crate::compliance::{
+    ComplianceMonitor, Deviation, REACTION_S, altimeter_error_ft, hold_line_cross_m,
+};
 use crate::handover::FlightHandover;
 use crate::phase::{FlightPhase, PhaseTracker};
 use crate::readback::{
@@ -1874,6 +1876,7 @@ impl AtcEngine {
                 _ => None,
             })
             .collect();
+        let qnh = self.atis.as_ref().map(|a| a.current().weather.qnh_hpa);
         let strip = &mut self.strips[i];
         if deviations.contains(&Deviation::LandingWithoutClearance) {
             strip.uncleared_landing = true;
@@ -1889,7 +1892,23 @@ impl AtcEngine {
                 }
                 Deviation::TakeoffWithoutClearance => items.push(AtcItem::TakenOffWithoutClearance),
                 Deviation::LandingWithoutClearance => items.push(AtcItem::LandedWithoutClearance),
-                Deviation::AltitudeDeviation { assigned, .. } => match level {
+                Deviation::AltitudeDeviation { assigned, actual } => match level {
+                    // The error is what standard pressure at this QNH would give: the
+                    // pilot has not set the altimeter.
+                    Some(level @ Level::Altitude(_))
+                        if off_circuit
+                            && let Some(qnh) = qnh
+                            && {
+                                let err = altimeter_error_ft(f64::from(qnh));
+                                err.abs() >= 200.0
+                                    && (f64::from(actual - assigned) - err).abs() <= 100.0
+                            } =>
+                    {
+                        items.push(AtcItem::CheckAltimeter {
+                            qnh_hpa: qnh,
+                            level,
+                        })
+                    }
                     Some(level) if off_circuit => items.push(AtcItem::CheckLevel(level)),
                     _ => items.push(AtcItem::CheckAltitude {
                         circuit_ft: assigned.unsigned_abs(),

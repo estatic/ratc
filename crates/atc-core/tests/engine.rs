@@ -7266,6 +7266,76 @@ mod approach_arrival {
         }
     }
 
+    /// Flight test 14c, C11: a level bust that matches flying on standard pressure is
+    /// "check altimeter setting", any other bust is "check level".
+    mod altimeter_check {
+        use super::*;
+
+        /// QNH 992 (standard pressure reads 580 ft high), told to maintain 5000 ft, and
+        /// the aircraft level at `alt` ft indicated; the items heard once the pilot has
+        /// read the clearance back and had time to react.
+        fn heard_at(alt: f64) -> Vec<AtcItem> {
+            let mut e = engine();
+            e.on_weather(weather(992));
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            p.tick(&mut e);
+            p.reads_back = false;
+            let got = items(&p.call(&mut e, APP, INBOUND));
+            assert!(
+                got.contains(&AtcItem::MaintainLevel(Level::Altitude(5000))),
+                "{got:?}"
+            );
+            p.tick(&mut e);
+            p.f.alt = alt;
+            p.target = alt;
+            // A QNH below 1000 is read back with the leading zero.
+            let rb = ifr_readback(&got)
+                .expect("a readback")
+                .replace("QNH niner", "QNH zero niner");
+            let out = e.on_transmission(APP, &rb, Lang::En, SimTime(p.f.t));
+            assert!(out.is_empty(), "{out:?}");
+            let accepted = p.f.t;
+            while p.f.t < accepted + 10.0 + 10.0 + 5.0 {
+                p.tick(&mut e);
+            }
+            p.f.heard
+                .iter()
+                .flat_map(|o| o.message.items.clone())
+                .collect()
+        }
+
+        #[test]
+        fn std_altimeter_gets_altimeter_check() {
+            let heard = heard_at(4455.0);
+            assert!(
+                heard.contains(&AtcItem::CheckAltimeter {
+                    qnh_hpa: 992,
+                    level: Level::Altitude(5000)
+                }),
+                "{heard:?}"
+            );
+            assert!(
+                !heard.iter().any(|i| matches!(i, AtcItem::CheckLevel(_))),
+                "{heard:?}"
+            );
+        }
+
+        #[test]
+        fn plain_level_bust_is_check_level() {
+            let heard = heard_at(5400.0);
+            assert!(
+                heard.contains(&AtcItem::CheckLevel(Level::Altitude(5000))),
+                "{heard:?}"
+            );
+            assert!(
+                !heard
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::CheckAltimeter { .. })),
+                "{heard:?}"
+            );
+        }
+    }
+
     /// Review Focus 5: a heading ignored for 35 s and more is called once, in English.
     #[test]
     fn ignored_heading_is_called_once() {

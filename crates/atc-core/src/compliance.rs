@@ -36,6 +36,12 @@ const TURNING_DEG_S: f64 = 1.0;
 /// accepted, before the heading and level checks start their persistence time.
 pub const REACTION_S: f64 = 10.0;
 
+/// True altitude minus indicated altitude (feet) for a pilot flying on standard pressure
+/// (1013.25 hPa) when the actual QNH is `qnh_hpa`: about 27.3 ft per hPa.
+pub fn altimeter_error_ft(qnh_hpa: f64) -> f64 {
+    (qnh_hpa - 1013.25) * 27.3
+}
+
 /// What the aircraft is currently allowed to do.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Permissions {

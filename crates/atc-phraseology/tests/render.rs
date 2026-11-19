@@ -631,6 +631,13 @@ fn radar_phrases() {
         one(AtcItem::CheckLevel(Level::Altitude(5000))),
         "check level, maintain altitude five thousand feet"
     );
+    assert_eq!(
+        one(AtcItem::CheckAltimeter {
+            qnh_hpa: 992,
+            level: Level::Altitude(3000)
+        }),
+        "check altimeter setting, QNH zero niner niner two, maintain altitude three thousand feet"
+    );
 }
 
 #[test]

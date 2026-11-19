@@ -551,6 +551,12 @@ pub enum AtcItem {
     CheckHeading(u16),
     /// The aircraft left its cleared level.
     CheckLevel(Level),
+    /// The aircraft is off its cleared level by about what standard pressure would give
+    /// at this QNH: it should set `qnh_hpa` and maintain `level`.
+    CheckAltimeter {
+        qnh_hpa: u16,
+        level: Level,
+    },
     /// Distance to touchdown in nautical miles.
     DistanceToGo(u16),
     /// "Continue approach": an IFR arrival on the extended centreline not yet on the final.
