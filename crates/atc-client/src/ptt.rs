@@ -173,6 +173,59 @@ pub fn spawn_keyboard(key: KeyCode, tx: mpsc::Sender<PttInput>) -> anyhow::Resul
     Ok(guard)
 }
 
+/// How long a joystick button must stay up before the release counts. A worn button bounces
+/// (lifts for a moment), which would otherwise cut one transmission in two.
+pub const RELEASE_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Shortest transmission worth sending; the client reports anything shorter and the server
+/// drops it (Whisper hallucinates on a blip).
+pub const MIN_TRANSMISSION: Duration = Duration::from_millis(500);
+
+/// Delays a joystick release by [`RELEASE_DEBOUNCE`]: a press inside the window cancels it,
+/// so a bounce stays one transmission. Presses pass through at once.
+#[derive(Debug, Default)]
+pub struct ReleaseDebounce {
+    down: bool,
+    release_at: Option<Instant>,
+}
+
+impl ReleaseDebounce {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The edge to forward now: `Some(true)` for a new press, never `Some(false)` (a release
+    /// is only armed; [`poll`](Self::poll) fires it). A press that cancels an armed release,
+    /// or a repeat of the current state, is `None`.
+    pub fn on_edge(&mut self, down: bool, now: Instant) -> Option<bool> {
+        if down {
+            self.release_at = None;
+            (!std::mem::replace(&mut self.down, true)).then_some(true)
+        } else {
+            if self.down {
+                self.release_at = Some(now + RELEASE_DEBOUNCE);
+            }
+            None
+        }
+    }
+
+    /// When the armed release is due, if one is armed.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.release_at
+    }
+
+    /// `Some(false)` once, when the armed release is due at `now`.
+    pub fn poll(&mut self, now: Instant) -> Option<bool> {
+        if self.release_at.is_some_and(|t| now >= t) {
+            self.release_at = None;
+            self.down = false;
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 /// Watches all joysticks on a thread for `button`. No joystick support (gilrs init error) is
 /// logged and leaves only the keyboard.
 pub fn spawn_joystick(button: u32, tx: mpsc::Sender<PttInput>) {
@@ -187,8 +240,18 @@ pub fn spawn_joystick(button: u32, tx: mpsc::Sender<PttInput>) {
         for (_, pad) in gilrs.gamepads() {
             tracing::info!("joystick: {}", pad.name());
         }
+        let mut debounce = ReleaseDebounce::new();
         loop {
-            let Some(ev) = gilrs.next_event_blocking(Some(Duration::from_millis(200))) else {
+            let now = Instant::now();
+            if debounce.poll(now).is_some() && tx.blocking_send(PttInput::Joystick(false)).is_err()
+            {
+                return;
+            }
+            let wait = debounce.deadline().map_or(Duration::from_millis(200), |d| {
+                d.saturating_duration_since(now)
+                    .min(Duration::from_millis(200))
+            });
+            let Some(ev) = gilrs.next_event_blocking(Some(wait)) else {
                 if tx.is_closed() {
                     return;
                 }
@@ -206,7 +269,10 @@ pub fn spawn_joystick(button: u32, tx: mpsc::Sender<PttInput>) {
             let n = button_number(code.into_u32());
             let state = if down { "pressed" } else { "released" };
             tracing::debug!(raw = code.into_u32(), "joystick button {n} {state}");
-            if n == button && tx.blocking_send(PttInput::Joystick(down)).is_err() {
+            if n == button
+                && debounce.on_edge(down, Instant::now()).is_some()
+                && tx.blocking_send(PttInput::Joystick(true)).is_err()
+            {
                 return;
             }
         }
@@ -287,6 +353,47 @@ mod tests {
             [0, second],
             "start on the first press, end on the later tap"
         );
+    }
+
+    const fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn bounce_inside_window_is_one_transmission() {
+        let t0 = Instant::now();
+        let mut d = ReleaseDebounce::new();
+        assert_eq!(d.on_edge(true, t0), Some(true));
+        assert_eq!(d.on_edge(false, t0 + ms(2000)), None);
+        assert_eq!(d.poll(t0 + ms(2100)), None);
+        assert_eq!(d.on_edge(true, t0 + ms(2150)), None); // bounce: same transmission
+        assert_eq!(d.on_edge(false, t0 + ms(5000)), None);
+        assert_eq!(d.poll(t0 + ms(5299)), None);
+        assert_eq!(d.poll(t0 + ms(5300)), Some(false));
+        assert_eq!(d.poll(t0 + ms(6000)), None);
+    }
+
+    #[test]
+    fn steady_hold_releases_once_after_window() {
+        let t0 = Instant::now();
+        let mut d = ReleaseDebounce::new();
+        assert_eq!(d.on_edge(true, t0), Some(true));
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.on_edge(false, t0 + ms(10_000)), None);
+        assert_eq!(d.deadline(), Some(t0 + ms(10_300)));
+        assert_eq!(d.poll(t0 + ms(10_300)), Some(false));
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.poll(t0 + ms(11_000)), None);
+    }
+
+    #[test]
+    fn press_after_window_is_new_transmission() {
+        let t0 = Instant::now();
+        let mut d = ReleaseDebounce::new();
+        assert_eq!(d.on_edge(true, t0), Some(true));
+        assert_eq!(d.on_edge(false, t0 + ms(1000)), None);
+        assert_eq!(d.poll(t0 + ms(1300)), Some(false));
+        assert_eq!(d.on_edge(true, t0 + ms(1500)), Some(true));
     }
 
     #[test]

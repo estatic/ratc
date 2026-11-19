@@ -15,7 +15,7 @@ use crate::aircraft::{Identity, IdentityTracker, UNKNOWN_TYPE};
 use crate::capture::PILOT_RATE;
 use crate::connection::{ConnConfig, Outgoing, ServerEvent, run_connection};
 use crate::playback::{Playback, should_play};
-use crate::ptt::{PttEvent, PttInput, PttMerger};
+use crate::ptt::{MIN_TRANSMISSION, PttEvent, PttInput, PttMerger};
 use crate::record::TrackWriter;
 use crate::sim::{SimDisplay, SimInfo, SimReader, SimUpdate, is_follow_me};
 
@@ -345,6 +345,10 @@ impl App {
     }
 
     async fn ptt_release(&mut self) {
+        /// Pilot-rate samples in [`MIN_TRANSMISSION`]; the server drops anything shorter.
+        fn too_short_samples() -> usize {
+            (MIN_TRANSMISSION.as_secs_f64() * f64::from(PILOT_RATE)) as usize
+        }
         if let Some(tx) = self.tx.take() {
             self.send(ClientMsg::PttEnd).await;
             let secs = tx.samples as f64 / f64::from(PILOT_RATE);
@@ -352,6 +356,8 @@ impl App {
                 self.say("[ptt] off - nothing sent (frequency was busy)");
             } else if tx.samples == 0 {
                 self.say("[ptt] off - no microphone audio was sent (check input_device)");
+            } else if tx.samples < too_short_samples() {
+                self.say("[ptt] off - too short, nothing sent");
             } else {
                 self.say(&format!("[ptt] off - sent {secs:.1} s of audio"));
             }
