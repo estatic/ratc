@@ -207,3 +207,46 @@ async fn text_lines_need_telemetry_and_connection() {
     assert_eq!(printed[4], "[you] hello");
     assert_eq!(printed.len(), 5, "{printed:?}");
 }
+
+/// Presses, feeds `samples` of mic audio, releases; returns the `[ptt] off` line.
+async fn transmit_and_release(samples: usize) -> String {
+    let mut h = start();
+    h.feed(Input::Sim(SimUpdate::Telemetry(frame(118_105))))
+        .await;
+    assert!(matches!(
+        h.next_out().await,
+        Outgoing::Msg(ClientMsg::Telemetry(_))
+    ));
+    h.feed(Input::Server(ServerEvent::Connected)).await;
+    h.feed(Input::Ptt(PttInput::KeyToggle)).await;
+    assert!(matches!(
+        h.next_out().await,
+        Outgoing::Msg(ClientMsg::PttStart { .. })
+    ));
+    h.feed(Input::Mic(vec![3; samples])).await;
+    assert!(matches!(h.next_out().await, Outgoing::Audio(_)));
+    h.feed(Input::Ptt(PttInput::KeyToggle)).await;
+    assert_eq!(h.next_out().await, Outgoing::Msg(ClientMsg::PttEnd));
+    h.settle().await;
+    let printed = h.printed.lock().unwrap().clone();
+    printed
+        .into_iter()
+        .find(|l| l.contains("[ptt] off"))
+        .expect("an off message")
+}
+
+#[tokio::test]
+async fn too_short_press_says_nothing_sent() {
+    assert_eq!(
+        transmit_and_release(7999).await,
+        "[ptt] off - too short, nothing sent"
+    );
+}
+
+#[tokio::test]
+async fn half_second_press_is_sent() {
+    assert_eq!(
+        transmit_and_release(8000).await,
+        "[ptt] off - sent 0.5 s of audio"
+    );
+}
