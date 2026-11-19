@@ -5318,7 +5318,7 @@ mod approach_departure {
     }
 
     /// An aircraft that landed and taxis in north of Stand 1, optionally first seen on it.
-    fn taxiing_in_near_stand_1(e: &mut AtcEngine, home_stand: bool) {
+    pub(super) fn taxiing_in_near_stand_1(e: &mut AtcEngine, home_stand: bool) {
         if home_stand {
             let mut parked = Flight {
                 t: 0.0,
@@ -5406,13 +5406,16 @@ mod approach_departure {
         }
     }
 
-    /// Without a home stand, "request taxi" after landing asks which stand.
+    /// Without a home stand, "request taxi" after landing is given a free stand (C4).
     #[test]
-    fn request_taxi_after_landing_without_a_stand_says_stand() {
+    fn request_taxi_after_landing_without_a_stand_assigns_one() {
         let mut e = engine();
         taxiing_in_near_stand_1(&mut e, false);
         let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
-        assert_eq!(out, vec![AtcItem::SayStand], "{out:?}");
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "Stand 1"),
+            "{out:?}"
+        );
     }
 
     /// `lon_off` degrees east of Stand 1 (0.0009 is about 100 m).
@@ -5441,7 +5444,7 @@ mod approach_departure {
 
     /// ZZZZ with, east of Stand 1 (a gate for props): a de-icing stand (nearest), a
     /// jets-only tie-down, and three props tie-downs GA 1..3 (200, 300, 400 m).
-    fn engine_with_ga_stands(edit: impl FnOnce(&mut Airport)) -> AtcEngine {
+    pub(super) fn engine_with_ga_stands(edit: impl FnOnce(&mut Airport)) -> AtcEngine {
         use atc_navdata::model::{StandCategory as C, StandKind as K};
         engine_airport(
             Strictness::Standard,
@@ -9793,4 +9796,56 @@ fn ground_hints_carry_stands() {
     let tower = e.stt_hints(&cs, TOWER);
     assert!(!tower.contains(&stand), "{tower:?}");
     assert_eq!(tower.len(), 2, "{tower:?}");
+}
+
+/// C4, C5: after landing the stand comes from Ground, however the pilot asks for it.
+mod arrival_stand {
+    use super::approach_departure::{GND, engine_with_ga_stands, taxiing_in_near_stand_1};
+    use super::*;
+
+    fn taxis_to(out: &[AtcItem], stand: &str) -> bool {
+        matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == stand)
+    }
+
+    /// "Runway vacated, request taxi" with no home stand: Ground picks a free stand (the
+    /// nearest props tie-down) instead of asking the pilot to say one.
+    #[test]
+    fn vacated_request_taxi_assigns_a_stand() {
+        let mut e = engine_with_ga_stands(|_| {});
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, runway vacated, request taxi"),
+        ));
+        assert!(taxis_to(&out, "GA 1"), "{out:?}");
+        assert!(!out.contains(&AtcItem::SayStand), "{out:?}");
+    }
+
+    /// The stand alone, as the answer to a "say stand" (or volunteered), is the taxi request.
+    #[test]
+    fn stand_report_after_say_stand_is_taxi_request() {
+        let mut e = engine_with_ga_stands(|_| {});
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(&mut e, GND, &format!("{CS}, stand golf alpha two")));
+        assert!(taxis_to(&out, "GA 2"), "{out:?}");
+    }
+
+    /// A parked departure reporting its stand is not taxied anywhere, and not ignored.
+    #[test]
+    fn stand_report_at_departure_stand_is_not_taxi() {
+        let mut e = engine();
+        let first = track().into_iter().next().unwrap();
+        assert!(e.on_telemetry(first).is_empty());
+        let out = items(&say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, {CS}, stand five"),
+        ));
+        assert!(
+            !out.iter().any(|i| matches!(i, AtcItem::Taxi { .. })),
+            "{out:?}"
+        );
+        assert!(!out.is_empty(), "silently dropped");
+    }
 }

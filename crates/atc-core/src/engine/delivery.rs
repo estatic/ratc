@@ -103,6 +103,7 @@ impl AtcEngine {
             PilotIntent::RequestStartUp { .. }
             | PilotIntent::RequestTaxi { .. }
             | PilotIntent::RequestTaxiToStand { .. }
+            | PilotIntent::ReportStand { .. }
             | PilotIntent::RequestTaxiHelp
             | PilotIntent::RequestFollowMe => self.redirect(i, Role::Ground),
             PilotIntent::ReadyForDeparture { .. }
