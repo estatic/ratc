@@ -1,6 +1,7 @@
 # Plan 14c flight-test fixes on the EPKT -> EPKK arrival: a heading readback with a comma after
-# "heading", the callsign without its first letter on Tower, and "request taxi"
-# naming no stand (Ground assigns a free one).
+# "heading", the callsign without its first letter on Tower, a first call to Ground with
+# "good morning" after Tower's "..., good day" (a call, not an acknowledgement), and
+# "request taxi" naming no stand (Ground assigns a free one).
 airport = "EPKK"
 navdata = "xplane"
 utc = "12:00"
@@ -76,7 +77,12 @@ text = "Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charl
 [[say]]
 at = "phase:TaxiIn"
 freq = "ground"
-text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi"
+text = "Krakow Ground, Sierra Papa Alpha Bravo Charlie, good morning"
+
+[[say]]
+at = "heard:pass your message"
+freq = "ground"
+text = "Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi"
 
 [[say]]
 at = "heard:taxi to stand"

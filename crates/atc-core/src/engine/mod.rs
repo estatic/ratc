@@ -1515,7 +1515,8 @@ impl AtcEngine {
             .flat_map(|p| words(&p.callsign))
             .collect();
         let (mut called, mut greeted, mut acked) = (false, false, false);
-        // "Roger", "wilco", thanks, or a repeat of a told word; a farewell is not.
+        // "Roger", "wilco", thanks, or a repeat of a told word; a farewell is not, nor a
+        // greeting word that was told ("good" of a hand-off's "good day").
         let mut confirmed = msg.ack;
         let sorted = msg
             .ack_words
@@ -1529,7 +1530,7 @@ impl AtcEngine {
                 called = true;
             } else if kind == Some(true) || was_told(&w) {
                 acked = true;
-                confirmed |= kind != Some(true) || w == "thank" || w == "thanks";
+                confirmed |= kind.is_none() || w == "thank" || w == "thanks";
             } else if kind == Some(false) {
                 greeted = true;
             } else {

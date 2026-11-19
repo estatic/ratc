@@ -208,6 +208,17 @@ fn record(out: &[AtcOutput], log: &mut Log, texts: &mut Vec<String>) {
 /// Flies `samples` with a pilot who calls at each phase change and reads everything back
 /// (except as `pilot` says). Returns the controller messages and their rendered texts.
 fn fly(e: &mut AtcEngine, samples: Vec<AircraftState>, pilot: Pilot) -> (Log, Vec<String>) {
+    fly_until(e, samples, pilot, |_| false)
+}
+
+/// [`fly`], stopping right after the readback of the first controller-initiated
+/// transmission for which `stop` holds.
+fn fly_until(
+    e: &mut AtcEngine,
+    samples: Vec<AircraftState>,
+    pilot: Pilot,
+    stop: impl Fn(&[AtcOutput]) -> bool,
+) -> (Log, Vec<String>) {
     let cs = Callsign::new("SPTST");
     let (mut log, mut texts) = (Log::new(), Vec::new());
     let mut last_phase = None;
@@ -219,6 +230,9 @@ fn fly(e: &mut AtcEngine, samples: Vec<AircraftState>, pilot: Pilot) -> (Log, Ve
         for o in out.iter().filter(|o| !is_reminder(std::slice::from_ref(o))) {
             let silent = say(e, o.freq_khz, &readback(&o.message.items, CS_ABBR));
             assert!(silent.is_empty(), "readback of {:?}: {silent:?}", o.message);
+        }
+        if stop(&out) {
+            break;
         }
         if out
             .iter()
@@ -10406,5 +10420,53 @@ mod acknowledgements {
         let mut e = led_to_stand_4();
         let out = say(&mut e, GROUND, &format!("Krakow Ground, thank you, {ABC}"));
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// Flies the full-stop circuit until Tower's "vacate, contact Kraków Ground ..., good
+    /// day" (read back): the last thing told is the hand-off with its farewell.
+    fn handed_to_ground() -> AtcEngine {
+        let mut e = engine();
+        let handoff = |out: &[AtcOutput]| {
+            out.iter().any(|o| {
+                o.freq_khz == TOWER
+                    && o.message.items.contains(&AtcItem::Contact {
+                        station: "Kraków Ground".into(),
+                        khz: GROUND,
+                    })
+                    && o.message
+                        .items
+                        .contains(&AtcItem::Courtesy(Courtesy::GoodDay))
+            })
+        };
+        let (log, _) = fly_until(&mut e, track(), GOOD_PILOT, handoff);
+        assert!(
+            log.iter().any(
+                |(r, i)| *r == Role::Tower && i.contains(&AtcItem::Courtesy(Courtesy::GoodDay))
+            ),
+            "{log:?}"
+        );
+        e
+    }
+
+    /// Final review: "good" was told ("..., good day"), but "Krakow Ground, {CS}, good
+    /// morning" is the first call to Ground, not an acknowledgement.
+    #[test]
+    fn greeting_after_good_day_hand_off_is_a_call() {
+        let mut e = handed_to_ground();
+        let out = say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, {CS}, good morning"),
+        );
+        assert!(!out.is_empty(), "silently dropped");
+        assert!(items(&out).contains(&AtcItem::PassYourMessage), "{out:?}");
+    }
+
+    /// Calling Tower with "good day" after its "good day" is a call too, not silence.
+    #[test]
+    fn good_day_call_after_good_day_hand_off_is_a_call() {
+        let mut e = handed_to_ground();
+        let out = say(&mut e, TOWER, &format!("Krakow Tower, {CS}, good day"));
+        assert!(!out.is_empty(), "silently dropped");
     }
 }
