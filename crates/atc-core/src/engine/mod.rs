@@ -75,7 +75,7 @@ use atc_phraseology::{
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
-use crate::compliance::{ComplianceMonitor, Deviation, hold_line_cross_m};
+use crate::compliance::{ComplianceMonitor, Deviation, REACTION_S, hold_line_cross_m};
 use crate::handover::FlightHandover;
 use crate::phase::{FlightPhase, PhaseTracker};
 use crate::readback::{
@@ -705,6 +705,15 @@ impl AtcEngine {
         // An aircraft with a flight plan, or entering or leaving via points: no circuit legs.
         sv.tracker.set_circuit(circuit);
         sv.monitor.set_clearance(clearance);
+        // No heading or level check while the readback is pending, nor while the pilot is
+        // still reacting to the accepted one (a sim clock gone back ends the wait).
+        let strip = &self.strips[i];
+        let reacting = strip
+            .readback_done_at
+            .is_some_and(|done| (0.0..REACTION_S).contains(&(s.t.0 - done)));
+        if strip.pending_readback.is_some() || reacting {
+            sv.monitor.hold_clearance_checks();
+        }
         let phase = sv.tracker.update(&s);
         let strip = &mut self.strips[i];
         let prev = std::mem::replace(&mut strip.phase, phase);
@@ -1041,6 +1050,7 @@ impl AtcEngine {
                 // Correct, or asked for often enough: accept and move on.
                 let issued = std::mem::take(&mut strip.pending_items);
                 strip.readback_complete();
+                strip.readback_done_at = Some(self.now);
                 if !request {
                     let mut items = self.transponder_recheck(i, role);
                     if items.is_empty() && result == ReadbackResult::Correct {

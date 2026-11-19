@@ -199,6 +199,11 @@ pub struct Strip {
     /// The missing readback has been reminded of (once per clearance).
     #[serde(default)]
     pub reminded: bool,
+    /// Sim time (s) the last clearance's readback was accepted, or it was transmitted when
+    /// it asks for none: the heading and level checks give the pilot a reaction time from
+    /// it ([`crate::compliance::REACTION_S`]).
+    #[serde(default)]
+    pub readback_done_at: Option<f64>,
     /// Transponder code assigned to the aircraft, once one was needed.
     pub squawk: Option<u16>,
     /// Tower asked to put the transponder right at departure; the pilot's next
@@ -336,6 +341,7 @@ impl Strip {
             readback_role: None,
             readback_moving: false,
             reminded: false,
+            readback_done_at: None,
             squawk: None,
             transponder_check: false,
             departure_sent: false,
@@ -382,6 +388,7 @@ impl Strip {
         self.readback_due_s = None;
         self.readback_role = None;
         self.reminded = false;
+        self.readback_done_at = None;
         self.handoff_to = None;
         self.redirected = false;
         self.permissions.may_enter_runway = false;
@@ -434,6 +441,7 @@ impl Strip {
         self.redirected = false;
         if required.is_empty() {
             self.last_readback = None;
+            self.readback_done_at = Some(t);
             self.readback_complete();
         } else {
             self.last_readback = Some(required.clone());

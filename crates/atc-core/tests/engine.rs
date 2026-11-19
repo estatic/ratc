@@ -7042,6 +7042,77 @@ mod approach_arrival {
         assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
     }
 
+    /// Flight test 14c, C10: no "check heading" while the readback of the heading is
+    /// pending, nor until the pilot has had the reaction time and the persistence time
+    /// after it was accepted.
+    mod readback_reaction {
+        use super::*;
+
+        #[test]
+        fn heading_check_waits_for_readback() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            p.tick(&mut e);
+            p.reads_back = false;
+            p.obeys_headings = false;
+            let out = p.call(&mut e, APP, INBOUND);
+            let got = items(&out);
+            let assigned = got
+                .iter()
+                .find_map(|i| match i {
+                    AtcItem::Heading { deg, .. } => Some(*deg),
+                    _ => None,
+                })
+                .expect("a heading");
+            let qnh = got
+                .iter()
+                .find_map(|i| match i {
+                    AtcItem::Qnh(q) => Some(*q),
+                    _ => None,
+                })
+                .expect("a QNH");
+            // 78 degrees off the assigned heading (262 for 340), never turning.
+            p.hdg = f64::from(assigned) - 78.0;
+            let good = ifr_readback(&got).expect("a readback");
+            let wrong = good.replace(&spoken(&qnh.to_string()), &spoken(&(qnh + 5).to_string()));
+            assert_ne!(good, wrong);
+            let checks = |p: &Pilot| {
+                p.f.heard
+                    .iter()
+                    .filter(|o| {
+                        o.message
+                            .items
+                            .iter()
+                            .any(|i| matches!(i, AtcItem::CheckHeading(_)))
+                    })
+                    .count()
+            };
+            // The first readback has a wrong QNH: "read back QNH".
+            p.until(&mut e, 10, |p| p.f.t >= 10.0);
+            let out = e.on_transmission(APP, &wrong, Lang::En, SimTime(p.f.t));
+            assert!(!out.is_empty(), "wrong QNH accepted");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+            p.f.heard.extend(out);
+            // The correct readback at 36 s.
+            p.until(&mut e, 20, |p| p.f.t >= 36.0);
+            assert_eq!(checks(&p), 0, "{:?}", p.f.heard);
+            let accepted = p.f.t;
+            let out = e.on_transmission(APP, &good, Lang::En, SimTime(accepted));
+            assert!(out.is_empty(), "{out:?}");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+            // Nothing before the reaction time and the persistence time have run.
+            while p.f.t < accepted + 10.0 + 30.0 {
+                p.tick(&mut e);
+                assert_eq!(checks(&p), 0, "t = {}: {:?}", p.f.t, p.f.heard);
+            }
+            // Still off: one call soon after.
+            for _ in 0..5 {
+                p.tick(&mut e);
+            }
+            assert_eq!(checks(&p), 1, "{:?}", p.f.heard);
+        }
+    }
+
     /// Review Focus 5: a heading ignored for 35 s and more is called once, in English.
     #[test]
     fn ignored_heading_is_called_once() {
