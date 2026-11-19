@@ -2834,6 +2834,24 @@ mod delivery {
         );
     }
 
+    /// Final review of 14c: a parked aircraft naming its stand to Delivery makes no taxi
+    /// request, so it is not sent to Ground; it gets the answer to any call.
+    #[test]
+    fn parked_stand_report_is_not_sent_to_ground() {
+        let mut e = engine();
+        parked(&mut e, Some(12.0 * 3600.0), Some(SUMMER));
+        let out = items(&say(
+            &mut e,
+            DEL,
+            &format!("Zeta Delivery, {CS}, stand one"),
+        ));
+        assert!(!out.is_empty(), "silently dropped");
+        assert!(
+            !out.iter().any(|i| matches!(i, AtcItem::Contact { .. })),
+            "{out:?}"
+        );
+    }
+
     #[test]
     fn clearance_read_back_then_ground() {
         let mut e = engine();

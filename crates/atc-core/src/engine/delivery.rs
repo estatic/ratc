@@ -21,6 +21,7 @@ use atc_phraseology::{
 
 use super::{AtcEngine, fold};
 use crate::ifr::{choose_sid, initial_climb_ft, procedure_path, sid_target_ft};
+use crate::phase::FlightPhase;
 use crate::strip::{FlightPlan, Role};
 
 /// Summer time (UTC+2 in Poland) as days of the year, 0 = 1 January: about 28 March to
@@ -93,10 +94,13 @@ impl AtcEngine {
                         *level_ft,
                         via,
                     );
-                    // An old letter is corrected ahead of the clearance, as Ground does.
+                    // An old letter is corrected ahead of the clearance, as Ground does (not
+                    // ahead of an "unable", nor alone).
                     if let Some(atis) = self.atis.as_ref().map(|a| a.current())
                         && heard.is_some_and(|c| c.to_ascii_uppercase() != atis.letter)
-                        && !matches!(items.first(), Some(AtcItem::Unable(_)))
+                        && items
+                            .first()
+                            .is_some_and(|it| !matches!(it, AtcItem::Unable(_)))
                     {
                         items.splice(
                             0..0,
@@ -117,10 +121,19 @@ impl AtcEngine {
             PilotIntent::RequestDepartureRunway { runway } => {
                 self.request_departure_runway(i, runway)
             }
+            // The stand named alone is a taxi request only after landing (as on Ground);
+            // parked, it is no request and gets the answer to any call.
+            PilotIntent::ReportStand { .. }
+                if matches!(
+                    self.strips[i].phase,
+                    FlightPhase::TaxiIn | FlightPhase::Landed
+                ) =>
+            {
+                self.redirect(i, Role::Ground)
+            }
             PilotIntent::RequestStartUp { .. }
             | PilotIntent::RequestTaxi { .. }
             | PilotIntent::RequestTaxiToStand { .. }
-            | PilotIntent::ReportStand { .. }
             | PilotIntent::RequestTaxiHelp
             | PilotIntent::RequestFollowMe => self.redirect(i, Role::Ground),
             PilotIntent::ReadyForDeparture { .. }
