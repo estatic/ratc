@@ -797,6 +797,7 @@ impl AtcEngine {
             .0
             .callsign
             .as_deref()
+            .or(alone.0.short_callsign.as_deref())
             .filter(|_| alone.1.is_none())
             .and_then(|h| self.near_aircraft(role, h));
         if alone.0.intent == PilotIntent::SayAgain {
@@ -1210,7 +1211,8 @@ impl AtcEngine {
     }
 
     /// The only aircraft `role` works on its frequency (owned, with surveillance) whose
-    /// callsign is one letter or digit off the heard callsign `heard` ([`near_callsign`]).
+    /// callsign is one letter or digit off (or lacks the first letter of) the heard callsign
+    /// `heard` ([`near_callsign`]).
     /// Unlike [`AtcEngine::only_addressed`] it need not be the one `role` last spoke to:
     /// the transmission names it, nearly. `None`: no such aircraft, or more than one.
     fn near_aircraft(&self, role: Role, heard: &str) -> Option<usize> {
@@ -2215,15 +2217,20 @@ fn letters_lost(full: &str, heard: &str) -> bool {
 }
 
 /// `heard` differs from the callsign `known` by exactly one letter or digit (a
-/// substitution), in full or abbreviated form ("NSB" for N172SP, abbreviated "NSP").
+/// substitution), in full or abbreviated form ("NSB" for N172SP, abbreviated "NSP"), or is
+/// that callsign without its first character, at least two left ("SP" for N172SP).
 fn near_callsign(heard: &str, known: &str) -> bool {
     let heard = Callsign::new(heard).0;
     let known = Callsign::new(known);
+    let first_lost = |k: &str| heard.chars().count() >= 2 && k.chars().skip(1).eq(heard.chars());
     let one_off = |k: &str| {
         heard.chars().count() == k.chars().count()
             && heard.chars().zip(k.chars()).filter(|(a, b)| a != b).count() == 1
     };
-    one_off(&known.0) || one_off(&known.abbreviated())
+    one_off(&known.0)
+        || one_off(&known.abbreviated())
+        || first_lost(&known.0)
+        || first_lost(&known.abbreviated())
 }
 
 /// "full stop" anywhere in the transmission (also inside a position report), heard in

@@ -9817,6 +9817,65 @@ mod near_callsign {
         );
     }
 
+    /// Registers `cs`, parked at the testkit stand, and calls Tower on its own initiative
+    /// as `spoken_cs`: Tower becomes the owner (and answers "contact Ground").
+    fn on_tower(e: &mut AtcEngine, cs: &str, spoken_cs: &str) {
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new(cs),
+            aircraft_type: "C172".into(),
+        });
+        let first = AircraftState {
+            callsign: Callsign::new(cs),
+            ..track().into_iter().next().unwrap()
+        };
+        assert!(e.on_telemetry(first).is_empty());
+        let out = say(
+            e,
+            TOWER,
+            &format!("Krakow Tower, {spoken_cs}, request taxi"),
+        );
+        assert_eq!(out[0].message.to, Some(Callsign::new(cs)), "{out:?}");
+        assert_eq!(e.strip(&Callsign::new(cs)).unwrap().owner, Role::Tower);
+    }
+
+    /// Tower last spoke to another station (SPTST, registered, not flying), as in flight,
+    /// so a call without a full callsign is not taken for the aircraft on Tower by default.
+    fn tower_spoke_to_another(e: &mut AtcEngine) {
+        let other = say(e, TOWER, &format!("Krakow Tower, {CS}, request taxi"));
+        assert_eq!(
+            other[0].message.to,
+            Some(Callsign::new("SPTST")),
+            "{other:?}"
+        );
+    }
+
+    /// "Sierra Papa" (the first letter lost): N172SP is the only aircraft on Tower that
+    /// fits, so it is taken for it and not asked to say its callsign again.
+    #[test]
+    fn first_letter_dropped_is_the_only_aircraft() {
+        let mut e = engine();
+        on_tower(&mut e, "N172SP", N172SP);
+        tower_spoke_to_another(&mut e);
+        let out = say(&mut e, TOWER, "Krakow Tower, Sierra Papa.");
+        assert!(!items(&out).iter().any(is_say_again_callsign), "{out:?}");
+        assert_eq!(out[0].message.to, Some(Callsign::new("N172SP")), "{out:?}");
+    }
+
+    /// Two aircraft ending "SP" on the frequency: the short callsign fits both, so the
+    /// pilot is asked to say it again.
+    #[test]
+    fn first_letter_dropped_ambiguous_asks() {
+        let mut e = engine();
+        on_tower(&mut e, "N182SP", "November one eight two Sierra Papa");
+        on_tower(&mut e, "N172SP", N172SP);
+        tower_spoke_to_another(&mut e);
+        let out = say(&mut e, TOWER, "Krakow Tower, Sierra Papa.");
+        assert!(
+            matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+            "{out:?}"
+        );
+    }
+
     /// "November Charlie Bravo" is two letters off N172SP: not taken.
     #[test]
     fn two_letters_off_is_not_taken() {
