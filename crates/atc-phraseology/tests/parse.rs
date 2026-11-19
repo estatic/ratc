@@ -1231,3 +1231,67 @@ fn two_letter_callsign_is_short() {
     assert_eq!(m.callsign, None);
     assert_eq!(m.short_callsign.as_deref(), Some("SP"));
 }
+
+#[test]
+fn teen_after_callsign_is_not_callsign() {
+    assert_eq!(
+        en("SPABC, ten miles final").callsign.as_deref(),
+        Some("SPABC")
+    );
+    assert_eq!(
+        en("Krakow Tower, SPABC, ten miles south")
+            .callsign
+            .as_deref(),
+        Some("SPABC")
+    );
+    let m = en("Katowice Tower, Sierra Papa, ten miles south");
+    assert_eq!(m.callsign, None);
+    assert_eq!(m.short_callsign.as_deref(), Some("SP"));
+}
+
+#[test]
+fn stand_by_is_not_report_stand() {
+    for text in [
+        "Krakow Ground, SPABC, stand by",
+        "Krakow Tower, SPABC, stand by one",
+    ] {
+        let m = en(text);
+        assert!(
+            !matches!(m.intent, PilotIntent::ReportStand { .. }),
+            "{text}: {:?}",
+            m.intent
+        );
+    }
+}
+
+#[test]
+fn short_callsign_after_stand() {
+    let m = en("Katowice Ground, stand eleven, Sierra Papa");
+    assert_eq!(
+        m.intent,
+        PilotIntent::ReportStand {
+            stand: "stand 11".into()
+        }
+    );
+    assert_eq!(m.short_callsign.as_deref(), Some("SP"));
+}
+
+#[test]
+fn digit_runs_unchanged_by_teens() {
+    assert_eq!(
+        en("one one eight decimal one zero five").items.freqs_khz,
+        vec![118_105]
+    );
+    assert_eq!(
+        en("flight level one one zero").items.flight_levels,
+        vec![110]
+    );
+    assert_eq!(
+        normalize("ten thousand"),
+        vec![Token::Number("10000".into())]
+    );
+    assert_eq!(
+        en("climb ten thousand feet").items.altitudes_ft,
+        vec![10_000]
+    );
+}

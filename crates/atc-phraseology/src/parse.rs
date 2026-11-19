@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::normalize::{Token, normalize};
+use crate::normalize::{Token, normalize, normalize_tagged};
 use crate::pl;
 use crate::pl::normalize::fold;
 use crate::types::{
@@ -118,15 +118,20 @@ pub fn parse_pilot_in(
         raw: text.to_string(),
     };
     // The words as said, each with the canonical words it was read as (`None`: itself).
-    let (toks, said) = match lang {
+    let (toks, said, teens) = match lang {
         Lang::En => {
-            let toks = normalize(text);
+            let (toks, teens) = normalize_tagged(text);
             let said = words(&toks).into_iter().map(|(_, w)| (w, None)).collect();
-            (toks, said)
+            (toks, said, teens)
         }
-        Lang::Pl => pl::normalize::normalize_said(text),
+        Lang::Pl => {
+            let (toks, said) = pl::normalize::normalize_said(text);
+            let teens = vec![false; toks.len()];
+            (toks, said, teens)
+        }
     };
     let mut scan = Scan::new(&toks, vocab);
+    scan.teen = teens;
     scan.scan_addressee();
     let found = scan.scan_known_callsign(known);
     scan.scan_any_stand();
@@ -296,6 +301,8 @@ struct Scan<'a> {
     /// Numbers marked used as a stand's designator ([`Scan::scan_stand_numbers`]); the
     /// stand reader still reads them.
     stand_num: Vec<bool>,
+    /// Numbers said as a teen word ("ten miles"): never part of a callsign.
+    teen: Vec<bool>,
     items: HeardItems,
     atis: Option<char>,
     addressee: Option<String>,
@@ -406,6 +413,7 @@ impl<'a> Scan<'a> {
             approach_kind: None,
             used: vec![false; toks.len()],
             stand_num: vec![false; toks.len()],
+            teen: vec![false; toks.len()],
             items: HeardItems::default(),
             atis: None,
             addressee: None,
@@ -540,6 +548,7 @@ impl<'a> Scan<'a> {
         let mut run = Vec::new();
         while k >= self.start && k < self.toks.len() {
             match self.toks[k] {
+                Token::Number(_) if self.teen[k] => break,
                 Token::Letter(_) | Token::Number(_) => run.push(k),
                 Token::Break => {}
                 Token::Word(_) => break,
@@ -1193,7 +1202,8 @@ impl<'a> Scan<'a> {
         let mut cur = String::new();
         let mut has_letter = false;
         for i in self.start..=self.toks.len() {
-            let tok = if self.used.get(i).copied().unwrap_or(true) {
+            // A teen number ("SPABC, ten miles") is no part of a callsign.
+            let tok = if self.used.get(i).copied().unwrap_or(true) || self.teen[i] {
                 None
             } else {
                 self.toks.get(i)
@@ -1208,6 +1218,7 @@ impl<'a> Scan<'a> {
                 Some(Token::Break)
                     if !cur.is_empty()
                         && !self.used.get(i + 1).copied().unwrap_or(true)
+                        && !self.teen.get(i + 1).copied().unwrap_or(false)
                         && matches!(
                             self.toks.get(i + 1),
                             Some(Token::Letter(_) | Token::Number(_))
@@ -1244,8 +1255,14 @@ impl<'a> Scan<'a> {
     /// The stand named from the keyword at `s` ("stand", "parking", "apron"): the keyword
     /// and its designator joined by spaces (`"stand 9 R"`), `None` with no designator.
     fn stand_name(&self, s: usize) -> Option<String> {
+        self.stand_span(s).map(|(name, _)| name)
+    }
+
+    /// [`Self::stand_name`] with the index just past the stand.
+    fn stand_span(&self, s: usize) -> Option<(String, usize)> {
         let n = self.toks.len();
         let keyword = self.w(s)?;
+        let mut end = n.min(s + 11);
         let mut parts = vec![keyword.to_string()];
         // The pilot's callsign (already taken) ends the stand; "left" / "right" /
         // "centre" right after a number is the stand's letter ("nine right" is 9R).
@@ -1263,6 +1280,7 @@ impl<'a> Scan<'a> {
             {
                 parts.push("galpha".to_string());
                 skip = j + GALPHA.len();
+                end = skip;
                 continue;
             }
             // ("for galpha" may have been taken for a destination.)
@@ -1270,6 +1288,7 @@ impl<'a> Scan<'a> {
                 && !self.stand_num[j]
                 && !matches!(&self.toks[j], Token::Word(w) if w == "for")
             {
+                end = j;
                 break;
             }
             let after_number = matches!(self.toks[j - 1], Token::Number(_));
@@ -1304,11 +1323,15 @@ impl<'a> Scan<'a> {
                         && (matches!(self.toks.get(j + 1), Some(Token::Letter(_)))
                             || self.w(j + 1) == Some("gulf"))
                         && !self.used.get(j + 1).copied().unwrap_or(false)
+                        && parts.iter().any(|p| p == "apron" || is_apron_misheard(p))
                         && !self.callsign_after(j) => {}
-                Token::Word(_) | Token::Break => break,
+                Token::Word(_) | Token::Break => {
+                    end = j;
+                    break;
+                }
             }
         }
-        (parts.len() > 1).then(|| parts.join(" "))
+        (parts.len() > 1).then(|| (parts.join(" "), end))
     }
 
     /// Three or more letters right after the Break at `j`: a callsign, not more of a stand
@@ -1335,11 +1358,25 @@ impl<'a> Scan<'a> {
         }
     }
 
-    /// A stand named anywhere ("stand eleven"), as [`Self::stand_name`] reads it.
+    /// A stand report: "stand" and its designator (a number or a letter, not "stand by"),
+    /// as [`Self::stand_name`] reads it, with no other words after the addressee than
+    /// greetings.
     fn stand_heard(&self) -> Option<String> {
-        (0..self.toks.len())
-            .filter(|&i| self.w(i) == Some("stand"))
-            .find_map(|i| self.stand_name(i))
+        let (i, name, end) = (0..self.toks.len())
+            .filter(|&i| {
+                self.w(i) == Some("stand")
+                    && matches!(
+                        self.toks.get(i + 1),
+                        Some(Token::Letter(_) | Token::Number(_))
+                    )
+            })
+            .find_map(|i| self.stand_span(i).map(|(name, end)| (i, name, end)))?;
+        let other_words = (self.start..self.toks.len()).any(|k| {
+            !(i..end).contains(&k)
+                && !self.used[k]
+                && self.w(k).is_some_and(|w| !GREETING_WORDS.contains(&w))
+        });
+        (!other_words).then_some(name)
     }
 
     /// Some word sequence of `pats` anywhere in the message.

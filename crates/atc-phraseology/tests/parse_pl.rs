@@ -550,3 +550,12 @@ fn polish_request_departure_runway() {
         }
     );
 }
+
+#[test]
+fn polish_ten_is_not_a_number() {
+    assert_eq!(pl("SPABC, ten").callsign.as_deref(), Some("SPABC"));
+    assert_eq!(
+        pl("SPABC, ten sam postój jedenaście").callsign.as_deref(),
+        Some("SPABC")
+    );
+}
