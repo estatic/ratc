@@ -922,6 +922,7 @@ fn crossing_airport() -> Airport {
             heading_deg: 0.0,
             kind: Default::default(),
             categories: Vec::new(),
+            operation: Default::default(),
         }],
         ..ap
     }
@@ -4710,6 +4711,7 @@ mod approach_departure {
                         heading_deg: 0.0,
                         kind: Default::default(),
                         categories: Vec::new(),
+                        operation: Default::default(),
                     });
                 }
             },
@@ -5422,6 +5424,7 @@ mod approach_departure {
                         heading_deg: 0.0,
                         kind: Default::default(),
                         categories: Vec::new(),
+                        operation: Default::default(),
                     },
                 )
             },
@@ -5480,6 +5483,7 @@ mod approach_departure {
             heading_deg: 0.0,
             kind,
             categories,
+            operation: Default::default(),
         }
     }
 
@@ -10468,5 +10472,69 @@ mod acknowledgements {
         let mut e = handed_to_ground();
         let out = say(&mut e, TOWER, &format!("Krakow Tower, {CS}, good day"));
         assert!(!out.is_empty(), "silently dropped");
+    }
+}
+
+/// Final review of 14c: "any stand" at EPKK gave a C172 the "Military Apron". A military
+/// stand (apt.dat row 1301) is never given to civil traffic; a light prop prefers a
+/// general-aviation stand.
+mod stand_operation {
+    use super::approach_departure::{GND, engine_with_ga_stands, taxiing_in_near_stand_1};
+    use super::*;
+    use atc_navdata::model::StandOperation;
+
+    fn any_stand(e: &mut AtcEngine) -> Vec<AtcItem> {
+        taxiing_in_near_stand_1(e, false);
+        items(&say(e, GND, &format!("{CS}, any stand")))
+    }
+
+    fn taxis_to(out: &[AtcItem], stand: &str) -> bool {
+        matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == stand)
+    }
+
+    /// The nearest props tie-down is military: the next one is given.
+    #[test]
+    fn military_stand_is_skipped() {
+        let mut e = engine_with_ga_stands(|ap| {
+            for st in &mut ap.stands {
+                if st.name == "GA 1" {
+                    st.operation = StandOperation::Military;
+                }
+            }
+        });
+        let out = any_stand(&mut e);
+        assert!(taxis_to(&out, "GA 2"), "{out:?}");
+    }
+
+    /// Only military stands: none is free for a civil aircraft.
+    #[test]
+    fn only_military_stands_is_no_free_stand() {
+        let mut e = engine_with_ga_stands(|ap| {
+            for st in &mut ap.stands {
+                st.operation = StandOperation::Military;
+            }
+        });
+        let out = any_stand(&mut e);
+        assert_eq!(
+            out,
+            vec![
+                AtcItem::Unable(atc_phraseology::UnableReason::NoFreeStand),
+                AtcItem::SayStand
+            ]
+        );
+    }
+
+    /// A light prop takes a general-aviation stand over a nearer one of no stated use.
+    #[test]
+    fn light_prop_prefers_a_general_aviation_stand() {
+        let mut e = engine_with_ga_stands(|ap| {
+            for st in &mut ap.stands {
+                if st.name == "GA 3" {
+                    st.operation = StandOperation::GeneralAviation;
+                }
+            }
+        });
+        let out = any_stand(&mut e);
+        assert!(taxis_to(&out, "GA 3"), "{out:?}");
     }
 }

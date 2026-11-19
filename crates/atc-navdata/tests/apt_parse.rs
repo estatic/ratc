@@ -1,4 +1,4 @@
-use atc_navdata::model::{EdgeKind, FreqKind, StandCategory, StandKind, ZoneKind};
+use atc_navdata::model::{EdgeKind, FreqKind, StandCategory, StandKind, StandOperation, ZoneKind};
 use atc_navdata::{NavdataError, parse_apt_dat};
 
 const FIX: &str = include_str!("fixtures/mini.dat");
@@ -112,4 +112,44 @@ fn stand_row_keeps_type_and_categories() {
     assert!(a.stands[2].categories.is_empty());
     assert_eq!(a.stands[3].kind, StandKind::Misc);
     assert_eq!(a.stands[3].name, "70 de-ice");
+}
+
+/// Row 1301 after a stand gives its operation type (field 2); a stand without one, or with
+/// `none` or an unknown word, is unspecified.
+#[test]
+fn stand_operation_row() {
+    let text = "I\n1100 Version\n1 1000 0 0 EPKK Test\n\
+        1300 50.07 19.79 347.5 tie_down jets|props Military Apron\n\
+        1301 C military\n\
+        1300 50.07 19.79 257.0 gate jets 33\n\
+        1301 C airline LOT\n\
+        1300 50.07 19.79 257.0 tie_down props GA 1\n\
+        1301 A general_aviation\n\
+        1300 50.07 19.79 257.0 misc all Cargo 1\n\
+        1301 E cargo\n\
+        1300 50.07 19.79 257.0 misc all X1\n\
+        1300 50.07 19.79 257.0 misc all X2\n\
+        1301 C none\n\
+        99\n";
+    let a = parse_apt_dat(text, "EPKK").unwrap();
+    let ops: Vec<StandOperation> = a.stands.iter().map(|s| s.operation).collect();
+    assert_eq!(
+        ops,
+        [
+            StandOperation::Military,
+            StandOperation::Airline,
+            StandOperation::GeneralAviation,
+            StandOperation::Cargo,
+            StandOperation::Unspecified,
+            StandOperation::Unspecified,
+        ]
+    );
+}
+
+/// Stand data stored before the operation type was kept still loads (unspecified).
+#[test]
+fn stand_without_operation_deserializes() {
+    let text = "name = \"5\"\nheading_deg = 0.0\npos = { lat = 50.0, lon = 19.0 }\n";
+    let st: atc_navdata::model::Stand = toml::from_str(text).unwrap();
+    assert_eq!(st.operation, StandOperation::Unspecified);
 }

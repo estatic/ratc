@@ -18,7 +18,7 @@
 [ 2053.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, good morning
 [ 2053.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, good morning, pass your message
 [ 2053.0] PILOT: Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi
-[ 2053.0] Kraków Ground: Sierra Bravo Charlie, taxi to stand military apron via Charlie, Bravo four
-[ 2053.0] PILOT: Taxi to stand military apron via Charlie, Bravo four, Sierra Bravo Charlie
-[ 2201.0] PILOT: Sierra Bravo Charlie, on stand military apron
+[ 2053.0] Kraków Ground: Sierra Bravo Charlie, taxi to stand two four Lima via Charlie, Bravo four, Bravo five, Bravo six
+[ 2053.0] PILOT: Taxi to stand two four Lima via Charlie, Bravo four, Bravo five, Bravo six, Sierra Bravo Charlie
+[ 2201.0] PILOT: Sierra Bravo Charlie, on stand two four Lima
 [ 2201.0] Kraków Ground: Sierra Bravo Charlie, good day

@@ -87,9 +87,9 @@ text = "Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi"
 [[say]]
 at = "heard:taxi to stand"
 freq = "ground"
-text = "Taxi to stand military apron via Charlie, Bravo four, Sierra Bravo Charlie"
+text = "Taxi to stand two four Lima via Charlie, Bravo four, Bravo five, Bravo six, Sierra Bravo Charlie"
 
 [[say]]
 at = "phase:Parked"
 freq = "ground"
-text = "Sierra Bravo Charlie, on stand military apron"
+text = "Sierra Bravo Charlie, on stand two four Lima"
