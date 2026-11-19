@@ -7111,6 +7111,159 @@ mod approach_arrival {
             }
             assert_eq!(checks(&p), 1, "{:?}", p.f.heard);
         }
+
+        /// Messages heard by `p` carrying an item `f` matches.
+        fn calls(p: &Pilot, f: impl Fn(&AtcItem) -> bool) -> usize {
+            p.f.heard
+                .iter()
+                .filter(|o| o.message.items.iter().any(&f))
+                .count()
+        }
+
+        fn check_level(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::CheckLevel(_))
+        }
+
+        fn check_heading(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::CheckHeading(_))
+        }
+
+        /// SP-TST inbound on vectors, told to maintain 5000 ft, silent (no readbacks), one
+        /// sample at 5000 ft, then 500 ft low; returns the inbound clearance.
+        fn level_busted(e: &mut AtcEngine, p: &mut Pilot) -> Vec<AtcItem> {
+            p.tick(e);
+            p.reads_back = false;
+            let got = items(&p.call(e, APP, INBOUND));
+            assert!(
+                got.contains(&AtcItem::MaintainLevel(Level::Altitude(5000))),
+                "{got:?}"
+            );
+            p.tick(e);
+            p.f.alt = 4500.0;
+            p.target = 4500.0;
+            got
+        }
+
+        /// A readback of "contact Zeta Tower" pending (nothing about heading or level), as
+        /// if just issued at the pilot's time.
+        fn pending_contact(e: &mut AtcEngine, p: &Pilot) {
+            let mut v = serde_json::to_value(e.snapshot()).unwrap();
+            let strip = &mut v["strips"][0];
+            strip["pending_readback"] =
+                serde_json::to_value(vec![atc_phraseology::ReadbackItem::Frequency(TWR)]).unwrap();
+            strip["pending_items"] = serde_json::to_value(vec![contact_tower()]).unwrap();
+            strip["readback_issued_s"] = p.f.t.into();
+            e.restore(serde_json::from_value(v).unwrap()).unwrap();
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+        }
+
+        fn contact_tower() -> AtcItem {
+            AtcItem::Contact {
+                station: "Zeta Tower".into(),
+                khz: TWR,
+            }
+        }
+
+        /// The level check is held while "maintain 5000" awaits its readback; after it is
+        /// accepted, the bust is called once the reaction time and the 10 s have run.
+        #[test]
+        fn level_check_waits_for_readback() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            let got = level_busted(&mut e, &mut p);
+            p.until(&mut e, 20, |p| p.f.t >= 20.0);
+            assert_eq!(calls(&p, check_level), 0, "{:?}", p.f.heard);
+            let accepted = p.f.t;
+            let rb = ifr_readback(&got).expect("a readback");
+            let out = e.on_transmission(APP, &rb, Lang::En, SimTime(accepted));
+            assert!(out.is_empty(), "{out:?}");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+            while p.f.t < accepted + 10.0 + 10.0 {
+                p.tick(&mut e);
+                assert_eq!(calls(&p, check_level), 0, "t = {}: {:?}", p.f.t, p.f.heard);
+            }
+            for _ in 0..3 {
+                p.tick(&mut e);
+            }
+            assert_eq!(calls(&p, check_level), 1, "{:?}", p.f.heard);
+        }
+
+        /// A pending readback with no heading or level in it holds nothing: a level bust
+        /// meanwhile is called after the usual 10 s.
+        #[test]
+        fn unrelated_pending_readback_does_not_hold_level() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            let got = level_busted(&mut e, &mut p);
+            let rb = ifr_readback(&got).expect("a readback");
+            assert!(say(&mut e, APP, &rb).is_empty());
+            // Settled back at 5000 ft past the reaction time.
+            p.f.alt = 5000.0;
+            p.target = 5000.0;
+            p.until(&mut e, 20, |p| p.f.t >= 20.0);
+            pending_contact(&mut e, &p);
+            p.f.alt = 4500.0;
+            p.target = 4500.0;
+            let bust = p.f.t;
+            p.until(&mut e, 10, |p| calls(p, check_level) > 0);
+            assert!(p.f.t <= bust + 10.0 + 4.0, "t = {}", p.f.t);
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+        }
+
+        /// The readback of a heading that never comes holds the check only up to the
+        /// reminder and the reaction time: a silent pilot off the heading is still called.
+        #[test]
+        fn unanswered_heading_readback_is_still_called() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            p.tick(&mut e);
+            p.reads_back = false;
+            p.obeys_headings = false;
+            let issued = p.f.t;
+            let out = p.call(&mut e, APP, INBOUND);
+            let assigned = items(&out)
+                .iter()
+                .find_map(|i| match i {
+                    AtcItem::Heading { deg, .. } => Some(*deg),
+                    _ => None,
+                })
+                .expect("a heading");
+            p.hdg = f64::from(assigned) - 78.0;
+            p.until(&mut e, 80, |p| calls(p, check_heading) > 0);
+            // Not before the reminder (10 s), the reaction time and the 30 s have run.
+            assert!(p.f.t > issued + 10.0 + 10.0 + 30.0, "t = {}", p.f.t);
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+            for _ in 0..20 {
+                p.tick(&mut e);
+            }
+            assert_eq!(calls(&p, check_heading), 1, "{:?}", p.f.heard);
+        }
+
+        /// An accepted readback with no heading or level in it does not restart the level
+        /// check: the bust is called after the usual 10 s.
+        #[test]
+        fn unrelated_readback_does_not_restart_the_level_check() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            let got = level_busted(&mut e, &mut p);
+            let rb = ifr_readback(&got).expect("a readback");
+            assert!(say(&mut e, APP, &rb).is_empty());
+            p.f.alt = 5000.0;
+            p.target = 5000.0;
+            p.until(&mut e, 20, |p| p.f.t >= 20.0);
+            pending_contact(&mut e, &p);
+            p.f.alt = 4500.0;
+            p.target = 4500.0;
+            let bust = p.f.t;
+            p.tick(&mut e);
+            p.tick(&mut e);
+            let rb = ifr_readback(&[contact_tower()]).expect("a readback");
+            let out = e.on_transmission(APP, &rb, Lang::En, SimTime(p.f.t));
+            assert!(out.is_empty(), "{out:?}");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+            p.until(&mut e, 10, |p| calls(p, check_level) > 0);
+            assert!(p.f.t <= bust + 10.0 + 4.0, "t = {}", p.f.t);
+        }
     }
 
     /// Review Focus 5: a heading ignored for 35 s and more is called once, in English.

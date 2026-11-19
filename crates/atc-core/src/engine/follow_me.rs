@@ -201,7 +201,7 @@ impl AtcEngine {
                 _ => {
                     // The "on the way" call needs no reminder for a car that is gone.
                     if strip.pending_items.contains(&AtcItem::FollowMeOnTheWay) {
-                        strip.readback_complete();
+                        strip.readback_complete_at(t);
                     }
                     Vec::new()
                 }

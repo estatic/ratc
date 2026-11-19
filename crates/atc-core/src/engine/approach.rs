@@ -935,7 +935,7 @@ impl AtcEngine {
             )
         });
         if landing {
-            strip.readback_complete();
+            strip.readback_complete_at(self.now);
         }
         if let Some(p) = strip.plan.as_mut() {
             p.approach_cleared = false;
@@ -1420,7 +1420,7 @@ impl AtcEngine {
             strip.handoff_acked = true;
             // Calling the unit completes the hand-off, read back or not.
             if strip.pending_readback.is_some() {
-                strip.readback_complete();
+                strip.readback_complete_at(self.now);
             }
             vec![AtcItem::Identified]
         } else {

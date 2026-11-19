@@ -84,7 +84,7 @@ use crate::readback::{
 use crate::runway::RunwayResource;
 use crate::squawk::{DEFAULT_POOL, discrete_codes};
 use crate::state::{AircraftState, SimTime};
-use crate::strip::{FlightPlan, PilotProfile, Role, Strip};
+use crate::strip::{FlightPlan, PilotProfile, Role, Strip, steers};
 use crate::taxi::TaxiGraph;
 use delivery::RunwayChange;
 
@@ -228,6 +228,27 @@ pub struct AtcEngine {
 /// Words a controller speaks per second, to estimate how long a clearance takes to say.
 const WORDS_PER_S: f64 = 2.5;
 
+/// A missing readback is reminded of this long after the clearance was spoken.
+const REMIND_AFTER_S: f64 = 10.0;
+
+/// The heading and level checks of aircraft `strip` are held at sim time `t` (s): while the
+/// readback of a heading or level instruction is pending, up to the reminder and the
+/// pilot's reaction time after it (a silent pilot is still called), and for the reaction
+/// time after it was accepted ([`REACTION_S`]). A sim clock gone back ends the wait.
+fn holds_clearance_checks(strip: &Strip, t: f64) -> bool {
+    let within = |from: f64, s: f64| (0.0..s).contains(&(t - from));
+    let pending = strip.pending_readback.is_some()
+        && steers(&strip.pending_items)
+        && within(
+            strip.readback_due_s.unwrap_or(strip.readback_issued_s),
+            REMIND_AFTER_S + REACTION_S,
+        );
+    let reacting = strip
+        .readback_done_at
+        .is_some_and(|done| within(done, REACTION_S));
+    pending || reacting
+}
+
 /// A reminder to read back, once per clearance: 10 s of sim time after it was spoken, or at
 /// once when the aircraft, standing when the clearance was issued, moves (over 3 kt) with a
 /// taxi readback pending. Spoken by the position that gave the clearance; `None` when no
@@ -240,7 +261,6 @@ fn readback_reminder(
     gs_kt: f64,
     busy: bool,
 ) -> Option<(Role, Vec<AtcItem>)> {
-    const REMIND_AFTER_S: f64 = 10.0;
     const MOVING_KT: f64 = 3.0;
     let role = strip.readback_role?;
     let mut due = strip.readback_due_s?;
@@ -705,15 +725,6 @@ impl AtcEngine {
         // An aircraft with a flight plan, or entering or leaving via points: no circuit legs.
         sv.tracker.set_circuit(circuit);
         sv.monitor.set_clearance(clearance);
-        // No heading or level check while the readback is pending, nor while the pilot is
-        // still reacting to the accepted one (a sim clock gone back ends the wait).
-        let strip = &self.strips[i];
-        let reacting = strip
-            .readback_done_at
-            .is_some_and(|done| (0.0..REACTION_S).contains(&(s.t.0 - done)));
-        if strip.pending_readback.is_some() || reacting {
-            sv.monitor.hold_clearance_checks();
-        }
         let phase = sv.tracker.update(&s);
         let strip = &mut self.strips[i];
         let prev = std::mem::replace(&mut strip.phase, phase);
@@ -738,10 +749,13 @@ impl AtcEngine {
             end_flight_keeping_contact(strip);
         }
         if strip.pending_readback.is_some() && strip.pending_expired() {
-            strip.readback_complete();
+            strip.readback_complete_at(s.t.0);
         }
         let reminder = readback_reminder(strip, s.t.0, s.gs_kt, busy);
         strip.radio_failure = s.xpdr_code == Some(approach::RADIO_FAILURE_SQUAWK);
+        if holds_clearance_checks(strip, s.t.0) {
+            sv.monitor.hold_clearance_checks();
+        }
         let deviations = sv.monitor.update(&s, phase, &strip.permissions);
         let (pos, gs_kt, t, vs_fpm) = (s.pos, s.gs_kt, s.t.0, s.vs_fpm);
         sv.last = s;
@@ -1010,7 +1024,7 @@ impl AtcEngine {
         // Calling the station it was sent to completes the handover; calling a station on
         // the pilot's own initiative makes it the owner.
         match strip.handoff_to {
-            Some(to) if to == role => strip.readback_complete(),
+            Some(to) if to == role => strip.readback_complete_at(self.now),
             Some(_) => {}
             None => strip.owner = role,
         }
@@ -1048,9 +1062,8 @@ impl AtcEngine {
                 || (at_limit && (request || carries_readback(&result, &pending)))
             {
                 // Correct, or asked for often enough: accept and move on.
-                let issued = std::mem::take(&mut strip.pending_items);
-                strip.readback_complete();
-                strip.readback_done_at = Some(self.now);
+                let issued = strip.pending_items.clone();
+                strip.readback_complete_at(self.now);
                 if !request {
                     let mut items = self.transponder_recheck(i, role);
                     if items.is_empty() && result == ReadbackResult::Correct {

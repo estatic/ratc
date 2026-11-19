@@ -189,7 +189,7 @@ pub struct ComplianceMonitor {
     level_from_above: Option<bool>,
     /// The heading and level checks are held for the current sample
     /// ([`ComplianceMonitor::hold_clearance_checks`]).
-    #[serde(default)]
+    #[serde(skip)]
     held: bool,
 }
 

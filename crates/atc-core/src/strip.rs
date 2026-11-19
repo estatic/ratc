@@ -142,6 +142,20 @@ pub struct FollowMe {
     pub end: Option<LatLon>,
 }
 
+/// `items` carry a heading or level instruction: what the heading and level checks of the
+/// compliance monitor follow.
+pub fn steers(items: &[AtcItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item,
+            AtcItem::Heading { .. }
+                | AtcItem::ClimbTo(_)
+                | AtcItem::DescendTo(_)
+                | AtcItem::MaintainLevel(_)
+        )
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Strip {
     pub callsign: Callsign,
@@ -199,9 +213,9 @@ pub struct Strip {
     /// The missing readback has been reminded of (once per clearance).
     #[serde(default)]
     pub reminded: bool,
-    /// Sim time (s) the last clearance's readback was accepted, or it was transmitted when
-    /// it asks for none: the heading and level checks give the pilot a reaction time from
-    /// it ([`crate::compliance::REACTION_S`]).
+    /// Sim time (s) the readback of the last heading or level instruction was accepted (it
+    /// was transmitted, when it asks for none): the heading and level checks give the pilot
+    /// a reaction time from it ([`crate::compliance::REACTION_S`]).
     #[serde(default)]
     pub readback_done_at: Option<f64>,
     /// Transponder code assigned to the aircraft, once one was needed.
@@ -441,12 +455,20 @@ impl Strip {
         self.redirected = false;
         if required.is_empty() {
             self.last_readback = None;
-            self.readback_done_at = Some(t);
-            self.readback_complete();
+            self.readback_complete_at(t);
         } else {
             self.last_readback = Some(required.clone());
             self.pending_readback = Some(required);
         }
+    }
+
+    /// [`Self::readback_complete`] at sim time `t` (s): a pending heading or level
+    /// instruction starts the pilot's reaction time ([`Self::readback_done_at`]).
+    pub fn readback_complete_at(&mut self, t: f64) {
+        if steers(&self.pending_items) {
+            self.readback_done_at = Some(t);
+        }
+        self.readback_complete();
     }
 
     /// The pending clearance is acknowledged: a pending handover takes effect.
