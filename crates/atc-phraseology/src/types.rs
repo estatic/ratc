@@ -99,6 +99,12 @@ pub enum PilotIntent {
     RequestFollowMe,
     /// "On stand": parked at the end of the taxi-in.
     ReportOnStand,
+    /// "Stand eleven" and nothing else besides the station, callsign and greeting: the
+    /// pilot names his stand (same form as [`PilotIntent::RequestTaxiToStand`]'s, e.g.
+    /// `"stand 11"`).
+    ReportStand {
+        stand: String,
+    },
     /// IFR (or VFR) clearance request: "IFR to Katowice, request clearance".
     RequestClearance {
         /// ICAO code of the destination, when understood.
@@ -212,6 +218,10 @@ pub struct PilotMessage {
     pub station_called: bool,
     /// Normalized callsign as heard (`"SPABC"`, or `"SBC"` if abbreviated).
     pub callsign: Option<String>,
+    /// When `callsign` is `None`: an unused run of exactly two letters/digits after the
+    /// addressee (`"SP"`), too short to be a callsign but maybe the start of one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_callsign: Option<String>,
     pub intent: PilotIntent,
     pub items: HeardItems,
     /// Opening greeting before the callsign ("good morning", "hello").

@@ -1154,3 +1154,80 @@ fn any_stand_is_heard() {
         assert!(!en(text).items.any_stand, "{text}");
     }
 }
+
+#[test]
+fn heading_after_comma() {
+    let m = en(
+        "Turn left heading, two nine five, one zero miles from touchdown, cleared ILS approach, runway two seven, report established, November Sierra Papa",
+    );
+    assert_eq!(m.items.headings, vec![295]);
+    assert_eq!(
+        m.items.approaches,
+        vec![(ApproachKind::Ils, "27".to_string())]
+    );
+    assert_eq!(m.intent, PilotIntent::Readback);
+}
+
+#[test]
+fn heading_break_needs_three_digits() {
+    let m = en("turn left heading, one zero miles");
+    assert!(m.items.headings.is_empty());
+}
+
+#[test]
+fn teens_are_numbers() {
+    let toks = normalize("stand eleven");
+    assert_eq!(
+        toks[toks.len() - 2..],
+        [Token::Word("stand".into()), Token::Number("11".into())]
+    );
+    assert_eq!(normalize("nineteen"), vec![Token::Number("19".into())]);
+    assert_eq!(normalize("ten"), vec![Token::Number("10".into())]);
+}
+
+#[test]
+fn stand_number_is_not_callsign() {
+    let m = en("Katowice Ground, runway vacated, request taxi, stand 11, November Sierra Papa.");
+    assert_eq!(m.callsign.as_deref(), Some("NSP"));
+    assert_eq!(
+        m.intent,
+        PilotIntent::RequestTaxiToStand {
+            stand: Some("stand 11".into())
+        }
+    );
+}
+
+#[test]
+fn stand_alone_is_report_stand() {
+    for text in [
+        "Katowice Ground, stand eleven, November Sierra Papa.",
+        "November Sierra Papa, stand eleven.",
+    ] {
+        let m = en(text);
+        assert_eq!(
+            m.intent,
+            PilotIntent::ReportStand {
+                stand: "stand 11".into()
+            },
+            "{text}"
+        );
+        assert_eq!(m.callsign.as_deref(), Some("NSP"), "{text}");
+    }
+}
+
+#[test]
+fn stand_with_request_keeps_request() {
+    let m = en("Krakow Ground, SPABC, stand nine, request start-up");
+    assert!(
+        matches!(m.intent, PilotIntent::RequestStartUp { .. }),
+        "{:?}",
+        m.intent
+    );
+}
+
+#[test]
+fn two_letter_callsign_is_short() {
+    let m = en("Katowice Tower, Sierra Papa.");
+    assert_eq!(m.callsign, None);
+    assert_eq!(m.short_callsign.as_deref(), Some("SP"));
+}

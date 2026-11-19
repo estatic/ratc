@@ -1300,7 +1300,11 @@ impl AtcEngine {
                 return true;
             }
         }
-        alone.intent == PilotIntent::Unknown && is_request(&joined.intent)
+        // "Stand eleven" alone is a stand report; after "request taxi" it names the stand.
+        matches!(
+            alone.intent,
+            PilotIntent::Unknown | PilotIntent::ReportStand { .. }
+        ) && is_request(&joined.intent)
     }
 
     /// `msg` (no request) repeats the readback of the last clearance aircraft `i` was asked

@@ -62,6 +62,23 @@ fn digit_word(w: &str) -> Option<&'static str> {
     })
 }
 
+/// "ten".."nineteen": a whole number, never part of a digit run ("stand eleven" is 11).
+fn teen_word(w: &str) -> Option<&'static str> {
+    Some(match w {
+        "ten" => "10",
+        "eleven" => "11",
+        "twelve" => "12",
+        "thirteen" => "13",
+        "fourteen" => "14",
+        "fifteen" => "15",
+        "sixteen" => "16",
+        "seventeen" => "17",
+        "eighteen" => "18",
+        "nineteen" => "19",
+        _ => return None,
+    })
+}
+
 fn phonetic(w: &str) -> Option<char> {
     // "zolo"/"zoolo": Whisper's mishearings of "zulu"; "tanga" of "tango".
     if matches!(w, "zulu" | "zolo" | "zoolo") {
@@ -227,15 +244,25 @@ pub fn normalize(text: &str) -> Vec<Token> {
     let words = fix_whisper_words(s.split_whitespace().collect());
     let mut out = Vec::new();
     let mut run = Run::default();
+    // The run holds a teen: the next digit starts a new number ("eleven two" is 11, 2),
+    // but "ten thousand" still scales.
+    let mut teen = false;
     for w in words.iter().map(String::as_str) {
+        let digit = digit_word(w).or_else(|| w.chars().all(|c| c.is_ascii_digit()).then_some(w));
+        if teen && (digit.is_some() || teen_word(w).is_some()) {
+            run.flush(&mut out);
+        }
+        teen = false;
         if w == "\u{1}" {
             run.flush(&mut out);
             if out.last() != Some(&Token::Break) {
                 out.push(Token::Break);
             }
-        } else if w.chars().all(|c| c.is_ascii_digit()) {
-            run.push(w);
-        } else if let Some(d) = digit_word(w) {
+        } else if let Some(d) = teen_word(w) {
+            run.flush(&mut out);
+            run.push(d);
+            teen = true;
+        } else if let Some(d) = digit {
             run.push(d);
         } else if run.active && (w == "hundred" || w == "thousand") {
             run.scale(if w == "hundred" { 100 } else { 1000 });
@@ -286,7 +313,9 @@ fn fix_whisper_words(words: Vec<&str>) -> Vec<String> {
 
 /// True when the words so far end in a stand number: "stand" then digits.
 fn after_stand_number(words: &[String]) -> bool {
-    let is_digit = |w: &str| w.chars().all(|c| c.is_ascii_digit()) || digit_word(w).is_some();
+    let is_digit = |w: &str| {
+        w.chars().all(|c| c.is_ascii_digit()) || digit_word(w).is_some() || teen_word(w).is_some()
+    };
     let digits = words.iter().rev().take_while(|w| is_digit(w)).count();
     digits > 0
         && words
