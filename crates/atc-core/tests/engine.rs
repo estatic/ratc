@@ -7645,19 +7645,63 @@ mod approach_arrival {
     mod acknowledgements {
         use super::*;
 
+        /// SP-TST inbound on vectors, off its heading until Approach says "check heading";
+        /// returns the assigned heading.
+        fn checked_heading(e: &mut AtcEngine) -> u16 {
+            let (mut p, _) = inbound(e, WEST, 5000.0, 0.0, INBOUND);
+            p.obeys_headings = false;
+            p.hdg += 60.0;
+            p.until(e, 40, |p| {
+                p.heard_item(|i| matches!(i, AtcItem::CheckHeading(_)))
+            });
+            p.f.heard
+                .iter()
+                .flat_map(|o| &o.message.items)
+                .find_map(|i| match i {
+                    AtcItem::CheckHeading(deg) => Some(*deg),
+                    _ => None,
+                })
+                .unwrap()
+        }
+
         #[test]
         fn check_heading_ack_after_garble() {
             let mut e = engine();
-            let (mut p, _) = inbound(&mut e, WEST, 5000.0, 0.0, INBOUND);
-            p.obeys_headings = false;
-            p.hdg += 60.0;
-            p.until(&mut e, 40, |p| {
-                p.heard_item(|i| matches!(i, AtcItem::CheckHeading(_)))
-            });
+            checked_heading(&mut e);
             let out = say(&mut e, APP, "check heading, now we've missed your papa.");
             assert_eq!(items(&out), [AtcItem::SayAgain], "{out:?}");
             let out = say(&mut e, APP, "check heading Sierra Sierra Tango.");
-            assert!(!items(&out).contains(&AtcItem::SayAgain), "{out:?}");
+            assert!(out.is_empty(), "{out:?}");
+        }
+
+        /// The third garble without a callsign also reminds of the callsign; the "check
+        /// heading" acknowledgement after it is still not answered.
+        #[test]
+        fn check_heading_ack_after_callsign_reminder() {
+            let mut e = engine();
+            checked_heading(&mut e);
+            for _ in 0..2 {
+                let out = say(&mut e, APP, "check heading, now we've missed your papa.");
+                assert_eq!(items(&out), [AtcItem::SayAgain], "{out:?}");
+            }
+            let out = say(&mut e, APP, "check heading, now we've missed your papa.");
+            assert_eq!(
+                items(&out),
+                [AtcItem::SayAgain, AtcItem::UseCallsign],
+                "{out:?}"
+            );
+            let out = say(&mut e, APP, "check heading Sierra Sierra Tango.");
+            assert!(out.is_empty(), "{out:?}");
+        }
+
+        /// The heading's number read back acknowledges "check heading".
+        #[test]
+        fn check_heading_number_acknowledges() {
+            let mut e = engine();
+            let deg = checked_heading(&mut e);
+            let text = format!("{}, Sierra Sierra Tango", spoken(&format!("{deg:03}")));
+            let out = say(&mut e, APP, &text);
+            assert!(out.is_empty(), "{text}: {out:?}");
         }
     }
 }
@@ -9942,6 +9986,14 @@ mod acknowledgements {
             GROUND,
             &format!("Krakow Ground, follow the follow me card to stand for {ABC}"),
         );
-        assert!(!items(&out).contains(&AtcItem::SayAgain), "{out:?}");
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// "Thank you" next to the station's name acknowledges.
+    #[test]
+    fn station_and_thank_you_is_acknowledgement() {
+        let mut e = led_to_stand_4();
+        let out = say(&mut e, GROUND, &format!("Krakow Ground, thank you, {ABC}"));
+        assert!(out.is_empty(), "{out:?}");
     }
 }

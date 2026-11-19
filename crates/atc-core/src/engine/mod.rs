@@ -315,6 +315,18 @@ fn told_words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// `message` gives the aircraft something to acknowledge: not only "say again", "pass
+/// your message" or "use your callsign", after which an acknowledgement still answers what
+/// was told before (it stays the last told).
+fn tells_something(message: &AtcMessage) -> bool {
+    !message.items.iter().all(|it| {
+        matches!(
+            it,
+            AtcItem::SayAgain | AtcItem::PassYourMessage | AtcItem::UseCallsign
+        )
+    })
+}
+
 /// Midpoint of the first runway (latitude, longitude).
 fn runway_midpoint(ap: &Airport) -> Option<(f64, f64)> {
     let [a, b] = &ap.runways.first()?.ends;
@@ -875,7 +887,9 @@ impl AtcEngine {
         last.message.items.push(AtcItem::UseCallsign);
         last.text = render(&last.message, full);
         self.strips[i].issued.push(AtcItem::UseCallsign);
-        self.last_told.insert(cs.clone(), last.text.clone());
+        if tells_something(&last.message) {
+            self.last_told.insert(cs.clone(), last.text.clone());
+        }
         self.last_sent.insert((cs, role), last.clone());
     }
 
@@ -1474,7 +1488,7 @@ impl AtcEngine {
             .flat_map(|p| words(&p.callsign))
             .collect();
         let (mut called, mut greeted, mut acked) = (false, false, false);
-        // "Roger" or "wilco", or a repeat of a told word; thanks and farewells are not.
+        // "Roger", "wilco", thanks, or a repeat of a told word; a farewell is not.
         let mut confirmed = msg.ack;
         let sorted = msg
             .ack_words
@@ -1488,7 +1502,7 @@ impl AtcEngine {
                 called = true;
             } else if kind == Some(true) || was_told(&w) {
                 acked = true;
-                confirmed |= kind != Some(true);
+                confirmed |= kind != Some(true) || w == "thank" || w == "thanks";
             } else if kind == Some(false) {
                 greeted = true;
             } else {
@@ -1759,13 +1773,7 @@ impl AtcEngine {
                 .is_some_and(|sv| sv.last.gs_kt > 3.0);
         }
         let cs = strip.callsign.clone();
-        // "Say again" and "pass your message" tell nothing to acknowledge: an
-        // acknowledgement after them still answers what was told before.
-        if !message
-            .items
-            .iter()
-            .all(|it| matches!(it, AtcItem::SayAgain | AtcItem::PassYourMessage))
-        {
+        if tells_something(&message) {
             self.last_told.insert(cs.clone(), text.clone());
         }
         let out = AtcOutput {
