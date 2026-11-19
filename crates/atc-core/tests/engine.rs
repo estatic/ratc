@@ -2792,6 +2792,33 @@ mod delivery {
         )
     }
 
+    /// C12: a clearance request that names an old ATIS letter gets the current one and
+    /// the QNH ahead of the clearance; the current letter gets neither.
+    #[test]
+    fn delivery_corrects_old_atis() {
+        let request = |letter: &str| {
+            format!(
+                "Zeta Delivery, Sierra Papa Tango Sierra Tango, information {letter}, IFR to Testville, request clearance"
+            )
+        };
+        let mut e = engine();
+        parked(&mut e, Some(12.0 * 3600.0), Some(SUMMER));
+        e.on_weather(weather(1009)); // QNH change: information Bravo
+        let got = items(&say(&mut e, DEL, &request("Alpha")));
+        assert_eq!(got[..2], [AtcItem::AtisCurrent('B'), AtcItem::Qnh(1009)]);
+        assert!(matches!(got[2], AtcItem::ClearedTo { .. }), "{got:?}");
+
+        let mut e = engine();
+        parked(&mut e, Some(12.0 * 3600.0), Some(SUMMER));
+        e.on_weather(weather(1009));
+        let got = items(&say(&mut e, DEL, &request("Bravo")));
+        assert!(matches!(got[0], AtcItem::ClearedTo { .. }), "{got:?}");
+        assert!(
+            !got.iter().any(|i| matches!(i, AtcItem::AtisCurrent(_))),
+            "{got:?}"
+        );
+    }
+
     #[test]
     fn clearance_read_back_then_ground() {
         let mut e = engine();

@@ -181,6 +181,7 @@ impl AtcEngine {
                 destination,
                 rules,
                 level_ft,
+                ..
             } if new && self.strips[i].phase.is_airborne() => match rules {
                 None => vec![AtcItem::SayFlightRules],
                 Some(FlightRules::Ifr) => {

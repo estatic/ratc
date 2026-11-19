@@ -82,15 +82,32 @@ impl AtcEngine {
                 destination,
                 rules,
                 level_ft,
+                atis: heard,
             } => match rules {
                 None => vec![AtcItem::SayFlightRules],
-                Some(rules) => self.clearance(
-                    i,
-                    destination.as_deref(),
-                    *rules == FlightRules::Ifr,
-                    *level_ft,
-                    via,
-                ),
+                Some(rules) => {
+                    let mut items = self.clearance(
+                        i,
+                        destination.as_deref(),
+                        *rules == FlightRules::Ifr,
+                        *level_ft,
+                        via,
+                    );
+                    // An old letter is corrected ahead of the clearance, as Ground does.
+                    if let Some(atis) = self.atis.as_ref().map(|a| a.current())
+                        && heard.is_some_and(|c| c.to_ascii_uppercase() != atis.letter)
+                        && !matches!(items.first(), Some(AtcItem::Unable(_)))
+                    {
+                        items.splice(
+                            0..0,
+                            [
+                                AtcItem::AtisCurrent(atis.letter),
+                                AtcItem::Qnh(atis.weather.qnh_hpa),
+                            ],
+                        );
+                    }
+                    items
+                }
             },
             PilotIntent::RequestDepartureRunway { runway }
                 if self.runway_request_is_ready(i, runway) =>

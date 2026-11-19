@@ -40,6 +40,7 @@ impl AtcEngine {
                 destination,
                 rules,
                 level_ft,
+                ..
             } => {
                 let via = msg.items.points.first().map(String::as_str);
                 match rules {

@@ -640,7 +640,8 @@ fn ifr_clearance_request_with_place_name() {
         PilotIntent::RequestClearance {
             destination: Some("EPKT".into()),
             rules: Some(FlightRules::Ifr),
-            level_ft: None
+            level_ft: None,
+            atis: Some('A'),
         }
     );
 }
@@ -655,7 +656,8 @@ fn clearance_request_with_spelled_icao_and_level() {
         PilotIntent::RequestClearance {
             destination: Some("EPWA".into()),
             rules: Some(FlightRules::Ifr),
-            level_ft: Some(10_000)
+            level_ft: Some(10_000),
+            atis: None,
         }
     );
     let none = with("Delivery, Sierra Bravo Charlie, request clearance");
@@ -664,7 +666,8 @@ fn clearance_request_with_spelled_icao_and_level() {
         PilotIntent::RequestClearance {
             destination: None,
             rules: None,
-            level_ft: None
+            level_ft: None,
+            atis: None,
         }
     );
 }
@@ -890,7 +893,8 @@ fn clearance_request_without_rules() {
         PilotIntent::RequestClearance {
             destination: Some("EPKT".into()),
             rules: None,
-            level_ft: None
+            level_ft: None,
+            atis: None,
         }
     );
     let vfr = with("Delivery, Sierra Bravo Charlie, VFR to Katowice, request clearance");
@@ -1304,5 +1308,21 @@ fn digit_runs_unchanged_by_teens() {
     assert_eq!(
         en("climb ten thousand feet").items.altitudes_ft,
         vec![10_000]
+    );
+}
+
+#[test]
+fn clearance_request_keeps_the_heard_atis_letter() {
+    let m = with(
+        "Kraków Delivery November one seven two Sierra Papa, Cessna one seven two stand nine right information Alpha IFR to Katowice request clearance.",
+    );
+    assert_eq!(
+        m.intent,
+        PilotIntent::RequestClearance {
+            destination: Some("EPKT".into()),
+            rules: Some(FlightRules::Ifr),
+            level_ft: None,
+            atis: Some('A'),
+        }
     );
 }

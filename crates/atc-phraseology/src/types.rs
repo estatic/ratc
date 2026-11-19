@@ -113,6 +113,8 @@ pub enum PilotIntent {
         rules: Option<FlightRules>,
         /// Requested level in feet (a flight level counts as hundreds of feet).
         level_ft: Option<i32>,
+        /// The ATIS letter the pilot said he has ("information Alpha"), upper case.
+        atis: Option<char>,
     },
     /// "Request departure runway zero seven": another runway than the one in use.
     RequestDepartureRunway {

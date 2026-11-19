@@ -1532,6 +1532,7 @@ impl<'a> Scan<'a> {
                     None
                 },
                 level_ft,
+                atis: self.atis,
             });
         }
         if self.request_then(4, |k| {

@@ -473,7 +473,8 @@ fn polish_destination_inflection_and_clearance() {
         PilotIntent::RequestClearance {
             destination: Some("EPKT".into()),
             rules: Some(FlightRules::Ifr),
-            level_ft: None
+            level_ft: None,
+            atis: None,
         }
     );
     for form in ["Katowice", "Katowic", "Katowicach"] {
