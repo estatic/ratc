@@ -20,8 +20,7 @@ use crate::record::TrackWriter;
 use crate::sim::{SimDisplay, SimInfo, SimReader, SimUpdate, is_follow_me};
 
 /// Pilot-rate samples in [`MIN_TRANSMISSION`]; the server drops anything shorter.
-const TOO_SHORT_SAMPLES: usize =
-    MIN_TRANSMISSION.as_millis() as usize * PILOT_RATE as usize / 1000;
+const TOO_SHORT_SAMPLES: usize = MIN_TRANSMISSION.as_millis() as usize * PILOT_RATE as usize / 1000;
 
 /// After stdin ends, keep printing replies to what was typed for this long.
 const LINGER: Duration = Duration::from_secs(3);
