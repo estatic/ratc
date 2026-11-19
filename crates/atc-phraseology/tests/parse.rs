@@ -363,6 +363,20 @@ fn qnh_below_1000_without_leading_zero() {
     assert!(en("QNH one zero one").items.qnh.is_empty());
 }
 
+#[test]
+fn qnh_three_digits_do_not_swallow_what_follows() {
+    let m = en("QNH niner niner two, squawk four two zero one");
+    assert_eq!(m.items.qnh, vec![992]);
+    assert_eq!(m.items.squawk, vec![4201]);
+    assert_eq!(
+        en("QNH niner niner two, one zero miles from touchdown")
+            .items
+            .qnh,
+        vec![992]
+    );
+    assert_eq!(en("QNH niner niner two and one").items.qnh, vec![992]);
+}
+
 /// Common Whisper mishearings of "via" and "Zulu" (heard in X-Plane acceptance).
 #[test]
 fn misheard_via_and_zulu() {

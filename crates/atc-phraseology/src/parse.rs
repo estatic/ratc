@@ -480,28 +480,31 @@ impl<'a> Scan<'a> {
         (out.len() == len).then_some((out, k))
     }
 
-    /// A QNH value from `j`: four digits, or three for 900 to 999 ("QNH niner niner two").
-    /// Pause commas and a stray "and" between the digit groups are read over.
+    /// A QNH value from `j`: four digits worth 900 to 1100 (a leading zero allowed), else
+    /// three digits worth 900 to 999 ("QNH niner niner two"); digits that follow and fit
+    /// neither stay unread. Pause commas, and a stray "and" after the first or second
+    /// digit, are read over.
     fn qnh_value(&self, j: usize) -> Option<(u16, usize)> {
         let mut out = String::new();
         let mut k = j;
-        let mut end = j;
+        // The longest valid reading so far: value and end index.
+        let mut best = None;
         while out.len() < 4 {
             let Some(d) = self.num(k) else { break };
             out.push_str(d);
             k += 1;
-            end = k;
+            let v: Option<u16> = out.parse().ok();
+            match (out.len(), v) {
+                (3, Some(v)) if (900..=999).contains(&v) => best = Some((v, k)),
+                (4, Some(v)) if (900..=1100).contains(&v) => best = Some((v, k)),
+                _ => {}
+            }
             k = self.skip_break(k);
-            if self.w(k) == Some("and") && self.num(k + 1).is_some() {
+            if out.len() <= 2 && self.w(k) == Some("and") && self.num(k + 1).is_some() {
                 k += 1;
             }
         }
-        let v: u16 = out.parse().ok()?;
-        match out.len() {
-            4 => Some((v, end)),
-            3 if (900..=999).contains(&v) => Some((v, end)),
-            _ => None,
-        }
+        best
     }
 
     /// Number of designators from `j` up to a Break, a word, the callsign or the end; `None` when no
