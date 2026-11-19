@@ -284,6 +284,37 @@ fn spoken_words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The word speech recognition may write for a told word that sounds the same ("stand
+/// for" for "stand four", "follow-me card" for "follow-me car").
+fn homophone(w: &str) -> &str {
+    match w {
+        "for" => "four",
+        "to" => "two",
+        "card" => "car",
+        _ => w,
+    }
+}
+
+/// The words of `text` as heard ([`spoken_words`]), and the digits of its numbers as
+/// English words ("stand four"), which a homophone may stand for.
+fn told_words(text: &str) -> Vec<String> {
+    const DIGITS: [&str; 10] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ];
+    normalize(text)
+        .into_iter()
+        .flat_map(|t| match t {
+            Token::Word(w) => vec![fold(&w)],
+            Token::Number(d) => d
+                .chars()
+                .filter_map(|c| c.to_digit(10))
+                .map(|d| DIGITS[d as usize].to_string())
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
 /// Midpoint of the first runway (latitude, longitude).
 fn runway_midpoint(ap: &Airport) -> Option<(f64, f64)> {
     let [a, b] = &ap.runways.first()?.ends;
@@ -1422,15 +1453,19 @@ impl AtcEngine {
     /// message, only a call (station name and greetings), or an acknowledgement (including
     /// a repeat of what it was last told). The parser sorts the words; the station names
     /// and the last transmission to the aircraft are known only here. In Polish a word
-    /// repeats a told word in another form ("kołuję" for "kołuj", see [`inflected`]).
+    /// repeats a told word in another form ("kołuję" for "kołuj", see [`inflected`]); a
+    /// word may sound like a told one ("stand for" for "stand four", see [`homophone`]).
     fn content(&self, i: usize, msg: &PilotMessage) -> Content {
         let words = spoken_words;
         let told = self
             .last_told
             .get(&self.strips[i].callsign)
-            .map_or_else(Vec::new, |t| words(t));
+            .map_or_else(Vec::new, |t| told_words(t));
         let polish = self.strips[i].lang == Lang::Pl;
-        let was_told = |w: &str| told.iter().any(|t| t == w || (polish && inflected(t, w)));
+        let was_told = |w: &str| {
+            told.iter()
+                .any(|t| t == w || homophone(t) == homophone(w) || (polish && inflected(t, w)))
+        };
 
         let station: Vec<String> = self
             .procs
@@ -1439,6 +1474,8 @@ impl AtcEngine {
             .flat_map(|p| words(&p.callsign))
             .collect();
         let (mut called, mut greeted, mut acked) = (false, false, false);
+        // "Roger" or "wilco", or a repeat of a told word; thanks and farewells are not.
+        let mut confirmed = msg.ack;
         let sorted = msg
             .ack_words
             .iter()
@@ -1451,14 +1488,17 @@ impl AtcEngine {
                 called = true;
             } else if kind == Some(true) || was_told(&w) {
                 acked = true;
+                confirmed |= kind != Some(true);
             } else if kind == Some(false) {
                 greeted = true;
             } else {
                 return Content::Message;
             }
         }
-        // A bare callsign acknowledges; naming the station or greeting it is a call.
-        if called || (greeted && !acked) {
+        // A bare callsign acknowledges; naming the station or greeting it is a call. Naming
+        // the station with "roger" or a told word ("Krakow Ground, roger") acknowledges;
+        // a greeting with thanks ("hello, thanks") acknowledges too.
+        if (called && !confirmed) || (greeted && !acked) {
             Content::Call
         } else {
             Content::Acknowledgement
@@ -1719,7 +1759,15 @@ impl AtcEngine {
                 .is_some_and(|sv| sv.last.gs_kt > 3.0);
         }
         let cs = strip.callsign.clone();
-        self.last_told.insert(cs.clone(), text.clone());
+        // "Say again" and "pass your message" tell nothing to acknowledge: an
+        // acknowledgement after them still answers what was told before.
+        if !message
+            .items
+            .iter()
+            .all(|it| matches!(it, AtcItem::SayAgain | AtcItem::PassYourMessage))
+        {
+            self.last_told.insert(cs.clone(), text.clone());
+        }
         let out = AtcOutput {
             freq_khz,
             station,

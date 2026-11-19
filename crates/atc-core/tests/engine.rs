@@ -7638,6 +7638,28 @@ mod approach_arrival {
             "{out:?}"
         );
     }
+
+    /// Flight test 14c, C8 (see the top-level `acknowledgements`): after "check heading",
+    /// a garbled answer gets "say again"; the clear acknowledgement after it is not
+    /// answered.
+    mod acknowledgements {
+        use super::*;
+
+        #[test]
+        fn check_heading_ack_after_garble() {
+            let mut e = engine();
+            let (mut p, _) = inbound(&mut e, WEST, 5000.0, 0.0, INBOUND);
+            p.obeys_headings = false;
+            p.hdg += 60.0;
+            p.until(&mut e, 40, |p| {
+                p.heard_item(|i| matches!(i, AtcItem::CheckHeading(_)))
+            });
+            let out = say(&mut e, APP, "check heading, now we've missed your papa.");
+            assert_eq!(items(&out), [AtcItem::SayAgain], "{out:?}");
+            let out = say(&mut e, APP, "check heading Sierra Sierra Tango.");
+            assert!(!items(&out).contains(&AtcItem::SayAgain), "{out:?}");
+        }
+    }
 }
 
 /// VFR entry to and exit from the zone via the published points, on the fictional ZZZZ
@@ -9847,5 +9869,79 @@ mod arrival_stand {
             "{out:?}"
         );
         assert!(!out.is_empty(), "silently dropped");
+    }
+}
+
+/// Flight test 14c, C6-C8: an acknowledgement that names the station, a follow-me readback
+/// heard with homophones, and a "check heading" acknowledgement after a garbled one.
+mod acknowledgements {
+    use super::*;
+
+    /// SP-ABC near stand 20, cleared to stand 4, then led by the follow-me car: the last
+    /// thing Ground told it is "follow the follow-me car to stand four".
+    fn led_to_stand_4() -> AtcEngine {
+        let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 5.0);
+        let clearance = items(&say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, {ABC}, request taxi to stand four"),
+        ));
+        assert!(
+            matches!(&clearance[..], [AtcItem::Taxi { .. }]),
+            "{clearance:?}"
+        );
+        say(
+            &mut e,
+            GROUND,
+            &format!("{ABC}, I am lost, I need help, taxi"),
+        );
+        let out = say(&mut e, GROUND, &format!("{ABC}, I am lost, I need help"));
+        assert_eq!(
+            items(&out),
+            [AtcItem::HoldPosition, AtcItem::FollowMeOnTheWay]
+        );
+        let out = move_abc(&mut e, FOLLOW_ME_READY_S, 300.0, 167.7);
+        assert_eq!(
+            out[0].text,
+            "Sierra Bravo Charlie, follow the follow-me car to stand four"
+        );
+        e
+    }
+
+    /// C6: "Katowice Ground, roger, November Sierra Papa" got "pass your message".
+    #[test]
+    fn station_and_roger_is_acknowledgement() {
+        let mut e = led_to_stand_4();
+        let out = say(&mut e, GROUND, &format!("Krakow Ground, Roger, {ABC}"));
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// A call naming the station with a greeting and nothing told is still a call.
+    #[test]
+    fn station_and_greeting_is_still_a_call() {
+        let mut e = engine();
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new("SPABC"),
+            aircraft_type: "C172".into(),
+        });
+        let out = say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, good morning, {ABC}"),
+        );
+        assert!(items(&out).contains(&AtcItem::PassYourMessage), "{out:?}");
+    }
+
+    /// C7: "follow the follow me card to stand for" is the readback of "follow the
+    /// follow-me car to stand four", not "say again".
+    #[test]
+    fn follow_me_readback_with_homophones() {
+        let mut e = led_to_stand_4();
+        let out = say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, follow the follow me card to stand for {ABC}"),
+        );
+        assert!(!items(&out).contains(&AtcItem::SayAgain), "{out:?}");
     }
 }
