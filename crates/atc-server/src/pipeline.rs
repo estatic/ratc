@@ -17,6 +17,9 @@ use crate::hub::ClientId;
 
 /// Client -> server pilot audio rate.
 pub(crate) const PILOT_RATE: u32 = 16_000;
+/// Shorter PTT audio (0.5 s) is a key click, not a transmission: the speech-to-text model
+/// hallucinates words ("Thank you.") from it, so it is dropped before transcription.
+const MIN_PILOT_SAMPLES: usize = (PILOT_RATE / 2) as usize;
 /// Transcripts below this confidence get "say again" instead of reaching the engine.
 const MIN_CONFIDENCE: f32 = 0.3;
 /// Server -> client audio frame length: 20 ms of the voice's sample rate (441 samples at
@@ -107,6 +110,13 @@ async fn voice(
     pcm: Vec<i16>,
     t: f64,
 ) {
+    if pcm.len() < MIN_PILOT_SAMPLES {
+        return tracing::info!(
+            freq_khz,
+            samples = pcm.len(),
+            "transmission too short: dropped"
+        );
+    }
     let start = Instant::now();
     let cs = Callsign::new(callsign);
     let network = &server.state.network;
@@ -141,6 +151,8 @@ async fn voice(
     if tr.text.trim().is_empty() {
         return tracing::info!("transcript dropped: empty");
     }
+    // The pilot spoke again: replies still queued to their earlier words are superseded.
+    server.drop_superseded(freq_khz, &cs);
     if tr.confidence < MIN_CONFIDENCE {
         tracing::info!("transcript unclear: say again");
         // In the speaker's language: another pilot's language would not be understood.
@@ -196,6 +208,7 @@ async fn transmission(
     stt_ms: u128,
 ) {
     let start = Instant::now();
+    server.drop_superseded(freq_khz, from);
     let network = &server.state.network;
     let outputs = network.on_transmission(from, freq_khz, text, lang, SimTime(t));
     let orders = network.take_vehicle_orders();
