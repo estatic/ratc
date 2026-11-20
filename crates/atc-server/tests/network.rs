@@ -339,7 +339,6 @@ fn ifr_to_testville(c: &Callsign) -> FlightHandover {
             direct: None,
             heading: None,
             approach_cleared: false,
-            legacy_pattern: None,
             vector_plan: None,
             last_correction_s: None,
             established_check: false,

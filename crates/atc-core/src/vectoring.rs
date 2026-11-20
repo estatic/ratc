@@ -96,6 +96,11 @@ pub const MAX_STRETCH_NM: f64 = 40.0;
 pub const INTERCEPT_MIN_DEG: f64 = 20.0;
 /// Below this distance between the first and last radar position there is no track, m.
 const MIN_TRACK_M: f64 = 50.0;
+/// A radar sample farther from the previous one than this many times the distance its
+/// ground speed covers ...
+pub const JUMP_FACTOR: f64 = 2.0;
+/// ... plus this (m) is a jump: the radar track starts again.
+pub const JUMP_SLACK_M: f64 = 500.0;
 /// The start altitude is rounded to this, ft ...
 const ALT_STEP_FT: f64 = 100.0;
 /// ... and the planned leg altitudes down to this.
@@ -230,10 +235,16 @@ pub struct RadarTrack {
 }
 
 impl RadarTrack {
-    /// Adds a radar sample; samples older than [`DRIFT_WINDOW_S`] are dropped (all of them
-    /// when time went back).
-    pub fn push(&mut self, t: f64, pos: LatLon, heading_deg: f64) {
-        if self.samples.back().is_some_and(|s| s.0 > t) {
+    /// Adds a radar sample at ground speed `gs_kt`; samples older than [`DRIFT_WINDOW_S`]
+    /// are dropped, all of them when time went back or the aircraft jumped (moved more than
+    /// [`JUMP_FACTOR`] times its ground speed allows, plus [`JUMP_SLACK_M`]: a slew or a
+    /// reposition). The drift is kept.
+    pub fn push(&mut self, t: f64, pos: LatLon, heading_deg: f64, gs_kt: f64) {
+        let jumped = |s: &(f64, LatLon, f64)| {
+            let could_m = gs_kt.max(0.0) * JUMP_FACTOR * (t - s.0) / 3600.0 * M_PER_NM;
+            distance_m(s.1, pos) > could_m + JUMP_SLACK_M
+        };
+        if self.samples.back().is_some_and(|s| s.0 > t || jumped(s)) {
             self.samples.clear();
         }
         self.samples.push_back((t, pos, heading_deg));
@@ -308,6 +319,54 @@ pub fn descent_start_m(from_ft: f64, to_ft: i32) -> f64 {
     (from_ft - f64::from(to_ft)).max(0.0) / DESCENT_FT_PER_NM * M_PER_NM
 }
 
+/// The altitude to clear an aircraft flying `plan` (radar `r`) down to now, if the plan
+/// needs the descent: the lowest altitude still planned before the final (the intercept
+/// altitude), as soon as one of the remaining legs needs the descent to begin at
+/// [`DESCENT_FT_PER_NM`] ([`descent_start_m`] from the present altitude) — each leg's
+/// altitude at the leg's end, the intercept altitude at the turn onto the intercept (one
+/// turn lead before the intercept leg), so it is reached before the intercept heading. On
+/// the intercept leg or the final: at once. `None` without legs or while not yet due.
+pub fn descent_due(plan: &VectorPlan, r: &Radar) -> Option<i32> {
+    let i = plan.index()?;
+    let legs = &plan.legs;
+    let rest: Vec<&VectorLeg> = legs[i..]
+        .iter()
+        .take_while(|l| l.kind != LegKind::Final)
+        .collect();
+    let Some(target) = rest.iter().map(|l| l.alt_ft).min() else {
+        return Some(legs[i].alt_ft);
+    };
+    let cur = &legs[i];
+    let (along, _) = RunwayFrame {
+        origin: cur.from,
+        course_deg: cur.track_deg,
+    }
+    .to_local(r.pos);
+    // Distance to go to the end of each remaining leg.
+    let mut to_end = (distance_m(cur.from, cur.to) - along).max(0.0);
+    let mut start = 0.0;
+    for (k, l) in rest.iter().enumerate() {
+        if k > 0 {
+            to_end += distance_m(l.from, l.to);
+        }
+        let need_at = if l.kind == LegKind::Intercept {
+            let lead = if k > 0 {
+                turn_lead_m(r.gs_kt, gap_deg(rest[k - 1].track_deg, l.track_deg))
+            } else {
+                0.0
+            };
+            (start - lead).max(0.0)
+        } else {
+            to_end
+        };
+        if need_at <= descent_start_m(r.alt_ft, l.alt_ft) {
+            return Some(target);
+        }
+        start = to_end;
+    }
+    None
+}
+
 /// The planned path from `pos` (ground track `track_deg`, altitude `alt_ft`) to the final
 /// `f`. In order of preference:
 /// - already on the final (within [`ESTABLISHED_NM`], tracking within [`ESTABLISHED_DEG`]):
@@ -364,14 +423,16 @@ pub fn plan_path(pos: LatLon, track_deg: f64, alt_ft: f64, f: &FinalCourse) -> V
     };
     match first {
         Some(p) if p.descent_in_time(alt_ft) => p,
-        _ => {
-            let stretched = |k: u32| g.plan(g.pattern(f64::from(k)), alt_ft);
-            (0..=MAX_STRETCH_NM as u32)
-                .map(stretched)
-                .find(|p| p.descent_in_time(alt_ft))
-                .unwrap_or_else(|| stretched(MAX_STRETCH_NM as u32))
-        }
+        _ => g.stretched_pattern(alt_ft),
     }
+}
+
+/// The pattern from `pos` (altitude `alt_ft`) to the final `f` wherever the aircraft is, for
+/// a new approach (after a missed approach): downwind on its side of the final (the circuit
+/// side on the centreline), base, intercept, stretched out until the descent fits, as in
+/// [`plan_path`].
+pub fn plan_pattern(pos: LatLon, alt_ft: f64, f: &FinalCourse) -> VectorPlan {
+    Setup::new(pos, f).stretched_pattern(alt_ft)
 }
 
 /// The aircraft's place relative to the final, for [`plan_path`].
@@ -479,6 +540,16 @@ impl<'a> Setup<'a> {
                 join,
             ),
         ]
+    }
+
+    /// The pattern stretched out (up to [`MAX_STRETCH_NM`]) until the descent from `alt_ft`
+    /// fits.
+    fn stretched_pattern(&self, alt_ft: f64) -> VectorPlan {
+        let stretched = |k: u32| self.plan(self.pattern(f64::from(k)), alt_ft);
+        (0..=MAX_STRETCH_NM as u32)
+            .map(stretched)
+            .find(|p| p.descent_in_time(alt_ft))
+            .unwrap_or_else(|| stretched(MAX_STRETCH_NM as u32))
     }
 
     /// `legs` with the final leg appended and the altitudes planned.
@@ -843,7 +914,7 @@ mod tests {
             // 120 kt due north, heading 350.
             let t = f64::from(k) * 2.0;
             let p = destination(p0, 0.0, 120.0 * M_PER_NM / 3600.0 * t);
-            rt.push(t, p, 350.0);
+            rt.push(t, p, 350.0, 120.0);
         }
         let track = rt.track_deg().unwrap();
         assert!(track < 0.5 || track > 359.5, "{track}");
@@ -941,7 +1012,7 @@ mod tests {
             if (20..35).contains(&k) {
                 hdg -= 6.0;
             }
-            rt.push(t, p, hdg);
+            rt.push(t, p, hdg, 120.0);
             if k >= 6 {
                 assert!(
                     (rt.drift_deg() - 10.0).abs() < 1.0,
@@ -1065,9 +1136,99 @@ mod tests {
                 .all(|(a, b)| a.alt_ft == b.alt_ft && (a.track_deg - b.track_deg).abs() < 1e-9)
         );
         let mut rt = RadarTrack::default();
-        rt.push(0.0, THR, 10.0);
+        rt.push(0.0, THR, 10.0, 0.0);
         let json = serde_json::to_string(&rt).unwrap();
         let back: RadarTrack = serde_json::from_str(&json).unwrap();
         assert_eq!(back.samples.len(), 1);
+    }
+    #[test]
+    fn pattern_from_the_final() {
+        // On the final 1 NM out (a missed approach): the plan would be the final alone; the
+        // pattern for a new approach goes round on the circuit side.
+        assert_eq!(
+            kinds(&plan_path(at(1.0, 0.0), COURSE, 2000.0, &fin())),
+            vec![LegKind::Final]
+        );
+        let plan = plan_pattern(at(1.0, 0.0), 4000.0, &fin());
+        assert_eq!(
+            kinds(&plan),
+            vec![
+                LegKind::Downwind,
+                LegKind::Base,
+                LegKind::Intercept,
+                LegKind::Final
+            ]
+        );
+        let (_, right) = RunwayFrame {
+            origin: THR,
+            course_deg: COURSE,
+        }
+        .to_local(plan.legs[0].to);
+        assert!((right / M_PER_NM + 4.0).abs() < 0.05, "downwind {right}");
+        assert!(plan.joins_in_time(&fin()));
+        assert_gradient(&plan, 4000.0);
+    }
+
+    #[test]
+    fn position_jump_clears_the_track() {
+        let mut rt = RadarTrack::default();
+        let p0 = LatLon {
+            lat: 50.0,
+            lon: 20.0,
+        };
+        let step = 120.0 * M_PER_NM / 3600.0 * 2.0;
+        let mut p = p0;
+        for k in 0..10 {
+            rt.push(f64::from(k) * 2.0, p, 350.0, 120.0);
+            p = destination(p, 0.0, step);
+        }
+        let drift = rt.drift_deg();
+        assert!((drift - 10.0).abs() < 0.5, "{drift}");
+        assert!(rt.track_deg().is_some());
+        // Slewed 5 NM east within one sample: the old positions are dropped, the drift kept.
+        let jumped = destination(p, 90.0, 5.0 * M_PER_NM);
+        rt.push(20.0, jumped, 350.0, 120.0);
+        assert_eq!(rt.samples.len(), 1);
+        assert_eq!(rt.track_deg(), None);
+        assert_eq!(rt.drift_deg(), drift);
+        // A normal step after it is kept.
+        rt.push(22.0, destination(jumped, 0.0, step), 350.0, 120.0);
+        assert_eq!(rt.samples.len(), 2);
+    }
+
+    #[test]
+    fn descent_due_by_the_turn_onto_the_intercept() {
+        let f = fin();
+        let plan = plan_path(at(25.0, -5.0), COURSE + 15.0, 5000.0, &f);
+        assert_eq!(
+            kinds(&plan),
+            vec![LegKind::Base, LegKind::Intercept, LegKind::Final]
+        );
+        let base = plan.legs[0].clone();
+        let lead = turn_lead_m(160.0, gap_deg(base.track_deg, plan.legs[1].track_deg));
+        // 2500 ft to lose at 300 ft/NM: 8.33 NM before the turn onto the intercept.
+        let need = 2500.0 / 300.0 * M_PER_NM + lead;
+        let mut r = radar(
+            destination(base.to, base.track_deg + 180.0, need + 0.3 * M_PER_NM),
+            base.track_deg,
+        );
+        r.alt_ft = 5000.0;
+        assert_eq!(descent_due(&plan, &r), None);
+        r.pos = destination(base.to, base.track_deg + 180.0, need - 0.1 * M_PER_NM);
+        assert_eq!(descent_due(&plan, &r), Some(2500));
+        // Lower down, later.
+        r.alt_ft = 3500.0;
+        assert_eq!(descent_due(&plan, &r), None);
+        // On the intercept leg: at once.
+        let mut on = plan.clone();
+        on.current = 1;
+        r.pos = plan.legs[1].from;
+        assert_eq!(descent_due(&on, &r), Some(2500));
+        // A plan on the final only.
+        let fin_only = plan_path(at(9.0, 0.0), COURSE, 3000.0, &f);
+        assert_eq!(
+            descent_due(&fin_only, &radar(at(9.0, 0.0), COURSE)),
+            Some(2500)
+        );
     }
 }

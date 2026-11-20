@@ -779,7 +779,7 @@ impl AtcEngine {
         }
         let deviations = sv.monitor.update(&s, phase, &strip.permissions);
         let (pos, gs_kt, t, vs_fpm) = (s.pos, s.gs_kt, s.t.0, s.vs_fpm);
-        sv.radar.push(t, pos, s.heading_deg);
+        sv.radar.push(t, pos, s.heading_deg, gs_kt);
         sv.last = s;
         self.note_missed_approach(i, prev, phase, pos, vs_fpm);
 

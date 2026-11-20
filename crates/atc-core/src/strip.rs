@@ -81,11 +81,8 @@ pub struct FlightPlan {
     pub heading: Option<u16>,
     /// The approach has been cleared ("cleared ILS approach").
     pub approach_cleared: bool,
-    /// The pattern leg (downwind, base) the arrival is vectored on, by the earlier steering;
-    /// removed together with it. Old snapshots called it `pattern`.
-    #[serde(default, alias = "pattern")]
-    pub legacy_pattern: Option<PatternLeg>,
-    /// The planned path of the radar vectoring (not yet used by the steering).
+    /// The planned path of the radar vectoring (`None` until vectoring starts). Old
+    /// snapshots had a `pattern` leg instead: ignored on load.
     #[serde(default)]
     pub vector_plan: Option<VectorPlan>,
     /// When the last unsolicited vectoring correction was transmitted, seconds.
@@ -93,15 +90,6 @@ pub struct FlightPlan {
     pub last_correction_s: Option<f64>,
     /// "Check established" has been said for the current approach clearance.
     pub established_check: bool,
-}
-
-/// Leg of the radar pattern flown by an arrival that comes from the far side of the final.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PatternLeg {
-    /// Parallel to the final, outbound, abeam it.
-    Downwind,
-    /// Perpendicular to the final, towards it.
-    Base,
 }
 
 /// Where a VFR flight is in its entry to, or exit from, the control zone via the published

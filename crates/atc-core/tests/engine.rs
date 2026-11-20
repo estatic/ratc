@@ -3833,15 +3833,15 @@ mod delivery {
         assert_eq!(plan(&fresh).dep_runway, None);
     }
 
-    /// Plan 14b: a snapshot with the old `pattern` field loads, keeps its leg, has no vector
-    /// plan, and the next telemetry sample does not panic.
+    /// Plan 14b: a snapshot with the old `pattern` field loads (the field is ignored), has
+    /// no vector plan, and the next telemetry sample does not panic.
     #[test]
     fn old_snapshot_with_pattern_loads() {
         let mut e = engine();
         ifr_cleared_on_27(&mut e);
         let mut json = serde_json::to_value(e.snapshot()).unwrap();
         let plan_json = json["strips"][0]["plan"].as_object_mut().unwrap();
-        for k in ["legacy_pattern", "vector_plan", "last_correction_s"] {
+        for k in ["vector_plan", "last_correction_s"] {
             assert!(plan_json.remove(k).is_some(), "{k}");
         }
         plan_json.insert("pattern".into(), serde_json::json!("Base"));
@@ -3854,7 +3854,6 @@ mod delivery {
             .unwrap();
         let p = plan(&fresh);
         assert!(p.vector_plan.is_none());
-        assert_eq!(p.legacy_pattern, Some(atc_core::strip::PatternLeg::Base));
         // The next sample works, and the radar falls back to the heading.
         parked(&mut fresh, None, None);
         let radar = fresh.radar(0).expect("tracked");
@@ -6078,6 +6077,22 @@ mod approach_arrival {
         reads_back: bool,
         /// Positions of fixes the pilot may be sent direct to.
         fixes: HashMap<String, LatLon>,
+        /// Delay before a heading or level instruction is acted on, s (0: at once).
+        reaction_s: f64,
+        /// Steady wind `(from deg true, kt)`: the ground track is the heading plus drift.
+        wind: Option<(f64, f64)>,
+        /// True airspeed (the ground speed without wind), kt.
+        gs: f64,
+        /// Rate of turn, degrees per second (infinite: the heading is taken at once).
+        turn_rate: f64,
+        /// Heading being turned onto (with a finite `turn_rate`).
+        turning_to: Option<f64>,
+        /// Instructions heard but not acted on yet (`reaction_s`): when, and what.
+        delayed: Vec<(f64, AtcItem)>,
+        /// Once cleared for the approach, intercepts and tracks the final of RWY 27.
+        flies_final: bool,
+        /// Cleared for the approach; `Some(true)` once the final is captured.
+        on_final: Option<bool>,
     }
 
     impl Pilot {
@@ -6098,18 +6113,66 @@ mod approach_arrival {
                 obeys_headings: true,
                 reads_back: true,
                 fixes: HashMap::from([("IAFOX".to_string(), IAF)]),
+                reaction_s: 0.0,
+                wind: None,
+                gs: 100.0,
+                turn_rate: f64::INFINITY,
+                turning_to: None,
+                delayed: Vec::new(),
+                flies_final: false,
+                on_final: None,
+            }
+        }
+
+        /// A pilot that reacts after 5 s, turns at standard rate and flies the final once
+        /// cleared, at `gs` kt.
+        fn realistic(pos: LatLon, alt: f64, hdg: f64, gs: f64) -> Self {
+            Pilot {
+                reaction_s: 5.0,
+                gs,
+                turn_rate: 3.0,
+                flies_final: true,
+                ..Pilot::new(pos, alt, hdg)
             }
         }
 
         /// One 2 s step; new instructions are followed and read back.
         fn tick(&mut self, e: &mut AtcEngine) {
+            let now = self.f.t;
+            let (due, later): (Vec<_>, Vec<_>) =
+                self.delayed.drain(..).partition(|(t, _)| *t <= now);
+            self.delayed = later;
+            for (_, it) in due {
+                self.act(&it);
+            }
             if let Some(p) = self.to {
                 self.hdg = bearing_deg(self.f.pos, p);
             }
+            self.fly_final();
+            if let Some(want) = self.turning_to {
+                let gap = (want - self.hdg + 540.0).rem_euclid(360.0) - 180.0;
+                let step = self.turn_rate * DT;
+                if gap.abs() <= step {
+                    self.hdg = want;
+                    self.turning_to = None;
+                } else {
+                    self.hdg = (self.hdg + step * gap.signum()).rem_euclid(360.0);
+                }
+            }
             let vs = ((self.target - self.f.alt) * 30.0).clamp(-500.0, 500.0);
+            // Air vector plus wind (blowing from `from`, towards `from + 180`).
+            let (mut east, mut north) = (
+                self.gs * self.hdg.to_radians().sin(),
+                self.gs * self.hdg.to_radians().cos(),
+            );
+            if let Some((from, kt)) = self.wind {
+                east -= kt * from.to_radians().sin();
+                north -= kt * from.to_radians().cos();
+            }
+            let (gs, track) = (east.hypot(north), east.atan2(north).to_degrees());
             let before = self.f.heard.len();
-            self.f.step(e, self.hdg, 100.0, vs, false);
-            self.f.pos = destination(self.f.pos, self.hdg, 100.0 * 1852.0 / 3600.0 * DT);
+            self.f.step(e, self.hdg, gs, vs, false);
+            self.f.pos = destination(self.f.pos, track, gs * 1852.0 / 3600.0 * DT);
             self.f.alt += vs * DT / 60.0;
             let new: Vec<AtcOutput> = self.f.heard[before..].to_vec();
             for o in new {
@@ -6117,20 +6180,60 @@ mod approach_arrival {
             }
         }
 
+        /// Cleared and flying the final: captures the final of RWY 27 when one turn radius
+        /// from it (by the turn to make), then holds it.
+        fn fly_final(&mut self) {
+            let Some(captured) = self.on_final else {
+                return;
+            };
+            let course = bearing_deg(THR_27, END_27);
+            let (_, right) = RunwayFrame {
+                origin: THR_27,
+                course_deg: course,
+            }
+            .to_local(self.f.pos);
+            let y_nm = right / M_PER_NM;
+            let gap = ((self.hdg - course + 540.0).rem_euclid(360.0) - 180.0).to_radians();
+            let radius_nm = self.gs / 3600.0 / self.turn_rate.to_radians();
+            let converging = y_nm * gap.sin() < 0.0;
+            if captured || (converging && y_nm.abs() <= radius_nm * (1.0 - gap.cos()) + 0.05) {
+                self.on_final = Some(true);
+                self.to = None;
+                self.turning_to = Some(course - (y_nm * 100.0).clamp(-30.0, 30.0));
+            }
+        }
+
+        /// Acts on a heading or level instruction.
+        fn act(&mut self, it: &AtcItem) {
+            match it {
+                AtcItem::Heading { deg, .. } if self.obeys_headings => {
+                    if self.turn_rate.is_finite() {
+                        self.turning_to = Some(f64::from(*deg));
+                    } else {
+                        self.hdg = f64::from(*deg);
+                    }
+                    self.to = None;
+                }
+                AtcItem::DescendTo(Level::Altitude(a))
+                | AtcItem::ClimbTo(Level::Altitude(a))
+                | AtcItem::MaintainLevel(Level::Altitude(a)) => self.target = f64::from(*a),
+                AtcItem::ClearedApproach { .. } if self.flies_final => {
+                    self.on_final.get_or_insert(false);
+                }
+                _ => {}
+            }
+        }
+
         /// Follows `o` and reads it back.
         fn hear(&mut self, e: &mut AtcEngine, o: &AtcOutput) {
             for it in &o.message.items {
                 match it {
-                    AtcItem::Heading { deg, .. } if self.obeys_headings => {
-                        self.hdg = f64::from(*deg);
-                        self.to = None;
-                    }
-                    AtcItem::DescendTo(Level::Altitude(a))
-                    | AtcItem::ClimbTo(Level::Altitude(a))
-                    | AtcItem::MaintainLevel(Level::Altitude(a)) => self.target = f64::from(*a),
                     AtcItem::DirectTo { fix } => self.to = self.fixes.get(fix).copied(),
                     AtcItem::Contact { khz, .. } => self.f.com1 = *khz,
-                    _ => {}
+                    it if self.reaction_s > 0.0 => {
+                        self.delayed.push((self.f.t + self.reaction_s, it.clone()))
+                    }
+                    it => self.act(it),
                 }
             }
             if let Some(rb) = ifr_readback(&o.message.items).filter(|_| self.reads_back) {
@@ -6235,7 +6338,6 @@ mod approach_arrival {
                 direct: None,
                 heading: None,
                 approach_cleared: false,
-                legacy_pattern: None,
                 vector_plan: None,
                 last_correction_s: None,
                 established_check: false,
@@ -6278,7 +6380,6 @@ mod approach_arrival {
             direct: None,
             heading: None,
             approach_cleared: false,
-            legacy_pattern: None,
             vector_plan: None,
             last_correction_s: None,
             established_check: false,
@@ -6631,6 +6732,9 @@ mod approach_arrival {
         let mut e = engine();
         let start = destination(intercept_point(), 0.0, 9.0 * M_PER_NM);
         let (mut p, _) = inbound(&mut e, start, 3000.0, 180.0, INBOUND);
+        // Plan 14b: the intercept heading comes one turn lead before the turn point, so the
+        // pilot turns at standard rate (after 5 s), not instantly.
+        (p.turn_rate, p.reaction_s) = (3.0, 5.0);
         p.until(&mut e, 600, |p| {
             p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
         });
@@ -6643,8 +6747,7 @@ mod approach_arrival {
         });
         let out_nm = -frame.to_local(p.f.pos).0 / M_PER_NM;
         assert!(out_nm >= 7.0, "joined the final {out_nm:.1} NM out");
-        // One heading to the lead point, one onto the intercept: no re-vector as the
-        // bearing to the lead point swings near it.
+        // One heading to the lead point (the base), one onto the intercept.
         let headings =
             p.f.heard
                 .iter()
@@ -6670,10 +6773,15 @@ mod approach_arrival {
                 }
             }
         });
-        let (_, out) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        // Plan 14b: the descent comes when the planned path needs it, to the FAF's 3000 ft.
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::DescendTo(_)))
+        });
         assert!(
-            items(&out).contains(&AtcItem::DescendTo(Level::Altitude(3000))),
-            "{out:?}"
+            p.heard_item(|i| *i == AtcItem::DescendTo(Level::Altitude(3000))),
+            "{:?}",
+            p.f.heard
         );
     }
 
@@ -6684,12 +6792,17 @@ mod approach_arrival {
         let mut e = engine();
         let (mut p, out) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
         let first = items(&out);
-        // Towards the lead point 3 NM back along the 30-degree intercept from the north.
-        let lead = destination(intercept_point(), 60.0, 3.0 * M_PER_NM);
-        let want = (bearing_deg(INSIDE, lead) / 5.0).round() as u16 * 5;
+        // Plan 14b: the turn at the lead point would be more than 90 degrees from here (5 NM
+        // out, 6 NM north): a pattern, the downwind first, 4 NM abeam out to 11 NM.
+        let downwind_end = destination(
+            destination(THR_27, 90.0, 11.0 * M_PER_NM),
+            0.0,
+            4.0 * M_PER_NM,
+        );
+        let want = (bearing_deg(INSIDE, downwind_end) / 5.0).round() as u16 * 5;
         assert!(
             matches!(first.as_slice(),
-                [AtcItem::Identified, AtcItem::Heading { deg, .. }, AtcItem::DescendTo(Level::Altitude(3000)),
+                [AtcItem::Identified, AtcItem::Heading { deg, .. }, AtcItem::MaintainLevel(Level::Altitude(5000)),
                  AtcItem::Qnh(1013), AtcItem::ExpectApproach { kind: ApproachKind::Ils, .. }]
                 if *deg == want),
             "{first:?}, want heading {want}"
@@ -6706,8 +6819,9 @@ mod approach_arrival {
                 if runway == "27"),
             "{clearance:?}"
         );
-        let to_point = distance_m(p.f.pos, intercept_point()) / M_PER_NM;
-        assert!(to_point <= 3.0, "{to_point} NM from the intercept point");
+        // At the end of the base (3 NM beyond the 8 NM point), one turn lead before it.
+        let out_nm = distance_m(p.f.pos, THR_27) / M_PER_NM;
+        assert!((10.0..=11.5).contains(&out_nm), "{out_nm} NM out");
         let dtg = distance_m(p.f.pos, THR_27) / M_PER_NM;
         assert!(
             clearance.contains(&AtcItem::DistanceToGo(dtg.round() as u16)),
@@ -7136,6 +7250,241 @@ mod approach_arrival {
             }]
         );
         assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+    }
+
+    /// Plan 14b: vectors along a planned path (spec "The planned path", "Giving the next
+    /// instruction"), flown by a pilot that reacts after 5 s and turns at standard rate.
+    mod planned_vectors {
+        use atc_core::vectoring::LegKind;
+
+        use super::*;
+
+        /// The point `out_nm` out on the final of RWY 27 and `right_nm` right of the landing
+        /// direction (north).
+        fn at(out_nm: f64, right_nm: f64) -> LatLon {
+            let p = destination(THR_27, 90.0, out_nm * M_PER_NM);
+            destination(p, 0.0, right_nm * M_PER_NM)
+        }
+
+        /// NM out on the final and right of it.
+        fn local(pos: LatLon) -> (f64, f64) {
+            let (along, right) = RunwayFrame {
+                origin: THR_27,
+                course_deg: bearing_deg(THR_27, END_27),
+            }
+            .to_local(pos);
+            (-along / M_PER_NM, right / M_PER_NM)
+        }
+
+        /// The ZZZZ ILS 27 FAF (ZZ021) from the threshold, NM.
+        fn faf_nm() -> f64 {
+            distance_m(
+                LatLon {
+                    lat: 10.0,
+                    lon: 9.93,
+                },
+                THR_27,
+            ) / M_PER_NM
+        }
+
+        /// South-east of the final, as south-east of EPKK final 25: a long base to the lead
+        /// point of the intercept.
+        const SOUTH_EAST: (f64, f64) = (25.0, -5.0);
+        /// North of the 8 NM point, flying south: a short base, then the intercept.
+        const NORTH: (f64, f64) = (8.0, 9.0);
+
+        /// A [`Pilot::realistic`] at `pos` calling inbound after one sample.
+        fn called_in(e: &mut AtcEngine, pos: LatLon, alt: f64, hdg: f64, gs: f64) -> Pilot {
+            let mut p = Pilot::realistic(pos, alt, hdg, gs);
+            p.tick(e);
+            assert!(p.f.heard.is_empty(), "{:?}", p.f.heard);
+            p.call(e, APP, INBOUND);
+            p
+        }
+
+        fn cleared(p: &Pilot) -> bool {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        }
+
+        /// What Approach said, transmission by transmission.
+        fn approach_said(p: &Pilot) -> Vec<Vec<AtcItem>> {
+            p.f.heard
+                .iter()
+                .filter(|o| o.freq_khz == APP)
+                .map(|o| o.message.items.clone())
+                .collect()
+        }
+
+        /// The current leg of the strip's vector plan.
+        fn leg_kind(e: &AtcEngine) -> Option<LegKind> {
+            let plan = e.strip(&cs())?.plan.as_ref()?;
+            plan.vector_plan.as_ref().map(|v| v.leg().kind)
+        }
+
+        /// Ticks until the approach clearance, noting the plan's leg at every heading given.
+        fn legs_at_headings(e: &mut AtcEngine, p: &mut Pilot) -> Vec<LegKind> {
+            let mut kinds = vec![leg_kind(e).expect("a vector plan")];
+            for _ in 0..2000 {
+                if cleared(p) {
+                    return kinds;
+                }
+                let n = p.f.heard.len();
+                p.tick(e);
+                if p.f.heard[n..].iter().any(|o| {
+                    o.message
+                        .items
+                        .iter()
+                        .any(|i| matches!(i, AtcItem::Heading { .. }))
+                }) {
+                    kinds.push(leg_kind(e).expect("a vector plan"));
+                }
+            }
+            panic!("not cleared: {:#?}", p.f.heard);
+        }
+
+        #[test]
+        fn direct_join_flown_to_established() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = called_in(&mut e, at(x, y), 5000.0, 290.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            p.until(&mut e, 1200, cleared);
+            let said = approach_said(&p);
+            assert_eq!(said.len(), 3, "{said:#?}");
+            assert!(
+                matches!(
+                    said[0].as_slice(),
+                    [
+                        AtcItem::Identified,
+                        AtcItem::Heading { .. },
+                        AtcItem::MaintainLevel(Level::Altitude(5000)),
+                        AtcItem::Qnh(_),
+                        AtcItem::ExpectApproach { .. }
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert_eq!(said[1], vec![AtcItem::DescendTo(Level::Altitude(3000))]);
+            assert!(
+                matches!(
+                    said[2].as_slice(),
+                    [
+                        AtcItem::Heading { deg: 300, .. },
+                        AtcItem::DistanceToGo(_),
+                        AtcItem::ClearedApproach {
+                            kind: ApproachKind::Ils,
+                            ..
+                        },
+                        AtcItem::ReportEstablished
+                    ]
+                ),
+                "{said:#?}"
+            );
+            // Flown onto the final: established outside the FAF, never more than 0.5 NM off
+            // the course once joined, and nothing more from Approach on the way but the
+            // transfer to Tower at the FAF.
+            let n = p.f.heard.len();
+            let (mut joined, mut established_at, mut worst) = (false, None, 0.0f64);
+            for _ in 0..600 {
+                p.tick(&mut e);
+                let (x, y) = local(p.f.pos);
+                if x < faf_nm() {
+                    break;
+                }
+                joined |= y.abs() <= 0.3;
+                if joined {
+                    worst = worst.max(y.abs());
+                    let gap = (p.hdg - 270.0 + 540.0).rem_euclid(360.0) - 180.0;
+                    if y.abs() <= 0.3 && gap.abs() <= 15.0 && established_at.is_none() {
+                        established_at = Some(x);
+                    }
+                }
+            }
+            let out = established_at.expect("established on the final");
+            assert!(out > faf_nm() + 1.0, "established {out:.1} NM out");
+            assert!(worst <= 0.5, "{worst:.2} NM off the course after joining");
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .filter(|o| o.freq_khz == APP)
+                    .all(|o| contact_of(o).is_some_and(|(_, khz)| khz == TWR)),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+        }
+
+        #[test]
+        fn pattern_from_far_side() {
+            let mut e = engine();
+            // West of the field, flying east across it.
+            let mut p = called_in(&mut e, at(-12.0, 0.0), 5000.0, 90.0, 100.0);
+            let kinds = legs_at_headings(&mut e, &mut p);
+            assert_eq!(
+                kinds,
+                vec![LegKind::Downwind, LegKind::Base, LegKind::Intercept],
+                "{:#?}",
+                approach_said(&p)
+            );
+            // The base towards the centreline from the circuit side (left: south), the
+            // intercept 30 degrees onto the course.
+            let headings: Vec<u16> = approach_said(&p)
+                .iter()
+                .flatten()
+                .filter_map(|i| match i {
+                    AtcItem::Heading { deg, .. } => Some(*deg),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(headings[1..], [360, 300], "{headings:?}");
+            let (x, y) = local(p.f.pos);
+            assert!(x > 8.0 && y < 0.0, "cleared at {x:.1}, {y:.1}");
+        }
+
+        /// The NM from the course when the intercept heading is given at `gs` kt.
+        fn off_course_at_intercept(gs: f64) -> f64 {
+            let mut e = engine();
+            let (x, y) = NORTH;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 180.0, gs);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            p.until(&mut e, 1000, cleared);
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept));
+            local(p.f.pos).1.abs()
+        }
+
+        #[test]
+        fn intercept_given_earlier_for_faster_aircraft() {
+            let slow = off_course_at_intercept(100.0);
+            let fast = off_course_at_intercept(180.0);
+            assert!(
+                fast > slow + 0.2,
+                "100 kt: {slow:.2} NM, 180 kt: {fast:.2} NM"
+            );
+        }
+
+        #[test]
+        fn descent_reaches_intercept_altitude_before_intercept() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = called_in(&mut e, at(x, y), 6000.0, 290.0, 100.0);
+            p.until(&mut e, 1200, cleared);
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            assert_eq!(plan.cleared_ft, 3000);
+            assert!(
+                (p.f.alt - 3000.0).abs() <= 300.0,
+                "{:.0} ft at the intercept heading",
+                p.f.alt
+            );
+            // The descent came before the intercept, not with it.
+            let said = approach_said(&p);
+            assert!(
+                !said
+                    .last()
+                    .unwrap()
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::DescendTo(_))),
+                "{said:#?}"
+            );
+        }
     }
 
     /// Flight test 14c, C10: no "check heading" while the readback of the heading is
@@ -8706,7 +9055,6 @@ mod handover {
             direct: None,
             heading: None,
             approach_cleared: false,
-            legacy_pattern: None,
             vector_plan: None,
             last_correction_s: None,
             established_check: false,
