@@ -402,6 +402,9 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         | AtcItem::RadarServiceTerminated
         | AtcItem::OffTrack { .. }
         | AtcItem::CheckHeading(_)
+        | AtcItem::OffCourse { .. }
+        | AtcItem::ReIntercept(_)
+        | AtcItem::NewApproach
         | AtcItem::CheckLevel(_)
         | AtcItem::CheckAltimeter { .. }
         | AtcItem::CheckEstablished { .. }

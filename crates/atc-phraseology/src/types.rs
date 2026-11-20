@@ -348,6 +348,13 @@ impl Compass8 {
     }
 }
 
+/// The course an aircraft is vectored onto, as spoken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CourseName {
+    Localizer,
+    FinalApproachCourse,
+}
+
 /// A greeting, farewell or wish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Courtesy {
@@ -569,6 +576,17 @@ pub enum AtcItem {
         nm: u16,
         side: Compass8,
     },
+    /// The aircraft is `tenths_nm` tenths of a nautical mile off `course`, to the `side` of
+    /// it (the direction of the aircraft from the course).
+    OffCourse {
+        tenths_nm: u16,
+        side: Compass8,
+        course: CourseName,
+    },
+    /// Appended to a heading: "to re-intercept the localizer".
+    ReIntercept(CourseName),
+    /// "I will vector you for a new approach".
+    NewApproach,
     /// Cleared for the approach but not established on its final track by the FAF.
     CheckEstablished {
         kind: ApproachKind,
