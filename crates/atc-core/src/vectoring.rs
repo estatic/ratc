@@ -9,8 +9,10 @@
 //! abeam out to 3 NM beyond the intercept point, base towards the centreline, intercept.
 //! The intercept meets the final at 30 degrees (up to 45 to re-intercept close to the
 //! course) at least 2 NM outside the FAF; the final leg runs from the join to the FAF.
-//! Every leg has an altitude: the descent at 300 ft per NM reaches the intercept altitude
-//! before the intercept leg.
+//! Every leg has an altitude to be reached by its end: the descent at no more than 300 ft
+//! per NM reaches the intercept altitude at the join; a path too short for that is
+//! lengthened (a shallower intercept, or a pattern stretched out). An aircraft already on
+//! the final gets the final leg only.
 //!
 //! **Judging.** On each radar update [`judge`] compares the aircraft with the current leg:
 //! the next leg is due one turn lead before its turn point ([`turn_lead_m`]: standard-rate
@@ -84,10 +86,20 @@ pub const DRIFT_WINDOW_S: f64 = 30.0;
 const CONVERGING_DEG: f64 = 5.0;
 /// ... or climbing / descending towards the planned altitude at least this fast, fpm.
 const CONVERGING_FPM: f64 = 200.0;
+/// Drift is measured only on headings within this of each other, degrees ...
+pub const DRIFT_SPREAD_DEG: f64 = 5.0;
+/// ... held for at least this long, s.
+pub const DRIFT_MIN_SPAN_S: f64 = 10.0;
+/// The pattern is stretched out by up to this much to make the descent, NM.
+pub const MAX_STRETCH_NM: f64 = 40.0;
+/// Shallowest intercept angle, degrees (a shallower intercept is a longer one).
+pub const INTERCEPT_MIN_DEG: f64 = 20.0;
 /// Below this distance between the first and last radar position there is no track, m.
 const MIN_TRACK_M: f64 = 50.0;
-/// Planned leg altitudes are rounded down to this, ft.
+/// The start altitude is rounded to this, ft ...
 const ALT_STEP_FT: f64 = 100.0;
+/// ... and the planned leg altitudes down to this.
+const LEG_ALT_STEP_FT: f64 = 500.0;
 
 /// The final approach course vectors lead to.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,21 +142,56 @@ pub struct VectorPlan {
     pub current: usize,
 }
 
+/// Stands in for the leg of a plan without legs (a damaged snapshot).
+static NO_LEG: VectorLeg = VectorLeg {
+    kind: LegKind::Final,
+    track_deg: 0.0,
+    from: LatLon { lat: 0.0, lon: 0.0 },
+    to: LatLon { lat: 0.0, lon: 0.0 },
+    alt_ft: 0,
+};
+
 impl VectorPlan {
-    /// The leg being flown (the last one once past the end).
+    /// Index of the leg being flown: `current`, clamped to the last leg; `None` without legs.
+    pub fn index(&self) -> Option<usize> {
+        self.legs
+            .len()
+            .checked_sub(1)
+            .map(|last| self.current.min(last))
+    }
+
+    /// The leg being flown (the last one once past the end; a placeholder final leg when the
+    /// plan has no legs).
     pub fn leg(&self) -> &VectorLeg {
-        &self.legs[self.current.min(self.legs.len() - 1)]
+        self.index().map_or(&NO_LEG, |i| &self.legs[i])
     }
 
     /// Whether the path joins the final of `f` at least [`JOIN_OUTSIDE_FAF_NM`] outside the
-    /// FAF (false without a final leg).
+    /// FAF: true for a plan that starts on the final (already established), false without a
+    /// final leg. A fresh plan may be late (see [`plan_path`]): callers check this.
     pub fn joins_in_time(&self, f: &FinalCourse) -> bool {
-        self.legs
-            .iter()
-            .find(|l| l.kind == LegKind::Final)
-            .is_some_and(|l| {
-                Frame(f).local(l.from).0 >= f.faf_m / M_PER_NM + JOIN_OUTSIDE_FAF_NM - 0.01
-            })
+        match self.legs.iter().position(|l| l.kind == LegKind::Final) {
+            Some(0) => true,
+            Some(i) => {
+                Frame(f).local(self.legs[i].from).0
+                    >= f.faf_m / M_PER_NM + JOIN_OUTSIDE_FAF_NM - 0.01
+            }
+            None => false,
+        }
+    }
+
+    /// Whether an aircraft at `alt_ft` at the start of the plan can make every leg's altitude
+    /// by the leg's end descending at no more than [`DESCENT_FT_PER_NM`].
+    pub fn descent_in_time(&self, alt_ft: f64) -> bool {
+        let mut entry = alt_ft;
+        for l in self.legs.iter().take_while(|l| l.kind != LegKind::Final) {
+            let len_nm = distance_m(l.from, l.to) / M_PER_NM;
+            if entry - f64::from(l.alt_ft) > len_nm * DESCENT_FT_PER_NM + 1.0 {
+                return false;
+            }
+            entry = f64::from(l.alt_ft);
+        }
+        true
     }
 }
 
@@ -177,6 +224,9 @@ pub enum Verdict {
 pub struct RadarTrack {
     /// `(time s, position, true heading)`, oldest first, at most [`DRIFT_WINDOW_S`] old.
     samples: VecDeque<(f64, LatLon, f64)>,
+    /// The last drift measured on a steady heading.
+    #[serde(default)]
+    drift_deg: f64,
 }
 
 impl RadarTrack {
@@ -194,6 +244,30 @@ impl RadarTrack {
         {
             self.samples.pop_front();
         }
+        if let Some(d) = self.steady_drift() {
+            self.drift_deg = d;
+        }
+    }
+
+    /// Drift over the latest run of samples whose headings stay within
+    /// [`DRIFT_SPREAD_DEG`] of each other, when it spans at least [`DRIFT_MIN_SPAN_S`]: the
+    /// chord bearing of the run minus its mean heading. `None` while turning.
+    fn steady_drift(&self) -> Option<f64> {
+        let last = self.samples.back()?;
+        let (mut lo, mut hi) = (0.0f64, 0.0f64);
+        let mut first = last;
+        for s in self.samples.iter().rev() {
+            let off = signed(s.2 - last.2);
+            if hi.max(off) - lo.min(off) > DRIFT_SPREAD_DEG {
+                break;
+            }
+            (lo, hi, first) = (lo.min(off), hi.max(off), s);
+        }
+        if last.0 - first.0 < DRIFT_MIN_SPAN_S || distance_m(first.1, last.1) < MIN_TRACK_M {
+            return None;
+        }
+        let mean = last.2 + (lo + hi) / 2.0;
+        Some(signed(bearing_deg(first.1, last.1) - mean))
     }
 
     /// Ground track from the first to the last kept position; `None` while too short.
@@ -202,17 +276,11 @@ impl RadarTrack {
         (distance_m(first.1, last.1) >= MIN_TRACK_M).then(|| bearing_deg(first.1, last.1))
     }
 
-    /// Radar track minus the mean heading over the window, degrees in [-180, 180); 0 without
-    /// a track.
+    /// Radar track minus heading, degrees in [-180, 180): measured on the latest steady
+    /// heading (at least [`DRIFT_MIN_SPAN_S`] within [`DRIFT_SPREAD_DEG`]); while turning the
+    /// last such value is kept; 0 before any.
     pub fn drift_deg(&self) -> f64 {
-        let Some(track) = self.track_deg() else {
-            return 0.0;
-        };
-        let (s, c) = self.samples.iter().fold((0.0, 0.0), |(s, c), x| {
-            let h = x.2.to_radians();
-            (s + h.sin(), c + h.cos())
-        });
-        signed(track - s.atan2(c).to_degrees())
+        self.drift_deg
     }
 }
 
@@ -242,135 +310,238 @@ pub fn descent_start_m(from_ft: f64, to_ft: i32) -> f64 {
 
 /// The planned path from `pos` (ground track `track_deg`, altitude `alt_ft`) to the final
 /// `f`. In order of preference:
+/// - already on the final (within [`ESTABLISHED_NM`], tracking within [`ESTABLISHED_DEG`]):
+///   the final leg only;
 /// - close to the course ([`NEAR_COURSE_NM`]), ahead of the threshold, the turn onto the
 ///   intercept not more than 90 degrees: an intercept from here at 30 degrees, steepened up
-///   to 45 to join outside the FAF margin (a join inside it is still planned: see
-///   [`VectorPlan::joins_in_time`]);
+///   to 45 to join outside the FAF margin. A join inside it is still planned, so a caller
+///   checks [`VectorPlan::joins_in_time`], on a fresh plan too;
 /// - the 30-degree intercept from here joins between the FAF margin and 6 NM beyond the
-///   nominal join, the turn onto it not more than 90 degrees: that intercept;
+///   nominal join, the turn onto it not more than 90 degrees: that intercept, made shallower
+///   (down to 20 degrees, so longer) when the descent needs it;
 /// - the turn onto the intercept at its lead point not more than 90 degrees: a base to the
 ///   lead point, then the intercept;
-/// - otherwise the pattern: downwind, base, intercept.
+/// - otherwise, or when the choice above cannot make the descent at [`DESCENT_FT_PER_NM`],
+///   the pattern: downwind, base, intercept, stretched out (base and join further out) until
+///   the descent fits (up to [`MAX_STRETCH_NM`]; check [`VectorPlan::descent_in_time`]).
 ///
-/// The final leg runs from the join to the FAF.
+/// The final leg runs from the join to the FAF (to the threshold for a join inside the FAF).
+/// The intercept altitude is reached at the join.
 pub fn plan_path(pos: LatLon, track_deg: f64, alt_ft: f64, f: &FinalCourse) -> VectorPlan {
-    let frame = Frame(f);
-    let course = f.course_deg;
-    let (x, y) = frame.local(pos);
-    let x_min = f.faf_m / M_PER_NM + JOIN_OUTSIDE_FAF_NM;
-    let x_join = INTERCEPT_NM.max(x_min);
-    // The side the aircraft is on, and the side of a pattern.
-    let own = if y != 0.0 { y.signum() } else { f.circuit_side };
-    let side = if y.abs() >= CENTRELINE_NM {
-        y.signum()
-    } else {
-        f.circuit_side
-    };
+    let g = Setup::new(pos, f);
+    let (x, y, course) = (g.x, g.y, f.course_deg);
+    if x > 0.0 && y.abs() <= ESTABLISHED_NM && gap_deg(track_deg, course) <= ESTABLISHED_DEG {
+        return g.plan(Vec::new(), alt_ft);
+    }
     let tan30 = INTERCEPT_ANGLE_DEG.to_radians().tan();
-    let leg = |kind, track_deg: f64, from, to| VectorLeg {
-        kind,
-        track_deg: track_deg.rem_euclid(360.0),
-        from,
-        to,
-        alt_ft: f.intercept_alt_ft,
-    };
-    let intercept_from_here = |angle_deg: f64| {
-        let join = frame.point(x - y.abs() / angle_deg.to_radians().tan(), 0.0);
-        leg(LegKind::Intercept, course - own * angle_deg, pos, join)
-    };
-    let onto_intercept = |s: f64| gap_deg(track_deg, course - s * INTERCEPT_ANGLE_DEG);
-
-    let mut legs = if x > 0.0 && y.abs() <= NEAR_COURSE_NM && onto_intercept(own) <= PATTERN_GAP_DEG
-    {
-        let angle = if x - y.abs() / tan30 >= x_min {
+    let onto_intercept =
+        gap_deg(track_deg, course - g.own * INTERCEPT_ANGLE_DEG) <= PATTERN_GAP_DEG;
+    let joins = |angle_deg: f64| x - y.abs() / angle_deg.to_radians().tan();
+    let first = if x > 0.0 && y.abs() <= NEAR_COURSE_NM && onto_intercept {
+        let angle = if joins(INTERCEPT_ANGLE_DEG) >= g.x_min {
             INTERCEPT_ANGLE_DEG
-        } else if x > x_min {
-            (y.abs() / (x - x_min))
+        } else if x > g.x_min {
+            (y.abs() / (x - g.x_min))
                 .atan()
                 .to_degrees()
                 .clamp(INTERCEPT_ANGLE_DEG, REINTERCEPT_MAX_DEG)
         } else {
             REINTERCEPT_MAX_DEG
         };
-        vec![intercept_from_here(angle)]
+        Some(g.plan(vec![g.intercept_from_here(angle)], alt_ft))
     } else if x > 0.0
-        && (x_min..=x_join + JOIN_BEYOND_NM).contains(&(x - y.abs() / tan30))
-        && onto_intercept(own) <= PATTERN_GAP_DEG
+        && onto_intercept
+        && (g.x_min..=g.x_join + JOIN_BEYOND_NM).contains(&(x - y.abs() / tan30))
     {
-        vec![intercept_from_here(INTERCEPT_ANGLE_DEG)]
+        let steps = (INTERCEPT_ANGLE_DEG - INTERCEPT_MIN_DEG) as u32;
+        (0..=steps)
+            .map(|k| INTERCEPT_ANGLE_DEG - f64::from(k))
+            .take_while(|&a| joins(a) >= g.x_min)
+            .map(|a| g.plan(vec![g.intercept_from_here(a)], alt_ft))
+            .find(|p| p.descent_in_time(alt_ft))
     } else {
-        let join = frame.point(x_join, 0.0);
-        let intercept_trk = course - side * INTERCEPT_ANGLE_DEG;
-        let lead = destination(join, intercept_trk + 180.0, LEAD_NM * M_PER_NM);
-        let to_lead = bearing_deg(pos, lead);
-        if distance_m(pos, lead) < CENTRELINE_NM * M_PER_NM {
-            vec![leg(LegKind::Intercept, intercept_trk, pos, join)]
-        } else if gap_deg(to_lead, intercept_trk) <= PATTERN_GAP_DEG {
-            vec![
-                leg(LegKind::Base, to_lead, pos, lead),
-                leg(LegKind::Intercept, intercept_trk, lead, join),
-            ]
-        } else {
-            let base_x = (x_join + BASE_BEYOND_NM).max(x + 1.0);
-            let downwind_end = frame.point(base_x, side * DOWNWIND_Y_NM);
-            let base_end = frame.point(base_x, side * (base_x - x_join) * tan30);
-            vec![
-                leg(
-                    LegKind::Downwind,
-                    bearing_deg(pos, downwind_end),
-                    pos,
-                    downwind_end,
-                ),
-                leg(LegKind::Base, course - side * 90.0, downwind_end, base_end),
-                leg(LegKind::Intercept, intercept_trk, base_end, join),
-            ]
-        }
+        g.lead_route().map(|legs| g.plan(legs, alt_ft))
     };
-    let join = legs.last().map_or(pos, |l| l.to);
-    legs.push(leg(
-        LegKind::Final,
-        course,
-        join,
-        frame.point(x_min - JOIN_OUTSIDE_FAF_NM, 0.0),
-    ));
-    plan_altitudes(&mut legs, alt_ft, f.intercept_alt_ft);
-    VectorPlan { legs, current: 0 }
+    match first {
+        Some(p) if p.descent_in_time(alt_ft) => p,
+        _ => {
+            let stretched = |k: u32| g.plan(g.pattern(f64::from(k)), alt_ft);
+            (0..=MAX_STRETCH_NM as u32)
+                .map(stretched)
+                .find(|p| p.descent_in_time(alt_ft))
+                .unwrap_or_else(|| stretched(MAX_STRETCH_NM as u32))
+        }
+    }
 }
 
-/// Altitudes of the legs before the intercept: the profile descending at
-/// [`DESCENT_FT_PER_NM`] to `intercept_ft` at the start of the intercept, at each leg's end,
-/// rounded down to 100 ft, not above the start altitude nor below `intercept_ft`.
+/// The aircraft's place relative to the final, for [`plan_path`].
+struct Setup<'a> {
+    f: &'a FinalCourse,
+    pos: LatLon,
+    /// NM out along the approach, and right of the landing direction.
+    x: f64,
+    y: f64,
+    /// Nearest join allowed (FAF + margin), and the nominal join, NM out.
+    x_min: f64,
+    x_join: f64,
+    /// The side the aircraft is on, and the side of a pattern (+1 right).
+    own: f64,
+    side: f64,
+}
+
+impl<'a> Setup<'a> {
+    fn new(pos: LatLon, f: &'a FinalCourse) -> Self {
+        let (x, y) = Frame(f).local(pos);
+        let x_min = f.faf_m / M_PER_NM + JOIN_OUTSIDE_FAF_NM;
+        Self {
+            f,
+            pos,
+            x,
+            y,
+            x_min,
+            x_join: INTERCEPT_NM.max(x_min),
+            own: if y != 0.0 { y.signum() } else { f.circuit_side },
+            side: if y.abs() >= CENTRELINE_NM {
+                y.signum()
+            } else {
+                f.circuit_side
+            },
+        }
+    }
+
+    fn leg(&self, kind: LegKind, track_deg: f64, from: LatLon, to: LatLon) -> VectorLeg {
+        VectorLeg {
+            kind,
+            track_deg: track_deg.rem_euclid(360.0),
+            from,
+            to,
+            alt_ft: self.f.intercept_alt_ft,
+        }
+    }
+
+    fn point(&self, x_nm: f64, y_nm: f64) -> LatLon {
+        Frame(self.f).point(x_nm, y_nm)
+    }
+
+    /// The intercept from the present position at `angle_deg` onto the course.
+    fn intercept_from_here(&self, angle_deg: f64) -> VectorLeg {
+        let join = self.point(self.x - self.y.abs() / angle_deg.to_radians().tan(), 0.0);
+        let track = self.f.course_deg - self.own * angle_deg;
+        self.leg(LegKind::Intercept, track, self.pos, join)
+    }
+
+    /// Base to the lead point of the nominal intercept, then the intercept; `None` when the
+    /// turn at the lead point would be more than [`PATTERN_GAP_DEG`].
+    fn lead_route(&self) -> Option<Vec<VectorLeg>> {
+        let join = self.point(self.x_join, 0.0);
+        let intercept = self.f.course_deg - self.side * INTERCEPT_ANGLE_DEG;
+        let lead = destination(join, intercept + 180.0, LEAD_NM * M_PER_NM);
+        let to_lead = bearing_deg(self.pos, lead);
+        if distance_m(self.pos, lead) < CENTRELINE_NM * M_PER_NM {
+            Some(vec![self.leg(
+                LegKind::Intercept,
+                intercept,
+                self.pos,
+                join,
+            )])
+        } else if gap_deg(to_lead, intercept) <= PATTERN_GAP_DEG {
+            Some(vec![
+                self.leg(LegKind::Base, to_lead, self.pos, lead),
+                self.leg(LegKind::Intercept, intercept, lead, join),
+            ])
+        } else {
+            None
+        }
+    }
+
+    /// The pattern on `side`, base and join `stretch_nm` further out than nominal (and at
+    /// least 1 NM beyond the aircraft).
+    fn pattern(&self, stretch_nm: f64) -> Vec<VectorLeg> {
+        let (course, side) = (self.f.course_deg, self.side);
+        let base_x = (self.x_join + BASE_BEYOND_NM + stretch_nm).max(self.x + 1.0);
+        let join_x = base_x - BASE_BEYOND_NM;
+        let tan30 = INTERCEPT_ANGLE_DEG.to_radians().tan();
+        let downwind_end = self.point(base_x, side * DOWNWIND_Y_NM);
+        let base_end = self.point(base_x, side * BASE_BEYOND_NM * tan30);
+        let join = self.point(join_x, 0.0);
+        vec![
+            self.leg(
+                LegKind::Downwind,
+                bearing_deg(self.pos, downwind_end),
+                self.pos,
+                downwind_end,
+            ),
+            self.leg(LegKind::Base, course - side * 90.0, downwind_end, base_end),
+            self.leg(
+                LegKind::Intercept,
+                course - side * INTERCEPT_ANGLE_DEG,
+                base_end,
+                join,
+            ),
+        ]
+    }
+
+    /// `legs` with the final leg appended and the altitudes planned.
+    fn plan(&self, mut legs: Vec<VectorLeg>, alt_ft: f64) -> VectorPlan {
+        let join = legs.last().map_or(self.pos, |l| l.to);
+        let faf_nm = self.f.faf_m / M_PER_NM;
+        let end = if Frame(self.f).local(join).0 > faf_nm {
+            self.point(faf_nm, 0.0)
+        } else {
+            self.f.thr
+        };
+        legs.push(self.leg(LegKind::Final, self.f.course_deg, join, end));
+        plan_altitudes(&mut legs, alt_ft, self.f.intercept_alt_ft);
+        VectorPlan { legs, current: 0 }
+    }
+}
+
+/// Altitudes of the legs before the final, each to be reached at the leg's end: the latest
+/// descent at [`DESCENT_FT_PER_NM`] to `intercept_ft` at the join, rounded down to 500 ft,
+/// never below `intercept_ft`; a leg the profile does not yet descend on keeps the previous
+/// altitude (the start rounded to 100 ft).
 fn plan_altitudes(legs: &mut [VectorLeg], start_ft: f64, intercept_ft: i32) {
-    let Some(i) = legs.iter().position(|l| l.kind == LegKind::Intercept) else {
-        return;
-    };
-    let start = (start_ft / ALT_STEP_FT).round() * ALT_STEP_FT;
-    let mut to_go_nm = 0.0;
-    for k in (0..i).rev() {
-        let profile = f64::from(intercept_ft) + to_go_nm * DESCENT_FT_PER_NM;
-        let alt = (profile.min(start) / ALT_STEP_FT).floor() * ALT_STEP_FT;
-        legs[k].alt_ft = (alt as i32).max(intercept_ft);
-        to_go_nm += distance_m(legs[k].from, legs[k].to) / M_PER_NM;
+    let n = legs
+        .iter()
+        .position(|l| l.kind == LegKind::Final)
+        .unwrap_or(legs.len());
+    let mut to_go_nm = vec![0.0; n];
+    for k in (0..n.saturating_sub(1)).rev() {
+        to_go_nm[k] = to_go_nm[k + 1] + distance_m(legs[k + 1].from, legs[k + 1].to) / M_PER_NM;
+    }
+    let ia = f64::from(intercept_ft);
+    let mut entry = (start_ft / ALT_STEP_FT).round() * ALT_STEP_FT;
+    for k in 0..n {
+        let profile = ia + to_go_nm[k] * DESCENT_FT_PER_NM;
+        let alt = if profile >= entry {
+            entry
+        } else {
+            (profile / LEG_ALT_STEP_FT).floor() * LEG_ALT_STEP_FT
+        }
+        .max(ia);
+        legs[k].alt_ft = alt as i32;
+        entry = alt;
     }
 }
 
 /// The radar picture `r` against the current leg of `plan`: the next leg due (turn lead
 /// reached), off the leg (0.5 NM, 1 NM on downwind) or off the planned altitude (300 ft)
-/// without converging, or on plan. The planned altitude on a leg before the intercept is the
+/// without converging, or on plan. The planned altitude on a leg before the final is the
 /// latest-descent profile to its `alt_ft` at the leg's end (not above the previous leg's);
-/// from the intercept on it is the leg's `alt_ft`. Heading is not judged here (the radar has
-/// only the track).
+/// on the final it is the leg's `alt_ft`. Heading is not judged here (the radar has only the
+/// track). A plan without legs is always on plan.
 pub fn judge(plan: &VectorPlan, r: &Radar) -> Verdict {
-    let leg = plan.leg();
+    let Some(i) = plan.index() else {
+        return Verdict::OnPlan;
+    };
+    let leg = &plan.legs[i];
     let (along, right) = RunwayFrame {
         origin: leg.from,
         course_deg: leg.track_deg,
     }
     .to_local(r.pos);
     let to_go = distance_m(leg.from, leg.to) - along;
-    let last = plan.current + 1 >= plan.legs.len();
-    if !last {
-        let next = &plan.legs[plan.current + 1];
+    if let Some(next) = plan.legs.get(i + 1) {
         if to_go <= turn_lead_m(r.gs_kt, gap_deg(leg.track_deg, next.track_deg)) {
             return Verdict::LegDue;
         }
@@ -392,9 +563,9 @@ pub fn judge(plan: &VectorPlan, r: &Radar) -> Verdict {
     }
 
     let alt = f64::from(leg.alt_ft);
-    let upper = if matches!(leg.kind, LegKind::Downwind | LegKind::Base) {
+    let upper = if leg.kind != LegKind::Final {
         let profile = alt + to_go.max(0.0) / M_PER_NM * DESCENT_FT_PER_NM;
-        match plan.current.checked_sub(1).map(|k| &plan.legs[k]) {
+        match i.checked_sub(1).map(|k| &plan.legs[k]) {
             Some(prev) => profile.min(f64::from(prev.alt_ft).max(alt)),
             None => profile,
         }
@@ -491,6 +662,18 @@ mod tests {
         destination(p, COURSE + 90.0, right_nm * M_PER_NM)
     }
 
+    /// Every leg before the final descends at no more than 300 ft/NM from `start_ft`.
+    fn assert_gradient(plan: &VectorPlan, start_ft: f64) {
+        assert!(plan.descent_in_time(start_ft));
+        let mut entry = start_ft;
+        for l in plan.legs.iter().take_while(|l| l.kind != LegKind::Final) {
+            let nm = distance_m(l.from, l.to) / M_PER_NM;
+            let grad = (entry - f64::from(l.alt_ft)) / nm;
+            assert!(grad <= 300.0 + 1.0, "{:?} {grad} ft/NM", l.kind);
+            entry = f64::from(l.alt_ft);
+        }
+    }
+
     fn kinds(p: &VectorPlan) -> Vec<LegKind> {
         p.legs.iter().map(|l| l.kind).collect()
     }
@@ -516,7 +699,7 @@ mod tests {
 
     #[test]
     fn direct_join_has_intercept_and_final() {
-        let plan = plan_path(at(15.0, -4.0), COURSE, 5000.0, &fin());
+        let plan = plan_path(at(15.0, -4.0), COURSE, 4000.0, &fin());
         assert_eq!(kinds(&plan), vec![LegKind::Intercept, LegKind::Final]);
         assert_eq!(plan.current, 0);
         let int = &plan.legs[0];
@@ -536,7 +719,7 @@ mod tests {
 
     #[test]
     fn right_side_intercept_turns_left_of_course() {
-        let plan = plan_path(at(15.0, 4.0), COURSE, 5000.0, &fin());
+        let plan = plan_path(at(15.0, 4.0), COURSE, 4000.0, &fin());
         assert_eq!(kinds(&plan), vec![LegKind::Intercept, LegKind::Final]);
         assert!((plan.legs[0].track_deg - (COURSE - 30.0)).abs() < 1e-6);
     }
@@ -580,10 +763,9 @@ mod tests {
             .unwrap();
         assert_eq!(plan.legs[i].alt_ft, 2500);
         assert_eq!(plan.legs[i + 1].alt_ft, 2500);
-        // The base is short: the downwind already ends below the start, at most 300 ft/NM
-        // above the intercept altitude.
-        let base_nm = distance_m(plan.legs[1].from, plan.legs[1].to) / M_PER_NM;
-        assert!(f64::from(plan.legs[0].alt_ft) <= 2500.0 + base_nm * 300.0 + 1.0);
+        // Leg altitudes in 500 ft steps, the descent not steeper than 300 ft/NM.
+        assert!(alts.iter().all(|a| a % 500 == 0), "{alts:?}");
+        assert_gradient(&plan, 6000.0);
         assert!(plan.legs[0].alt_ft < 6000);
     }
 
@@ -672,6 +854,106 @@ mod tests {
     }
 
     #[test]
+    fn high_direct_join_is_lengthened() {
+        let short = plan_path(at(15.0, -4.0), COURSE, 2500.0, &fin());
+        let short_nm = path_nm(&short);
+        // From 5000 ft: 2500 ft to lose in 8 NM is too steep; a shallower intercept.
+        let p5 = plan_path(at(15.0, -4.0), COURSE, 5000.0, &fin());
+        assert_gradient(&p5, 5000.0);
+        assert!(p5.joins_in_time(&fin()));
+        assert!(path_nm(&p5) > short_nm);
+        let angle = p5.legs[0].track_deg - COURSE;
+        assert!((20.0..30.0).contains(&angle), "{angle}");
+        // From 7000 ft even 20 degrees is too short: the pattern, stretched out.
+        let p7 = plan_path(at(15.0, -4.0), COURSE, 7000.0, &fin());
+        assert_eq!(p7.legs[0].kind, LegKind::Downwind);
+        assert_gradient(&p7, 7000.0);
+        assert!(p7.joins_in_time(&fin()));
+        assert!(path_nm(&p7) >= (7000.0 - 2500.0) / 300.0);
+        // A level aircraft at the start altitude is on plan on the first update.
+        for (plan, alt) in [(&p5, 5000.0), (&p7, 7000.0)] {
+            let mut r = radar(at(15.0, -4.0), plan.legs[0].track_deg);
+            r.alt_ft = alt;
+            assert_eq!(judge(plan, &r), Verdict::OnPlan, "{alt}");
+        }
+    }
+
+    /// Length of the path to the join, NM.
+    fn path_nm(plan: &VectorPlan) -> f64 {
+        plan.legs
+            .iter()
+            .take_while(|l| l.kind != LegKind::Final)
+            .map(|l| distance_m(l.from, l.to) / M_PER_NM)
+            .sum()
+    }
+
+    #[test]
+    fn join_inside_the_faf_ends_at_the_threshold() {
+        // 45 degrees from 4.5 NM out, 0.5 NM left: joins at 4 NM, at the FAF.
+        let plan = plan_path(at(3.5, -0.5), COURSE - 30.0, 2500.0, &fin());
+        assert!(!plan.joins_in_time(&fin()));
+        let fin_leg = plan.legs.last().unwrap();
+        assert_eq!(fin_leg.kind, LegKind::Final);
+        assert!(out_nm(fin_leg.from) < 4.0);
+        assert_eq!(fin_leg.to, THR);
+    }
+
+    #[test]
+    fn on_the_centreline_is_final_only() {
+        let plan = plan_path(at(9.0, 0.2), COURSE + 5.0, 2500.0, &fin());
+        assert_eq!(kinds(&plan), vec![LegKind::Final]);
+        assert!(plan.joins_in_time(&fin()));
+        assert!((out_nm(plan.legs[0].to) - 4.0).abs() < 0.01);
+        assert_eq!(judge(&plan, &radar(at(9.0, 0.2), COURSE)), Verdict::OnPlan);
+        // Established inside the FAF: still joined.
+        let plan = plan_path(at(3.0, 0.1), COURSE, 1500.0, &fin());
+        assert_eq!(kinds(&plan), vec![LegKind::Final]);
+        assert!(plan.joins_in_time(&fin()));
+    }
+
+    #[test]
+    fn empty_or_out_of_range_plan_does_not_panic() {
+        let empty: VectorPlan = serde_json::from_str(r#"{"legs":[],"current":3}"#).unwrap();
+        assert_eq!(empty.index(), None);
+        assert_eq!(empty.leg().kind, LegKind::Final);
+        assert_eq!(judge(&empty, &radar(THR, 0.0)), Verdict::OnPlan);
+        assert!(!empty.joins_in_time(&fin()));
+        assert!(empty.descent_in_time(5000.0));
+        let mut plan = plan_path(at(-3.0, 0.0), COURSE, 4000.0, &fin());
+        plan.current = 9;
+        assert_eq!(plan.index(), Some(3));
+        assert_eq!(plan.leg().kind, LegKind::Final);
+        let _ = judge(&plan, &radar(at(5.0, 0.0), COURSE));
+    }
+
+    #[test]
+    fn drift_held_through_a_turn() {
+        let mut rt = RadarTrack::default();
+        let mut p = LatLon {
+            lat: 50.0,
+            lon: 20.0,
+        };
+        let mut hdg = 350.0;
+        let step = 120.0 * M_PER_NM / 3600.0 * 2.0;
+        for k in 0..60 {
+            let t = f64::from(k) * 2.0;
+            // Steady for 40 s, then a standard-rate turn of 90 degrees left, then steady.
+            if (20..35).contains(&k) {
+                hdg -= 6.0;
+            }
+            rt.push(t, p, hdg);
+            if k >= 6 {
+                assert!(
+                    (rt.drift_deg() - 10.0).abs() < 1.0,
+                    "t {t}: {}",
+                    rt.drift_deg()
+                );
+            }
+            p = destination(p, hdg + 10.0, step);
+        }
+    }
+
+    #[test]
     fn heading_for_track_wraps() {
         assert!((heading_for_track(5.0, 10.0) - 355.0).abs() < 1e-9);
         assert!((heading_for_track(355.0, -10.0) - 5.0).abs() < 1e-9);
@@ -718,11 +1000,15 @@ mod tests {
         let leg = plan.leg().clone();
         let mid = destination(leg.from, leg.track_deg, distance_m(leg.from, leg.to) / 2.0);
         let mut r = radar(mid, leg.track_deg);
-        r.alt_ft = 3200.0;
+        // The intercept altitude is due at the join, 4 NM on: up to 3700 ft is on profile.
+        r.alt_ft = 4100.0;
         match judge(&plan, &r) {
-            Verdict::OffAltitude { ft } => assert!((ft - 700.0).abs() < 1.0),
+            Verdict::OffAltitude { ft } => assert!((ft - 400.0).abs() < 5.0, "{ft}"),
             v => panic!("{v:?}"),
         }
+        r.alt_ft = 3900.0;
+        assert_eq!(judge(&plan, &r), Verdict::OnPlan);
+        r.alt_ft = 4100.0;
         // Descending towards it: on plan.
         r.vs_fpm = -800.0;
         assert_eq!(judge(&plan, &r), Verdict::OnPlan);
