@@ -55,8 +55,10 @@
 //! the first when vectoring starts and the next one turn lead before the turn point (the
 //! standard-rate radius at the radar ground speed plus 10 s, [`vectoring::judge`]); the
 //! descent to the intercept altitude (the FAF's altitude constraint) is given when the plan
-//! needs it, at 300 ft per NM, to be there by the turn onto the intercept
-//! ([`vectoring::descent_due`]); the intercept heading comes with the distance to go,
+//! needs it, at 300 ft per NM, to be there by the turn onto the intercept where the path
+//! allows (the plan itself only needs the final joined below the glide path and the
+//! intercept altitude by the FAF, [`vectoring::descent_due`]); the intercept heading comes
+//! with the distance to go,
 //! "cleared `<approach>`" and "report established". An aircraft off the plan is not
 //! corrected yet: it gets the plan's next instructions. After a missed approach the plan is
 //! made anew from the published missed-approach altitude, a pattern when the aircraft is

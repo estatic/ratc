@@ -9,10 +9,12 @@
 //! abeam out to 3 NM beyond the intercept point, base towards the centreline, intercept.
 //! The intercept meets the final at 30 degrees (up to 45 to re-intercept close to the
 //! course) at least 2 NM outside the FAF; the final leg runs from the join to the FAF.
-//! Every leg has an altitude to be reached by its end: the descent at no more than 300 ft
-//! per NM reaches the intercept altitude at the join; a path too short for that is
-//! lengthened (a shallower intercept, or a pattern stretched out). An aircraft already on
-//! the final gets the final leg only.
+//! Every leg has an altitude to be reached by its end, descending at no more than 300 ft
+//! per NM: the final is joined at least 300 ft below the 3-degree glide path (taken through
+//! the FAF at the intercept altitude: the FAF altitude is the glide path's there) and the
+//! intercept altitude is reached by the FAF, descending on the final leg; a path too short
+//! for that is lengthened (a shallower intercept, or a pattern stretched out). An aircraft
+//! already on the final gets the final leg only.
 //!
 //! **Judging.** On each radar update [`judge`] compares the aircraft with the current leg:
 //! the next leg is due one turn lead before its turn point ([`turn_lead_m`]: standard-rate
@@ -96,6 +98,10 @@ pub const MAX_STRETCH_NM: f64 = 40.0;
 pub const INTERCEPT_MIN_DEG: f64 = 20.0;
 /// Below this distance between the first and last radar position there is no track, m.
 const MIN_TRACK_M: f64 = 50.0;
+/// The glide path (3 degrees) climbs this much per NM from the threshold, ft ...
+pub const GLIDE_FT_PER_NM: f64 = 318.0;
+/// ... and the final is joined at least this far below it, ft.
+pub const GLIDE_MARGIN_FT: f64 = 300.0;
 /// A radar sample farther from the previous one than this many times the distance its
 /// ground speed covers ...
 pub const JUMP_FACTOR: f64 = 2.0;
@@ -186,10 +192,11 @@ impl VectorPlan {
     }
 
     /// Whether an aircraft at `alt_ft` at the start of the plan can make every leg's altitude
-    /// by the leg's end descending at no more than [`DESCENT_FT_PER_NM`].
+    /// by the leg's end descending at no more than [`DESCENT_FT_PER_NM`], the final leg's (the
+    /// intercept altitude) by the FAF.
     pub fn descent_in_time(&self, alt_ft: f64) -> bool {
         let mut entry = alt_ft;
-        for l in self.legs.iter().take_while(|l| l.kind != LegKind::Final) {
+        for l in &self.legs {
             let len_nm = distance_m(l.from, l.to) / M_PER_NM;
             if entry - f64::from(l.alt_ft) > len_nm * DESCENT_FT_PER_NM + 1.0 {
                 return false;
@@ -320,12 +327,14 @@ pub fn descent_start_m(from_ft: f64, to_ft: i32) -> f64 {
 }
 
 /// The altitude to clear an aircraft flying `plan` (radar `r`) down to now, if the plan
-/// needs the descent: the lowest altitude still planned before the final (the intercept
-/// altitude), as soon as one of the remaining legs needs the descent to begin at
-/// [`DESCENT_FT_PER_NM`] ([`descent_start_m`] from the present altitude) — each leg's
-/// altitude at the leg's end, the intercept altitude at the turn onto the intercept (one
-/// turn lead before the intercept leg), so it is reached before the intercept heading. On
-/// the intercept leg or the final: at once. `None` without legs or while not yet due.
+/// needs the descent: the intercept altitude (the final leg's), as soon as one of the
+/// remaining legs needs the descent to begin at [`DESCENT_FT_PER_NM`] ([`descent_start_m`]
+/// from the present altitude) — each leg's altitude at the leg's end, and the intercept
+/// altitude itself at the turn onto the intercept (one turn lead before the intercept leg):
+/// the controller descends early enough to have it before the intercept heading where the
+/// path allows, though the plan accepts less (below the glide path at the join, the
+/// intercept altitude by the FAF). On the intercept leg or the final: at once. `None`
+/// without legs or while not yet due.
 pub fn descent_due(plan: &VectorPlan, r: &Radar) -> Option<i32> {
     let i = plan.index()?;
     let legs = &plan.legs;
@@ -333,9 +342,10 @@ pub fn descent_due(plan: &VectorPlan, r: &Radar) -> Option<i32> {
         .iter()
         .take_while(|l| l.kind != LegKind::Final)
         .collect();
-    let Some(target) = rest.iter().map(|l| l.alt_ft).min() else {
-        return Some(legs[i].alt_ft);
-    };
+    let target = legs.last().map_or(legs[i].alt_ft, |l| l.alt_ft);
+    if rest.is_empty() {
+        return Some(target);
+    }
     let cur = &legs[i];
     let (along, _) = RunwayFrame {
         origin: cur.from,
@@ -349,17 +359,17 @@ pub fn descent_due(plan: &VectorPlan, r: &Radar) -> Option<i32> {
         if k > 0 {
             to_end += distance_m(l.from, l.to);
         }
-        let need_at = if l.kind == LegKind::Intercept {
+        let (need_at, alt_ft) = if l.kind == LegKind::Intercept {
             let lead = if k > 0 {
                 turn_lead_m(r.gs_kt, gap_deg(rest[k - 1].track_deg, l.track_deg))
             } else {
                 0.0
             };
-            (start - lead).max(0.0)
+            ((start - lead).max(0.0), target)
         } else {
-            to_end
+            (to_end, l.alt_ft)
         };
-        if need_at <= descent_start_m(r.alt_ft, l.alt_ft) {
+        if need_at <= descent_start_m(r.alt_ft, alt_ft) {
             return Some(target);
         }
         start = to_end;
@@ -385,7 +395,7 @@ pub fn descent_due(plan: &VectorPlan, r: &Radar) -> Option<i32> {
 ///   the descent fits (up to [`MAX_STRETCH_NM`]; check [`VectorPlan::descent_in_time`]).
 ///
 /// The final leg runs from the join to the FAF (to the threshold for a join inside the FAF).
-/// The intercept altitude is reached at the join.
+/// The join is below the glide path and the intercept altitude is reached by the FAF.
 pub fn plan_path(pos: LatLon, track_deg: f64, alt_ft: f64, f: &FinalCourse) -> VectorPlan {
     let g = Setup::new(pos, f);
     let (x, y, course) = (g.x, g.y, f.course_deg);
@@ -552,6 +562,19 @@ impl<'a> Setup<'a> {
             .unwrap_or_else(|| stretched(MAX_STRETCH_NM as u32))
     }
 
+    /// The highest altitude to join the final at `join_x_nm` out: at least
+    /// [`GLIDE_MARGIN_FT`] below the glide path and able to make the intercept altitude by
+    /// the FAF at [`DESCENT_FT_PER_NM`]; the intercept altitude for a join inside the FAF.
+    fn join_limit_ft(&self, join_x_nm: f64) -> f64 {
+        let ia = f64::from(self.f.intercept_alt_ft);
+        let to_faf_nm = join_x_nm - self.f.faf_m / M_PER_NM;
+        if to_faf_nm <= 0.0 {
+            return ia;
+        }
+        let glide = ia + to_faf_nm * GLIDE_FT_PER_NM - GLIDE_MARGIN_FT;
+        glide.min(ia + to_faf_nm * DESCENT_FT_PER_NM).max(ia)
+    }
+
     /// `legs` with the final leg appended and the altitudes planned.
     fn plan(&self, mut legs: Vec<VectorLeg>, alt_ft: f64) -> VectorPlan {
         let join = legs.last().map_or(self.pos, |l| l.to);
@@ -562,16 +585,23 @@ impl<'a> Setup<'a> {
             self.f.thr
         };
         legs.push(self.leg(LegKind::Final, self.f.course_deg, join, end));
-        plan_altitudes(&mut legs, alt_ft, self.f.intercept_alt_ft);
+        let join_x = Frame(self.f).local(join).0;
+        plan_altitudes(
+            &mut legs,
+            alt_ft,
+            self.join_limit_ft(join_x),
+            self.f.intercept_alt_ft,
+        );
         VectorPlan { legs, current: 0 }
     }
 }
 
 /// Altitudes of the legs before the final, each to be reached at the leg's end: the latest
-/// descent at [`DESCENT_FT_PER_NM`] to `intercept_ft` at the join, rounded down to 500 ft,
-/// never below `intercept_ft`; a leg the profile does not yet descend on keeps the previous
-/// altitude (the start rounded to 100 ft).
-fn plan_altitudes(legs: &mut [VectorLeg], start_ft: f64, intercept_ft: i32) {
+/// descent at [`DESCENT_FT_PER_NM`] to `join_ft` at the join (see
+/// [`Setup::join_limit_ft`]), rounded down to 500 ft, never below `intercept_ft`; a leg the
+/// profile does not yet descend on keeps the previous altitude (the start rounded to
+/// 100 ft). The final leg keeps `intercept_ft`, to be reached by the FAF.
+fn plan_altitudes(legs: &mut [VectorLeg], start_ft: f64, join_ft: f64, intercept_ft: i32) {
     let n = legs
         .iter()
         .position(|l| l.kind == LegKind::Final)
@@ -581,9 +611,11 @@ fn plan_altitudes(legs: &mut [VectorLeg], start_ft: f64, intercept_ft: i32) {
         to_go_nm[k] = to_go_nm[k + 1] + distance_m(legs[k + 1].from, legs[k + 1].to) / M_PER_NM;
     }
     let ia = f64::from(intercept_ft);
+    // The join altitude in 500 ft steps, so that each leg's descent stays on the profile.
+    let join = ((join_ft / LEG_ALT_STEP_FT).floor() * LEG_ALT_STEP_FT).max(ia);
     let mut entry = (start_ft / ALT_STEP_FT).round() * ALT_STEP_FT;
     for k in 0..n {
-        let profile = ia + to_go_nm[k] * DESCENT_FT_PER_NM;
+        let profile = join + to_go_nm[k] * DESCENT_FT_PER_NM;
         let alt = if profile >= entry {
             entry
         } else {
@@ -598,9 +630,9 @@ fn plan_altitudes(legs: &mut [VectorLeg], start_ft: f64, intercept_ft: i32) {
 /// The radar picture `r` against the current leg of `plan`: the next leg due (turn lead
 /// reached), off the leg (0.5 NM, 1 NM on downwind) or off the planned altitude (300 ft)
 /// without converging, or on plan. The planned altitude on a leg before the final is the
-/// latest-descent profile to its `alt_ft` at the leg's end (not above the previous leg's);
-/// on the final it is the leg's `alt_ft`. Heading is not judged here (the radar has only the
-/// track). A plan without legs is always on plan.
+/// latest-descent profile to its `alt_ft` at the leg's end (not above the previous leg's),
+/// on the final the profile to the intercept altitude at the FAF. Heading is not judged
+/// here (the radar has only the track). A plan without legs is always on plan.
 pub fn judge(plan: &VectorPlan, r: &Radar) -> Verdict {
     let Some(i) = plan.index() else {
         return Verdict::OnPlan;
@@ -634,14 +666,12 @@ pub fn judge(plan: &VectorPlan, r: &Radar) -> Verdict {
     }
 
     let alt = f64::from(leg.alt_ft);
-    let upper = if leg.kind != LegKind::Final {
+    let upper = {
         let profile = alt + to_go.max(0.0) / M_PER_NM * DESCENT_FT_PER_NM;
         match i.checked_sub(1).map(|k| &plan.legs[k]) {
             Some(prev) => profile.min(f64::from(prev.alt_ft).max(alt)),
             None => profile,
         }
-    } else {
-        alt
     };
     if r.alt_ft > upper + ALTITUDE_TOLERANCE_FT && r.vs_fpm > -CONVERGING_FPM {
         return Verdict::OffAltitude {
@@ -733,11 +763,12 @@ mod tests {
         destination(p, COURSE + 90.0, right_nm * M_PER_NM)
     }
 
-    /// Every leg before the final descends at no more than 300 ft/NM from `start_ft`.
+    /// Every leg, the final to the FAF too, descends at no more than 300 ft/NM from
+    /// `start_ft`.
     fn assert_gradient(plan: &VectorPlan, start_ft: f64) {
         assert!(plan.descent_in_time(start_ft));
         let mut entry = start_ft;
-        for l in plan.legs.iter().take_while(|l| l.kind != LegKind::Final) {
+        for l in &plan.legs {
             let nm = distance_m(l.from, l.to) / M_PER_NM;
             let grad = (entry - f64::from(l.alt_ft)) / nm;
             assert!(grad <= 300.0 + 1.0, "{:?} {grad} ft/NM", l.kind);
@@ -780,8 +811,15 @@ mod tests {
             "{}",
             int.track_deg
         );
-        assert_eq!(int.alt_ft, 2500);
         let join = out_nm(plan.legs[1].from);
+        // Joined at least 300 ft below the glide path (2500 ft at the FAF, 318 ft/NM), the
+        // intercept altitude by the FAF.
+        let glide = 2500.0 + (join - 4.0) * 318.0;
+        assert!(
+            f64::from(int.alt_ft) <= glide - 300.0,
+            "{} at {join}",
+            int.alt_ft
+        );
         assert!(join >= 4.0 + 2.0, "join {join} NM");
         assert!(plan.joins_in_time(&fin()));
         assert!((out_nm(plan.legs[1].to) - 4.0).abs() < 0.01);
@@ -822,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn altitudes_descend_to_intercept_altitude_before_the_intercept() {
+    fn altitudes_descend_to_below_the_glide_path_at_the_join() {
         let plan = plan_path(at(-3.0, 0.0), COURSE, 6000.0, &fin());
         let alts: Vec<i32> = plan.legs.iter().map(|l| l.alt_ft).collect();
         assert!(alts.windows(2).all(|w| w[0] >= w[1]), "{alts:?}");
@@ -832,7 +870,9 @@ mod tests {
             .iter()
             .position(|l| l.kind == LegKind::Intercept)
             .unwrap();
-        assert_eq!(plan.legs[i].alt_ft, 2500);
+        let join = out_nm(plan.legs[i + 1].from);
+        let glide = 2500.0 + (join - 4.0) * 318.0;
+        assert!(f64::from(plan.legs[i].alt_ft) <= glide - 300.0, "{alts:?}");
         assert_eq!(plan.legs[i + 1].alt_ft, 2500);
         // Leg altitudes in 500 ft steps, the descent not steeper than 300 ft/NM.
         assert!(alts.iter().all(|a| a % 500 == 0), "{alts:?}");
@@ -928,25 +968,35 @@ mod tests {
     fn high_direct_join_is_lengthened() {
         let short = plan_path(at(15.0, -4.0), COURSE, 2500.0, &fin());
         let short_nm = path_nm(&short);
-        // From 5000 ft: 2500 ft to lose in 8 NM is too steep; a shallower intercept.
+        // From 5000 ft the join at 30 degrees is below the glide path (about 3500 ft).
         let p5 = plan_path(at(15.0, -4.0), COURSE, 5000.0, &fin());
         assert_gradient(&p5, 5000.0);
-        assert!(p5.joins_in_time(&fin()));
-        assert!(path_nm(&p5) > short_nm);
-        let angle = p5.legs[0].track_deg - COURSE;
-        assert!((20.0..30.0).contains(&angle), "{angle}");
+        assert!((path_nm(&p5) - short_nm).abs() < 0.01);
+        // From 6000 ft the intercept cannot get below the glide path: lengthened (the
+        // join further out, descending on a longer final).
+        let p6 = plan_path(at(15.0, -4.0), COURSE, 6000.0, &fin());
+        assert_gradient(&p6, 6000.0);
+        assert!(p6.joins_in_time(&fin()));
+        assert!(total_nm(&p6) > total_nm(&short) + 1.0);
         // From 7000 ft even 20 degrees is too short: the pattern, stretched out.
         let p7 = plan_path(at(15.0, -4.0), COURSE, 7000.0, &fin());
         assert_eq!(p7.legs[0].kind, LegKind::Downwind);
         assert_gradient(&p7, 7000.0);
         assert!(p7.joins_in_time(&fin()));
-        assert!(path_nm(&p7) >= (7000.0 - 2500.0) / 300.0);
         // A level aircraft at the start altitude is on plan on the first update.
         for (plan, alt) in [(&p5, 5000.0), (&p7, 7000.0)] {
             let mut r = radar(at(15.0, -4.0), plan.legs[0].track_deg);
             r.alt_ft = alt;
             assert_eq!(judge(plan, &r), Verdict::OnPlan, "{alt}");
         }
+    }
+
+    /// Length of the whole path to the FAF, NM.
+    fn total_nm(plan: &VectorPlan) -> f64 {
+        plan.legs
+            .iter()
+            .map(|l| distance_m(l.from, l.to) / M_PER_NM)
+            .sum()
     }
 
     /// Length of the path to the join, NM.
@@ -1141,6 +1191,62 @@ mod tests {
         let back: RadarTrack = serde_json::from_str(&json).unwrap();
         assert_eq!(back.samples.len(), 1);
     }
+    /// The EPKK ILS 25 final (FAF 6.67 NM, 3000 ft).
+    fn fin_epkk() -> FinalCourse {
+        FinalCourse {
+            faf_m: 6.67 * M_PER_NM,
+            intercept_alt_ft: 3000,
+            ..fin()
+        }
+    }
+
+    #[test]
+    fn star_end_near_the_centreline_joins_directly() {
+        // The end of MAPIK 1G: 18 NM out, 0.9 NM right, 5000 ft, tracking across the course:
+        // a short intercept, joined below the glide path, descending on the final to the FAF.
+        let f = fin_epkk();
+        let plan = plan_path(at(18.1, 0.94), COURSE - 82.0, 5000.0, &f);
+        assert_eq!(kinds(&plan), vec![LegKind::Intercept, LegKind::Final]);
+        assert!(plan.joins_in_time(&f));
+        assert!(plan.descent_in_time(5000.0));
+        assert_eq!(plan.legs[1].alt_ft, 3000);
+        // On the final leg above the intercept altitude but on the profile: on plan.
+        let mut r = radar(at(14.0, 0.0), COURSE);
+        r.alt_ft = 4500.0;
+        assert_eq!(judge(&plan_on_final(&plan), &r), Verdict::OnPlan);
+        r.alt_ft = 5500.0;
+        assert!(matches!(
+            judge(&plan_on_final(&plan), &r),
+            Verdict::OffAltitude { .. }
+        ));
+    }
+
+    fn plan_on_final(plan: &VectorPlan) -> VectorPlan {
+        VectorPlan {
+            current: plan.legs.len() - 1,
+            ..plan.clone()
+        }
+    }
+
+    #[test]
+    fn join_above_the_glide_path_is_not_accepted() {
+        // 9 NM out, 1 NM left: the 30-degree intercept joins at 7.3 NM after 2 NM. The glide
+        // path there (FAF 4 NM at 2500 ft) is about 3540 ft, so the join must be at or below
+        // 3240 ft.
+        let near = |alt: f64| plan_path(at(9.0, -1.0), COURSE + 60.0, alt, &fin());
+        let low = near(3500.0);
+        assert_eq!(kinds(&low), vec![LegKind::Intercept, LegKind::Final]);
+        assert!(
+            f64::from(low.legs[0].alt_ft) <= 3240.0,
+            "{}",
+            low.legs[0].alt_ft
+        );
+        // From 5000 ft it cannot get below the glide path by the join: lengthened.
+        let high = near(5000.0);
+        assert_ne!(kinds(&high), vec![LegKind::Intercept, LegKind::Final]);
+        assert_gradient(&high, 5000.0);
+    }
+
     #[test]
     fn pattern_from_the_final() {
         // On the final 1 NM out (a missed approach): the plan would be the final alone; the

@@ -24,8 +24,7 @@ waypoints = [
   { fix = "KK504", alt = 5000, kt = 110 },
   { fix = "KK503", alt = 5000, kt = 110 },
   { lat = 50.15635, lon = 20.25943, alt = 5000, kt = 100 },
-  { hdg = 255, nm = 3.85, alt = 3000, kt = 100 },
-  { hdg = 220, nm = 0.8, alt = 3000, kt = 90 },
+  { hdg = 220, nm = 1.8, alt = 4500, kt = 100 },
   { fix = "KK371", alt = 3000, kt = 90 },
 ]
 land = "25"
@@ -51,14 +50,9 @@ freq = "approach"
 text = "MAPIK one Golf arrival, maintain five thousand feet, QNH one zero one three, expect ILS approach runway two five, Sierra Bravo Charlie"
 
 [[say]]
-at = "heard:heading two five five"
-freq = "approach"
-text = "Right heading two five five, descend three thousand feet, Sierra Bravo Charlie"
-
-[[say]]
 at = "heard:cleared ils"
 freq = "approach"
-text = "Left heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie"
+text = "Right heading two two zero, descend three thousand feet, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie"
 
 [[say]]
 at = "phase:Final"
