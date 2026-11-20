@@ -10,6 +10,7 @@ use crate::compliance::Permissions;
 use crate::phase::FlightPhase;
 use crate::readback::{Strictness, required_readback};
 use crate::taxi::TaxiTarget;
+use crate::vectoring::VectorPlan;
 
 /// Controller position handled by the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -80,8 +81,16 @@ pub struct FlightPlan {
     pub heading: Option<u16>,
     /// The approach has been cleared ("cleared ILS approach").
     pub approach_cleared: bool,
-    /// Vectored around a pattern (downwind, base) onto the final: the current leg.
-    pub pattern: Option<PatternLeg>,
+    /// The pattern leg (downwind, base) the arrival is vectored on, by the earlier steering;
+    /// removed together with it. Old snapshots called it `pattern`.
+    #[serde(default, alias = "pattern")]
+    pub legacy_pattern: Option<PatternLeg>,
+    /// The planned path of the radar vectoring (not yet used by the steering).
+    #[serde(default)]
+    pub vector_plan: Option<VectorPlan>,
+    /// When the last unsolicited vectoring correction was transmitted, seconds.
+    #[serde(default)]
+    pub last_correction_s: Option<f64>,
     /// "Check established" has been said for the current approach clearance.
     pub established_check: bool,
 }

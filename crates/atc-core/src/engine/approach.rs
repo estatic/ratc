@@ -418,7 +418,9 @@ impl AtcEngine {
             direct,
             heading,
             approach_cleared: false,
-            pattern,
+            legacy_pattern: pattern,
+            vector_plan: None,
+            last_correction_s: None,
             established_check: false,
         };
         let strip = &mut self.strips[i];
@@ -711,7 +713,7 @@ impl AtcEngine {
             &runway,
             thr,
             course,
-            plan.pattern,
+            plan.legacy_pattern,
             plan.heading.is_none(),
             intercept_ft,
         );
@@ -719,7 +721,7 @@ impl AtcEngine {
         let near_lead = leg.is_none()
             && distance_m(s.pos, lead_point(s.pos, thr, course, INTERCEPT_NM)) <= NEAR_LEAD_M;
         let changed = force
-            || leg != plan.pattern
+            || leg != plan.legacy_pattern
             || plan.heading.is_none_or(|h| {
                 heading_gap(h, v.heading_deg) >= REVECTOR_DEG && (!near_lead || at_intercept)
             });
@@ -772,7 +774,7 @@ impl AtcEngine {
             }
             p.cleared_ft = cleared_ft;
             p.approach_cleared = intercept;
-            p.pattern = leg;
+            p.legacy_pattern = leg;
         }
         items
     }
@@ -944,7 +946,7 @@ impl AtcEngine {
             p.heading = None;
             p.direct = None;
             p.star = None;
-            p.pattern = None;
+            p.legacy_pattern = None;
             p.vectors = true;
             p.cleared_ft = missed_ft;
         }
@@ -1052,7 +1054,9 @@ impl AtcEngine {
             direct: None,
             heading: None,
             approach_cleared: false,
-            pattern: None,
+            legacy_pattern: None,
+            vector_plan: None,
+            last_correction_s: None,
             established_check: false,
         });
         strip.identified = true;

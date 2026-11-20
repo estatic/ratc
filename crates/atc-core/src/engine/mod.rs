@@ -88,6 +88,7 @@ use crate::squawk::{DEFAULT_POOL, discrete_codes};
 use crate::state::{AircraftState, SimTime};
 use crate::strip::{FlightPlan, PilotProfile, Role, Strip, steers};
 use crate::taxi::TaxiGraph;
+use crate::vectoring::{Radar, RadarTrack};
 use delivery::RunwayChange;
 
 /// A parked aircraft within this distance of a stand started from it.
@@ -175,6 +176,9 @@ struct Surveillance {
     monitor: ComplianceMonitor,
     last: AircraftState,
     circuit_alt_ft: i32,
+    /// Radar track and drift from the recent samples (an older snapshot: empty).
+    #[serde(default)]
+    radar: RadarTrack,
 }
 
 #[derive(Clone, Debug)]
@@ -619,6 +623,21 @@ impl AtcEngine {
         })
     }
 
+    /// What the radar shows of aircraft `i`: the track from its recent positions (the heading
+    /// until there are enough of them), ground speed, altitude and vertical speed; `None`
+    /// when the aircraft is not tracked.
+    pub fn radar(&self, i: usize) -> Option<Radar> {
+        let sv = self.tracks.get(&self.strips.get(i)?.callsign)?;
+        let s = &sv.last;
+        Some(Radar {
+            pos: s.pos,
+            track_deg: sv.radar.track_deg().unwrap_or(s.heading_deg),
+            gs_kt: s.gs_kt,
+            alt_ft: s.alt_ft_msl,
+            vs_fpm: s.vs_fpm,
+        })
+    }
+
     pub fn strip(&self, cs: &Callsign) -> Option<&Strip> {
         self.strip_index(cs).map(|i| &self.strips[i])
     }
@@ -760,6 +779,7 @@ impl AtcEngine {
         }
         let deviations = sv.monitor.update(&s, phase, &strip.permissions);
         let (pos, gs_kt, t, vs_fpm) = (s.pos, s.gs_kt, s.t.0, s.vs_fpm);
+        sv.radar.push(t, pos, s.heading_deg);
         sv.last = s;
         self.note_missed_approach(i, prev, phase, pos, vs_fpm);
 
@@ -1654,7 +1674,7 @@ impl AtcEngine {
             } => {
                 items.extend(change);
                 let strip = &mut self.strips[i];
-                strip.plan = Some(plan);
+                strip.plan = Some(*plan);
                 strip.expect_readback(&items, self.cfg.strictness, self.now);
             }
             RunwayChange::NoSid { cleared } => {
@@ -1745,6 +1765,7 @@ impl AtcEngine {
             .with_magnetic_variation(self.procs.magnetic_variation_deg),
             last: s.clone(),
             circuit_alt_ft: circuit.altitude_ft_msl,
+            radar: RadarTrack::default(),
         })
     }
 
@@ -1993,7 +2014,7 @@ impl AtcEngine {
         let mut runway = self.departure_runway(i);
         let amended = match self.runway_change(i, &runway) {
             RunwayChange::Same => None,
-            RunwayChange::Amended { items, plan } => Some((items, plan)),
+            RunwayChange::Amended { items, plan } => Some((items, *plan)),
             RunwayChange::NoSid { cleared } => {
                 tracing::info!(
                     "{}: no SID from runway {runway}, keeps runway {cleared}",

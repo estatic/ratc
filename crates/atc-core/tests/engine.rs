@@ -3833,6 +3833,35 @@ mod delivery {
         assert_eq!(plan(&fresh).dep_runway, None);
     }
 
+    /// Plan 14b: a snapshot with the old `pattern` field loads, keeps its leg, has no vector
+    /// plan, and the next telemetry sample does not panic.
+    #[test]
+    fn old_snapshot_with_pattern_loads() {
+        let mut e = engine();
+        ifr_cleared_on_27(&mut e);
+        let mut json = serde_json::to_value(e.snapshot()).unwrap();
+        let plan_json = json["strips"][0]["plan"].as_object_mut().unwrap();
+        for k in ["legacy_pattern", "vector_plan", "last_correction_s"] {
+            assert!(plan_json.remove(k).is_some(), "{k}");
+        }
+        plan_json.insert("pattern".into(), serde_json::json!("Base"));
+        for t in json["tracks"].as_array_mut().unwrap() {
+            assert!(t[1].as_object_mut().unwrap().remove("radar").is_some());
+        }
+        let mut fresh = engine();
+        fresh
+            .restore(serde_json::from_value(json).unwrap())
+            .unwrap();
+        let p = plan(&fresh);
+        assert!(p.vector_plan.is_none());
+        assert_eq!(p.legacy_pattern, Some(atc_core::strip::PatternLeg::Base));
+        // The next sample works, and the radar falls back to the heading.
+        parked(&mut fresh, None, None);
+        let radar = fresh.radar(0).expect("tracked");
+        assert_eq!(radar.track_deg, 0.0);
+        assert!(fresh.radar(5).is_none());
+    }
+
     /// A snapshot written before `requested_runway` existed restores without it.
     #[test]
     fn old_snapshot_without_requested_runway_restores() {
@@ -6206,7 +6235,9 @@ mod approach_arrival {
                 direct: None,
                 heading: None,
                 approach_cleared: false,
-                pattern: None,
+                legacy_pattern: None,
+                vector_plan: None,
+                last_correction_s: None,
                 established_check: false,
             }),
             squawk: Some(4601),
@@ -6247,7 +6278,9 @@ mod approach_arrival {
             direct: None,
             heading: None,
             approach_cleared: false,
-            pattern: None,
+            legacy_pattern: None,
+            vector_plan: None,
+            last_correction_s: None,
             established_check: false,
         });
         e.import_flight(h);
@@ -8673,7 +8706,9 @@ mod handover {
             direct: None,
             heading: None,
             approach_cleared: false,
-            pattern: None,
+            legacy_pattern: None,
+            vector_plan: None,
+            last_correction_s: None,
             established_check: false,
         }
     }
