@@ -877,3 +877,39 @@ fn vectoring_correction_items() {
         "negative, you are half a mile north of the localizer, turn left heading two six zero to re-intercept the localizer"
     );
 }
+
+/// Plan 14b: the planner's "check heading" correction comes with the turn, said once.
+#[test]
+fn check_heading_with_the_turn() {
+    let m = msg(
+        None,
+        "Kraków Approach",
+        vec![
+            AtcItem::CheckHeading(280),
+            AtcItem::Heading {
+                deg: 280,
+                turn: Some(Turn::Left),
+            },
+        ],
+    );
+    assert_eq!(
+        render(&m, false),
+        "check heading, turn left heading two eight zero"
+    );
+    // Another heading after it is said as it is.
+    let m = msg(
+        None,
+        "Kraków Approach",
+        vec![
+            AtcItem::CheckHeading(280),
+            AtcItem::Heading {
+                deg: 270,
+                turn: Some(Turn::Left),
+            },
+        ],
+    );
+    assert_eq!(
+        render(&m, false),
+        "check heading, fly heading two eight zero, turn left heading two seven zero"
+    );
+}

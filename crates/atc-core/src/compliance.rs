@@ -27,11 +27,11 @@ const OFF_TRACK_M: f64 = 1852.0;
 /// ... once it has lasted this long.
 const OFF_TRACK_PERSIST_S: f64 = 20.0;
 /// Heading error tolerated on an assigned heading ...
-const HEADING_TOL_DEG: f64 = 20.0;
+pub(crate) const HEADING_TOL_DEG: f64 = 20.0;
 /// ... before it has lasted this long.
 const HEADING_PERSIST_S: f64 = 30.0;
 /// The heading gap closing at least this fast (degrees per second): turning onto it.
-const TURNING_DEG_S: f64 = 1.0;
+pub(crate) const TURNING_DEG_S: f64 = 1.0;
 /// Time the pilot is given to start following an instruction once its readback has been
 /// accepted, before the heading and level checks start their persistence time.
 pub const REACTION_S: f64 = 10.0;

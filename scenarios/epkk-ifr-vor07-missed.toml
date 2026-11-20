@@ -13,11 +13,13 @@ track = "path"
 
 [path]
 start = { lat = 50.43794, lon = 19.45792, alt = 5000, hdg = 150 }
-# Open loop: the legs fly the headings Approach gives (magnetic, `hdg`).
+# Open loop: the legs fly the headings Approach gives (magnetic, `hdg`). Heading 175 (the
+# planned base rounded to 5 degrees) takes the aircraft 0.5 NM off the base: corrected to 170.
 waypoints = [
-  { hdg = 175, nm = 15.5, alt = 5000, kt = 100 },
-  { hdg = 175, nm = 5, alt = 3000, kt = 100 },
-  { hdg = 175, nm = 1.7, alt = 3000, kt = 100 },
+  { hdg = 175, nm = 13.3, alt = 5000, kt = 100 },
+  { hdg = 170, nm = 2.2, alt = 5000, kt = 100 },
+  { hdg = 170, nm = 5, alt = 3000, kt = 100 },
+  { hdg = 170, nm = 1.7, alt = 3000, kt = 100 },
   { hdg = 100, nm = 2.2, alt = 3000, kt = 90 },
   { fix = "FD07", alt = 3000, kt = 90 },
   { lat = 50.06831, lon = 19.71731, alt = 1400, kt = 80 },
@@ -40,6 +42,11 @@ text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, Cessna one seven two, 
 at = "heard:identified"
 freq = "approach"
 text = "Right heading one seven five, maintain five thousand feet, QNH one zero zero niner, expect VOR DME approach runway zero seven, Sierra Bravo Charlie"
+
+[[say]]
+at = "heard:heading one seven zero"
+freq = "approach"
+text = "Left heading one seven zero, Sierra Bravo Charlie"
 
 [[say]]
 at = "heard:descend"
@@ -72,7 +79,7 @@ freq = "tower"
 text = "Runway zero seven, cleared to land, Sierra Bravo Charlie"
 
 [[say]]
-t = 1300.0
+t = 1268.0
 freq = "tower"
 text = "Sierra Bravo Charlie, going around"
 
@@ -82,7 +89,7 @@ freq = "tower"
 text = "Follow published missed approach, Approach one two one decimal zero seven five, Sierra Bravo Charlie"
 
 [[say]]
-t = 1313.0
+t = 1281.0
 freq = "approach"
 text = "Krakow Approach, Sierra Papa Alpha Bravo Charlie, missed approach runway zero seven, climbing four thousand feet"
 
@@ -107,7 +114,7 @@ freq = "approach"
 text = "Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
 
 [[say]]
-t = 2030.0
+t = 1998.0
 freq = "approach"
 text = "Sierra Bravo Charlie, established VOR DME approach runway zero seven"
 
@@ -117,7 +124,7 @@ freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
 [[say]]
-t = 2039.0
+t = 2007.0
 freq = "tower"
 text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven"
 

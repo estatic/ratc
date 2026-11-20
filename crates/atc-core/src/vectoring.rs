@@ -300,6 +300,16 @@ impl RadarTrack {
     pub fn drift_deg(&self) -> f64 {
         self.drift_deg
     }
+
+    /// Rate of turn between the last two samples, degrees per second, positive to the right;
+    /// 0 with fewer than two samples.
+    pub fn turn_rate_dps(&self) -> f64 {
+        let mut last = self.samples.iter().rev();
+        match (last.next(), last.next()) {
+            (Some(b), Some(a)) if b.0 > a.0 => signed(b.2 - a.2) / (b.0 - a.0),
+            _ => 0.0,
+        }
+    }
 }
 
 /// The heading (true) that makes good `track_deg` with `drift_deg` of drift.
@@ -739,7 +749,7 @@ fn signed(deg: f64) -> f64 {
 }
 
 /// Smallest difference of two bearings, degrees.
-fn gap_deg(a: f64, b: f64) -> f64 {
+pub fn gap_deg(a: f64, b: f64) -> f64 {
     signed(a - b).abs()
 }
 

@@ -61,8 +61,19 @@
 //! allows (the plan itself only needs the final joined below the glide path and the
 //! intercept altitude by the FAF, [`vectoring::descent_due`]); the intercept heading comes
 //! with the distance to go,
-//! "cleared `<approach>`" and "report established". An aircraft off the plan is not
-//! corrected yet: it gets the plan's next instructions. After a missed approach the plan is
+//! "cleared `<approach>`" and "report established". Until the approach clearance the
+//! aircraft is watched against the plan ([`AtcEngine::correction_due`]): not while a heading
+//! or level readback is pending nor for 10 s after it, at most once per 20 s, only while it
+//! flies its assigned heading and is not turning onto it. Off the leg (0.5 NM, 1 NM on
+//! downwind) and not converging: the path is planned anew from where it is and the new
+//! heading given with the reason, "you are <tenths> <side> of the localizer" (the final
+//! approach course; within 5 NM of it, else the heading alone); above the planned altitude
+//! and not descending: the descent (the heading only when it changes by 10 degrees or more).
+//! The monitor's heading and level checks are the planner's on planned vectors
+//! ([`AtcEngine::deviation_replies`]): an aircraft not flying the assigned heading gets
+//! "check heading, turn <left/right> heading <h>" on the path planned anew; a level bust
+//! keeps "check level" / "check altimeter setting", both counted as corrections (one per
+//! 20 s). After a missed approach the plan is
 //! made anew from the published missed-approach altitude, a pattern when the aircraft is
 //! still on the final ([`vectoring::plan_pattern`]).
 //! Cleared but not established by the FAF (4 NM without one): "check established" once,
@@ -83,13 +94,13 @@ use atc_geo::{LatLon, M_PER_NM, RunwayFrame, bearing_deg, distance_m};
 use atc_navdata::procedures::CircuitSide;
 use atc_navdata::procedures::{AdjacentKind, AdjacentUnit};
 use atc_phraseology::{
-    ApproachKind, AtcItem, AtcMessage, FlightRules, HeardItems, Lang, PilotIntent, PilotMessage,
-    Token, UnableReason, normalize, render,
+    ApproachKind, AtcItem, AtcMessage, Compass8, CourseName, FlightRules, HeardItems, Lang,
+    PilotIntent, PilotMessage, Token, UnableReason, normalize, render,
 };
 
 use super::delivery::{cleared_to, mentions_ifr};
 use super::{AtcEngine, AtcOutput};
-use crate::compliance::IfrClearance;
+use crate::compliance::{HEADING_TOL_DEG, IfrClearance, TURNING_DEG_S};
 use crate::ifr::{
     Path, Vector, choose_star, constraint_floor_ft, distance_to_go_nm, iaf, joined_path,
     navdata_approach_kind, passed_fix, procedure_path, spoken_designator, vector_on,
@@ -121,6 +132,46 @@ struct HandOff {
     airport: Option<String>,
     items: Vec<AtcItem>,
 }
+/// Why an arrival on radar vectors is corrected ([`AtcEngine::vector_correction`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Correction {
+    /// Off the planned leg and not converging on it: "you are <distance> <side> of the
+    /// localizer" (the final approach course), then the heading.
+    Track,
+    /// Not flying the assigned heading (the monitor's check): "check heading", then the
+    /// heading.
+    Heading,
+    /// Above the planned altitude and not descending: the descent (the heading only when it
+    /// changes).
+    Altitude,
+}
+
+/// The reason of a track correction names the aircraft's place from the final approach
+/// course only within this of it, NM (the pattern legs, 4 NM abeam, and nearer); farther
+/// out (a long base or join) the distance from the final says nothing: the heading alone.
+const REASON_MAX_NM: f64 = 5.0;
+
+/// "You are <tenths> <side> of the <course>": the aircraft at `pos` from the final approach
+/// course of `f` (the localizer for an ILS); `None` on the course (under 0.05 NM off) or
+/// farther than [`REASON_MAX_NM`] from it.
+fn off_course(f: &FinalCourse, kind: ApproachKind, pos: LatLon) -> Option<AtcItem> {
+    let (_, right) = RunwayFrame {
+        origin: f.thr,
+        course_deg: f.course_deg,
+    }
+    .to_local(pos);
+    let tenths_nm = (right.abs() / M_PER_NM * 10.0).round() as u16;
+    let near = right.abs() <= REASON_MAX_NM * M_PER_NM;
+    (tenths_nm > 0 && near).then(|| AtcItem::OffCourse {
+        tenths_nm,
+        side: Compass8::from_bearing(f.course_deg + 90.0f64.copysign(right)),
+        course: match kind {
+            ApproachKind::Ils => CourseName::Localizer,
+            ApproachKind::VorDme | ApproachKind::Rnav => CourseName::FinalApproachCourse,
+        },
+    })
+}
+
 /// Climbing: a vertical speed above this, or still this far below the cleared level.
 const CLIMBING_FPM: f64 = 100.0;
 const BELOW_LEVEL_FT: f64 = 200.0;
@@ -701,8 +752,24 @@ impl AtcEngine {
     /// leg's one turn lead before its turn point ([`vectoring::judge`]), the descent when
     /// the plan needs it ([`vectoring::descent_due`]), and on the intercept leg (or the
     /// final) the approach clearance. `force`: a heading and the level now (after a missed
-    /// approach).
+    /// approach). With nothing due, an aircraft off the plan may get a correction
+    /// ([`AtcEngine::correction_due`]).
     fn vector_items(&mut self, i: usize, force: bool) -> Vec<AtcItem> {
+        self.vectors(i, force, None)
+    }
+
+    /// A correction for arrival `i` off its planned path, for `why`: the path planned anew
+    /// from where the aircraft is, the reason ([`Correction`]), the new heading (for a level
+    /// correction only when it differs by [`vectoring::MIN_HEADING_CHANGE_DEG`] or more from
+    /// the one given), the level when due and the approach clearance when the new path
+    /// starts on the intercept; applied to the plan, with the time of the correction.
+    /// Nothing (the plan still replaced) when there is nothing to say.
+    pub(super) fn vector_correction(&mut self, i: usize, why: Correction) -> Vec<AtcItem> {
+        self.vectors(i, false, Some(why))
+    }
+
+    /// [`AtcEngine::vector_items`], or with `correction` [`AtcEngine::vector_correction`].
+    fn vectors(&mut self, i: usize, force: bool, correction: Option<Correction>) -> Vec<AtcItem> {
         let Some(plan) = self.arrival(i).cloned() else {
             return Vec::new();
         };
@@ -720,7 +787,7 @@ impl AtcEngine {
         };
         let intercept_ft = f.intercept_alt_ft;
         let (mut vp, fresh) = match plan.vector_plan.clone() {
-            Some(vp) if !force => (vp, false),
+            Some(vp) if !force && correction.is_none() => (vp, false),
             _ => (self.new_vector_plan(&r, plan.cleared_ft, &f), true),
         };
         // After a missed approach the aircraft is still near the final: never cleared again
@@ -749,8 +816,32 @@ impl AtcEngine {
         }
         let descend_to = vectoring::descent_due(&vp, &r)
             .filter(|&ft| !self.strips[i].missed_climb && ft < plan.cleared_ft);
-        let say_heading = fresh || next_leg || intercept;
-        if !(say_heading || descend_to.is_some()) {
+        let v = self.leg_vector(i, &leg, &s);
+        let mut say_heading = fresh || next_leg || intercept;
+        let mut items = Vec::new();
+        // Above the cleared level and not descending to it: the descent again.
+        let mut descend_again = false;
+        if let Some(why) = correction {
+            let changed = plan.heading.is_none_or(|h| {
+                vectoring::gap_deg(f64::from(h), f64::from(v.heading_deg))
+                    >= vectoring::MIN_HEADING_CHANGE_DEG
+            });
+            say_heading = intercept || changed || why != Correction::Altitude;
+            match why {
+                Correction::Track => items.extend(off_course(&f, kind, r.pos)),
+                Correction::Heading => items.push(AtcItem::CheckHeading(v.heading_deg)),
+                Correction::Altitude => {
+                    descend_again = descend_to.is_none()
+                        && s.alt_ft_msl - f64::from(plan.cleared_ft) > LEVEL_TOLERANCE_FT;
+                }
+            }
+        }
+        if !(say_heading || descend_to.is_some() || descend_again) {
+            if correction.is_none()
+                && let Some(why) = self.correction_due(i, &plan, &vp, &r, &s)
+            {
+                return self.vectors(i, false, Some(why));
+            }
             if plan.vector_plan.as_ref() != Some(&vp)
                 && let Some(p) = self.strips[i].plan.as_mut()
             {
@@ -758,8 +849,6 @@ impl AtcEngine {
             }
             return Vec::new();
         }
-        let v = self.leg_vector(i, &leg, &s);
-        let mut items = Vec::new();
         if say_heading {
             items.push(AtcItem::Heading {
                 deg: v.heading_deg,
@@ -770,7 +859,7 @@ impl AtcEngine {
         if intercept && cleared_ft > intercept_ft {
             cleared_ft = intercept_ft;
         }
-        if cleared_ft != plan.cleared_ft || force {
+        if cleared_ft != plan.cleared_ft || force || descend_again {
             // From the aircraft's present altitude: after a missed approach it may be below.
             let level = self.level(cleared_ft);
             let now = s.alt_ft_msl - f64::from(cleared_ft);
@@ -790,6 +879,7 @@ impl AtcEngine {
             });
             items.push(AtcItem::ReportEstablished);
         }
+        let now = self.now;
         if let Some(p) = self.strips[i].plan.as_mut() {
             if say_heading {
                 p.heading = Some(v.heading_deg);
@@ -797,8 +887,58 @@ impl AtcEngine {
             p.cleared_ft = cleared_ft;
             p.approach_cleared = intercept;
             p.vector_plan = Some(vp);
+            if correction.is_some() {
+                p.last_correction_s = Some(now);
+            }
         }
         items
+    }
+
+    /// Whether arrival `i` (plan `plan`, radar `r`, state `s`) is off its planned path `vp`
+    /// and gets a correction now, and why: off the leg ([`Verdict::OffTrack`]) or above the
+    /// planned altitude ([`Verdict::OffAltitude`]; below it is a level bust under the
+    /// cleared level, called by the monitor's check, [`AtcEngine::deviation_replies`]), only
+    /// when the aircraft is flying its assigned heading (within the monitor's tolerance and
+    /// not turning onto it: one that does not fly it gets the "check heading" form from the
+    /// monitor's check), not while the heading and level checks are held after a readback
+    /// (14c), and at most once per [`vectoring::CORRECTION_INTERVAL_S`].
+    fn correction_due(
+        &self,
+        i: usize,
+        plan: &FlightPlan,
+        vp: &VectorPlan,
+        r: &Radar,
+        s: &AircraftState,
+    ) -> Option<Correction> {
+        let strip = &self.strips[i];
+        if super::holds_clearance_checks(strip, self.now) || !self.correction_allowed(plan) {
+            return None;
+        }
+        let assigned = f64::from(plan.heading?);
+        let actual = s.heading_deg - self.procs.magnetic_variation_deg;
+        if vectoring::gap_deg(actual, assigned) > HEADING_TOL_DEG {
+            return None;
+        }
+        let towards = (assigned - actual + 540.0).rem_euclid(360.0) - 180.0;
+        let rate = self
+            .tracks
+            .get(&strip.callsign)
+            .map_or(0.0, |t| t.radar.turn_rate_dps());
+        if rate * towards.signum() >= TURNING_DEG_S {
+            return None;
+        }
+        match vectoring::judge(vp, r, Some(plan.cleared_ft)) {
+            Verdict::OffTrack { .. } => Some(Correction::Track),
+            Verdict::OffAltitude { ft } if ft > 0.0 => Some(Correction::Altitude),
+            _ => None,
+        }
+    }
+
+    /// At least [`vectoring::CORRECTION_INTERVAL_S`] since the last correction to `plan`
+    /// (a sim clock gone back allows one).
+    pub(super) fn correction_allowed(&self, plan: &FlightPlan) -> bool {
+        plan.last_correction_s
+            .is_none_or(|t| !(0.0..vectoring::CORRECTION_INTERVAL_S).contains(&(self.now - t)))
     }
 
     /// The final approach course radar vectors lead to on `runway` for approach `kind`.

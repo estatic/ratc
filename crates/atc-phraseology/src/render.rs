@@ -407,10 +407,15 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
                 Some(Turn::Right) => "turn right ",
                 None => "fly ",
             };
-            out.push(format!(
-                "{turn}heading {}",
-                digits_words(u32::from(*deg), 3)
-            ));
+            let heading = format!("heading {}", digits_words(u32::from(*deg), 3));
+            // After "check heading, fly heading <h>" the turn to the same heading replaces
+            // the "fly heading": "check heading, turn left heading <h>".
+            if let Some(last) = out.last_mut()
+                && *last == format!("check heading, fly {heading}")
+            {
+                *last = "check heading".into();
+            }
+            out.push(format!("{turn}{heading}"));
         }
         AtcItem::DirectTo { fix } => out.push(format!("proceed direct {fix}")),
         AtcItem::ExpectApproach { kind, runway } => out.push(format!(
