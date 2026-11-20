@@ -119,7 +119,7 @@ track, heading, ground speed, altitude.
    judgement: compliance's heading and level deviation calls are suppressed for an aircraft
    with an active plan. An aircraft that has not turned at all after the reaction time gets
    the planner's correction in the "check heading" form ("check heading, turn left heading
-   two eight zero"); a wrong heading or a drift gets the plain correction with the reason.
+   two eight zero"); a wrong heading or a drift gets the plain correction with the reason. A level bust on a planned flight is corrected by the planner with the existing "check level" / "check altimeter setting" wording (counted as its correction; the plan is rebuilt after). The reason ("you are … of the localizer") is given only on legs nearly parallel to the course (downwind, intercept, final), where the offset is the error; on a base or direct leg the heading is said alone.
 3. **Scope of the final-course watch:** every arrival Approach vectored onto the final, any
    approach type. The wording names the course by type: "localizer" for ILS, "final approach
    course" otherwise. Approaches cleared at the IAF (full procedure) keep today's off-track
