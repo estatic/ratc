@@ -631,9 +631,11 @@ fn plan_altitudes(legs: &mut [VectorLeg], start_ft: f64, join_ft: f64, intercept
 /// reached), off the leg (0.5 NM, 1 NM on downwind) or off the planned altitude (300 ft)
 /// without converging, or on plan. The planned altitude on a leg before the final is the
 /// latest-descent profile to its `alt_ft` at the leg's end (not above the previous leg's),
-/// on the final the profile to the intercept altitude at the FAF. Heading is not judged
-/// here (the radar has only the track). A plan without legs is always on plan.
-pub fn judge(plan: &VectorPlan, r: &Radar) -> Verdict {
+/// on the final the profile to the intercept altitude at the FAF. Below it the aircraft is
+/// off only under the lower of the leg's altitude and `cleared_ft`, the level it is cleared
+/// to (`None`: the leg's altitude). Heading is not judged here (the radar has only the
+/// track). A plan without legs is always on plan.
+pub fn judge(plan: &VectorPlan, r: &Radar, cleared_ft: Option<i32>) -> Verdict {
     let Some(i) = plan.index() else {
         return Verdict::OnPlan;
     };
@@ -678,8 +680,13 @@ pub fn judge(plan: &VectorPlan, r: &Radar) -> Verdict {
             ft: r.alt_ft - upper,
         };
     }
-    if r.alt_ft < alt - ALTITUDE_TOLERANCE_FT && r.vs_fpm < CONVERGING_FPM {
-        return Verdict::OffAltitude { ft: r.alt_ft - alt };
+    // Below the plan is no deviation down to the level the aircraft is cleared to (one
+    // descent clearance to the intercept altitude covers the legs planned higher).
+    let lower = cleared_ft.map_or(alt, |c| alt.min(f64::from(c)));
+    if r.alt_ft < lower - ALTITUDE_TOLERANCE_FT && r.vs_fpm < CONVERGING_FPM {
+        return Verdict::OffAltitude {
+            ft: r.alt_ft - lower,
+        };
     }
     Verdict::OnPlan
 }
@@ -987,7 +994,7 @@ mod tests {
         for (plan, alt) in [(&p5, 5000.0), (&p7, 7000.0)] {
             let mut r = radar(at(15.0, -4.0), plan.legs[0].track_deg);
             r.alt_ft = alt;
-            assert_eq!(judge(plan, &r), Verdict::OnPlan, "{alt}");
+            assert_eq!(judge(plan, &r, None), Verdict::OnPlan, "{alt}");
         }
     }
 
@@ -1025,7 +1032,10 @@ mod tests {
         assert_eq!(kinds(&plan), vec![LegKind::Final]);
         assert!(plan.joins_in_time(&fin()));
         assert!((out_nm(plan.legs[0].to) - 4.0).abs() < 0.01);
-        assert_eq!(judge(&plan, &radar(at(9.0, 0.2), COURSE)), Verdict::OnPlan);
+        assert_eq!(
+            judge(&plan, &radar(at(9.0, 0.2), COURSE), None),
+            Verdict::OnPlan
+        );
         // Established inside the FAF: still joined.
         let plan = plan_path(at(3.0, 0.1), COURSE, 1500.0, &fin());
         assert_eq!(kinds(&plan), vec![LegKind::Final]);
@@ -1037,14 +1047,14 @@ mod tests {
         let empty: VectorPlan = serde_json::from_str(r#"{"legs":[],"current":3}"#).unwrap();
         assert_eq!(empty.index(), None);
         assert_eq!(empty.leg().kind, LegKind::Final);
-        assert_eq!(judge(&empty, &radar(THR, 0.0)), Verdict::OnPlan);
+        assert_eq!(judge(&empty, &radar(THR, 0.0), None), Verdict::OnPlan);
         assert!(!empty.joins_in_time(&fin()));
         assert!(empty.descent_in_time(5000.0));
         let mut plan = plan_path(at(-3.0, 0.0), COURSE, 4000.0, &fin());
         plan.current = 9;
         assert_eq!(plan.index(), Some(3));
         assert_eq!(plan.leg().kind, LegKind::Final);
-        let _ = judge(&plan, &radar(at(5.0, 0.0), COURSE));
+        let _ = judge(&plan, &radar(at(5.0, 0.0), COURSE), None);
     }
 
     #[test]
@@ -1088,18 +1098,21 @@ mod tests {
         // Halfway along the intercept leg, 0.6 NM right of it.
         let mid = destination(leg.from, leg.track_deg, distance_m(leg.from, leg.to) / 2.0);
         let off = destination(mid, leg.track_deg + 90.0, 0.6 * M_PER_NM);
-        assert_eq!(judge(&plan, &radar(mid, leg.track_deg)), Verdict::OnPlan);
         assert_eq!(
-            judge(&plan, &radar(off, leg.track_deg - 20.0)),
+            judge(&plan, &radar(mid, leg.track_deg), None),
             Verdict::OnPlan
         );
-        match judge(&plan, &radar(off, leg.track_deg)) {
+        assert_eq!(
+            judge(&plan, &radar(off, leg.track_deg - 20.0), None),
+            Verdict::OnPlan
+        );
+        match judge(&plan, &radar(off, leg.track_deg), None) {
             Verdict::OffTrack { right_nm } => assert!((right_nm - 0.6).abs() < 0.05),
             v => panic!("{v:?}"),
         }
         // Diverging further right.
         assert!(matches!(
-            judge(&plan, &radar(off, leg.track_deg + 20.0)),
+            judge(&plan, &radar(off, leg.track_deg + 20.0), None),
             Verdict::OffTrack { .. }
         ));
     }
@@ -1111,8 +1124,14 @@ mod tests {
         let lead = turn_lead_m(160.0, 30.0);
         let before = destination(leg.to, leg.track_deg + 180.0, lead + 0.3 * M_PER_NM);
         let inside = destination(leg.to, leg.track_deg + 180.0, lead - 0.1 * M_PER_NM);
-        assert_eq!(judge(&plan, &radar(before, leg.track_deg)), Verdict::OnPlan);
-        assert_eq!(judge(&plan, &radar(inside, leg.track_deg)), Verdict::LegDue);
+        assert_eq!(
+            judge(&plan, &radar(before, leg.track_deg), None),
+            Verdict::OnPlan
+        );
+        assert_eq!(
+            judge(&plan, &radar(inside, leg.track_deg), None),
+            Verdict::LegDue
+        );
     }
 
     #[test]
@@ -1123,26 +1142,26 @@ mod tests {
         let mut r = radar(mid, leg.track_deg);
         // The intercept altitude is due at the join, 4 NM on: up to 3700 ft is on profile.
         r.alt_ft = 4100.0;
-        match judge(&plan, &r) {
+        match judge(&plan, &r, None) {
             Verdict::OffAltitude { ft } => assert!((ft - 400.0).abs() < 5.0, "{ft}"),
             v => panic!("{v:?}"),
         }
         r.alt_ft = 3900.0;
-        assert_eq!(judge(&plan, &r), Verdict::OnPlan);
+        assert_eq!(judge(&plan, &r, None), Verdict::OnPlan);
         r.alt_ft = 4100.0;
         // Descending towards it: on plan.
         r.vs_fpm = -800.0;
-        assert_eq!(judge(&plan, &r), Verdict::OnPlan);
+        assert_eq!(judge(&plan, &r, None), Verdict::OnPlan);
         // Low and level: off; climbing back: on plan.
         r.alt_ft = 2000.0;
         r.vs_fpm = 0.0;
-        assert!(matches!(judge(&plan, &r), Verdict::OffAltitude { ft } if ft < 0.0));
+        assert!(matches!(judge(&plan, &r, None), Verdict::OffAltitude { ft } if ft < 0.0));
         r.vs_fpm = 500.0;
-        assert_eq!(judge(&plan, &r), Verdict::OnPlan);
+        assert_eq!(judge(&plan, &r, None), Verdict::OnPlan);
         // Within 300 ft: on plan.
         r.alt_ft = 2700.0;
         r.vs_fpm = 0.0;
-        assert_eq!(judge(&plan, &r), Verdict::OnPlan);
+        assert_eq!(judge(&plan, &r, None), Verdict::OnPlan);
     }
 
     #[test]
@@ -1213,10 +1232,10 @@ mod tests {
         // On the final leg above the intercept altitude but on the profile: on plan.
         let mut r = radar(at(14.0, 0.0), COURSE);
         r.alt_ft = 4500.0;
-        assert_eq!(judge(&plan_on_final(&plan), &r), Verdict::OnPlan);
+        assert_eq!(judge(&plan_on_final(&plan), &r, None), Verdict::OnPlan);
         r.alt_ft = 5500.0;
         assert!(matches!(
-            judge(&plan_on_final(&plan), &r),
+            judge(&plan_on_final(&plan), &r, None),
             Verdict::OffAltitude { .. }
         ));
     }
@@ -1245,6 +1264,62 @@ mod tests {
         let high = near(5000.0);
         assert_ne!(kinds(&high), vec![LegKind::Intercept, LegKind::Final]);
         assert_gradient(&high, 5000.0);
+    }
+
+    #[test]
+    fn fast_descent_after_the_clearance_stays_on_plan() {
+        // The pattern from 6000 ft: legs planned at 500 ft steps above the intercept
+        // altitude. Cleared to it when the plan needs it, the aircraft descends at 1000 fpm
+        // (600 ft/NM at 100 kt), below the higher legs' altitudes.
+        let f = fin();
+        let plan = plan_path(at(-3.0, 0.0), COURSE, 6000.0, &f);
+        let alts: Vec<i32> = plan.legs.iter().map(|l| l.alt_ft).collect();
+        assert!(alts[0] > 2500 && alts[1] > 2500, "{alts:?}");
+        let (mut alt, mut cleared, mut below_plan) = (6000.0f64, 6000, false);
+        let (mut was_off, mut off_without) = (false, false);
+        for (k, leg) in plan.legs.iter().enumerate() {
+            if leg.kind == LegKind::Final {
+                break;
+            }
+            let on = VectorPlan {
+                current: k,
+                ..plan.clone()
+            };
+            let len = distance_m(leg.from, leg.to);
+            let mut d = 0.0;
+            while d <= len {
+                let mut r = radar(destination(leg.from, leg.track_deg, d), leg.track_deg);
+                (r.gs_kt, r.alt_ft) = (100.0, alt);
+                if cleared > 2500 && descent_due(&on, &r).is_some() {
+                    cleared = 2500;
+                }
+                let descending = cleared == 2500 && alt > 2500.0;
+                (r.alt_ft, r.vs_fpm) = (alt, if descending { -1000.0 } else { 0.0 });
+                let v = judge(&on, &r, Some(cleared));
+                assert!(
+                    matches!(v, Verdict::OnPlan | Verdict::LegDue),
+                    "{:?} at {alt:.0} ft, {d:.0} m: {v:?}",
+                    leg.kind
+                );
+                below_plan |= alt < f64::from(leg.alt_ft) - 300.0;
+                // Level again at the intercept altitude, below a leg planned higher: off
+                // without the cleared level.
+                if !descending && alt < f64::from(leg.alt_ft) - 300.0 {
+                    was_off = true;
+                    off_without |= matches!(judge(&on, &r, None), Verdict::OffAltitude { .. });
+                }
+                if descending {
+                    alt = (alt - 600.0 * 0.05).max(2500.0);
+                }
+                d += 0.05 * M_PER_NM;
+            }
+        }
+        assert_eq!(cleared, 2500);
+        assert!(
+            below_plan,
+            "the fast descent went below a planned leg altitude"
+        );
+        assert!(was_off && off_without, "{was_off} {off_without}");
     }
 
     #[test]

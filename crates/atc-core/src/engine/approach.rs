@@ -46,6 +46,8 @@
 //! the planned path needs the descent at once, never above the present level), the QNH and
 //! the approach to expect: ILS on a runway that has one, else RNAV, VOR/DME on request only
 //! (or when it is the only one); a requested type the runway lacks: "unable" and the default.
+//! When the planned path starts on the intercept (or the final), the reply clears the
+//! approach instead (distance to go, "cleared `<approach>`", "report established").
 //! On vectors (after the STAR's last fix, if one was given) Approach plans the path to the
 //! final in advance ([`vectoring::plan_path`]: a direct join when the turn onto the
 //! intercept is not more than 90 degrees, else a pattern on the aircraft's side of the final,
@@ -312,9 +314,9 @@ impl AtcEngine {
         ) else {
             return vec![AtcItem::Unable(UnableReason::NoIfrData)];
         };
-        if self.final_geometry(&runway).is_none() {
+        let Some((thr, _)) = self.final_geometry(&runway) else {
             return vec![AtcItem::Unable(UnableReason::NoIfrData)];
-        }
+        };
         // AIP AD 2.22: VOR approaches are not linked to STARs.
         let star = self
             .airport_ref()
@@ -351,6 +353,8 @@ impl AtcEngine {
             Vec::new()
         };
         let (mut heading, mut direct, mut vector_plan) = (None, None, None);
+        // A plan that starts on the intercept (or the final): cleared in this reply.
+        let mut cleared_now = false;
         match (&star_item, full, &iaf_fix) {
             (Some((_, item)), _, _) => items.push(item.clone()),
             (None, true, Some(fix)) => {
@@ -373,6 +377,7 @@ impl AtcEngine {
                     level_ft = level_ft.min(ft);
                 }
                 heading = Some(v.heading_deg);
+                cleared_now = matches!(vp.leg().kind, LegKind::Intercept | LegKind::Final);
                 vector_plan = Some(vp);
             }
         }
@@ -392,10 +397,19 @@ impl AtcEngine {
         if unavailable {
             items.push(AtcItem::Unable(UnableReason::ApproachNotAvailable));
         }
-        items.push(AtcItem::ExpectApproach {
-            kind,
-            runway: runway.clone(),
-        });
+        if cleared_now {
+            items.push(AtcItem::DistanceToGo(distance_to_go_nm(s.pos, thr)));
+            items.push(AtcItem::ClearedApproach {
+                kind,
+                runway: runway.clone(),
+            });
+            items.push(AtcItem::ReportEstablished);
+        } else {
+            items.push(AtcItem::ExpectApproach {
+                kind,
+                runway: runway.clone(),
+            });
+        }
         let plan = FlightPlan {
             ifr: true,
             destination: self.airport.icao.clone(),
@@ -409,7 +423,7 @@ impl AtcEngine {
             cleared_ft: level_ft,
             direct,
             heading,
-            approach_cleared: false,
+            approach_cleared: cleared_now,
             vector_plan,
             last_correction_s: None,
             established_check: false,
@@ -721,7 +735,7 @@ impl AtcEngine {
         let mut next_leg = false;
         while !fresh
             && vp.index().is_some_and(|k| k + 1 < vp.legs.len())
-            && vectoring::judge(&vp, &r) == Verdict::LegDue
+            && vectoring::judge(&vp, &r, Some(plan.cleared_ft)) == Verdict::LegDue
         {
             vp.current += 1;
             next_leg = true;

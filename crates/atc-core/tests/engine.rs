@@ -7461,11 +7461,76 @@ mod approach_arrival {
             );
         }
 
+        /// A direct join from the first call: the intercept heading comes with the approach
+        /// clearance in the first reply, not repeated on the next sample.
+        #[test]
+        fn direct_join_cleared_in_the_first_reply() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(14.0, -3.0), 3000.0, 300.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept));
+            let said = approach_said(&p);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            assert!(
+                matches!(
+                    said[0].as_slice(),
+                    [
+                        AtcItem::Identified,
+                        AtcItem::Heading { deg: 300, .. },
+                        AtcItem::MaintainLevel(Level::Altitude(3000)),
+                        AtcItem::Qnh(_),
+                        AtcItem::DistanceToGo(_),
+                        AtcItem::ClearedApproach {
+                            kind: ApproachKind::Ils,
+                            ..
+                        },
+                        AtcItem::ReportEstablished
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert!(
+                e.strip(&cs())
+                    .unwrap()
+                    .plan
+                    .as_ref()
+                    .unwrap()
+                    .approach_cleared
+            );
+            for _ in 0..30 {
+                p.tick(&mut e);
+            }
+            assert_eq!(approach_said(&p).len(), 1, "{:#?}", approach_said(&p));
+        }
+
         #[test]
         fn descent_reaches_intercept_altitude_before_intercept() {
             let mut e = engine();
             let (x, y) = SOUTH_EAST;
             let mut p = called_in(&mut e, at(x, y), 6000.0, 290.0, 100.0);
+            // The descent to 3000 ft is not given much earlier than the plan needs it: from
+            // the turn onto the intercept no farther than the descent at 300 ft/NM, the turn
+            // lead and 1 NM.
+            p.until(&mut e, 1200, |p| {
+                p.heard_item(|i| *i == AtcItem::DescendTo(Level::Altitude(3000)))
+            });
+            let vp = e
+                .strip(&cs())
+                .unwrap()
+                .plan
+                .clone()
+                .unwrap()
+                .vector_plan
+                .unwrap();
+            assert_eq!(vp.leg().kind, LegKind::Base);
+            let (base, int) = (&vp.legs[0], &vp.legs[1]);
+            let gap = (int.track_deg - base.track_deg + 540.0).rem_euclid(360.0) - 180.0;
+            let lead = atc_core::vectoring::turn_lead_m(100.0, gap) / M_PER_NM;
+            let to_turn = distance_m(p.f.pos, base.to) / M_PER_NM;
+            let limit = (p.f.alt - 3000.0) / 300.0 + lead + 1.0;
+            assert!(
+                to_turn <= limit,
+                "descent {to_turn:.1} NM before the turn, limit {limit:.1}"
+            );
             p.until(&mut e, 1200, cleared);
             let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
             assert_eq!(plan.cleared_ft, 3000);
