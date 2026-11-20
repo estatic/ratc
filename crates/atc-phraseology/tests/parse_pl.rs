@@ -473,7 +473,8 @@ fn polish_destination_inflection_and_clearance() {
         PilotIntent::RequestClearance {
             destination: Some("EPKT".into()),
             rules: Some(FlightRules::Ifr),
-            level_ft: None
+            level_ft: None,
+            atis: None,
         }
     );
     for form in ["Katowice", "Katowic", "Katowicach"] {
@@ -548,5 +549,14 @@ fn polish_request_departure_runway() {
         PilotIntent::RequestDepartureRunway {
             runway: "07".into()
         }
+    );
+}
+
+#[test]
+fn polish_ten_is_not_a_number() {
+    assert_eq!(pl("SPABC, ten").callsign.as_deref(), Some("SPABC"));
+    assert_eq!(
+        pl("SPABC, ten sam postój jedenaście").callsign.as_deref(),
+        Some("SPABC")
     );
 }

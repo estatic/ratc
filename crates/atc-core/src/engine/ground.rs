@@ -40,6 +40,7 @@ impl AtcEngine {
                 destination,
                 rules,
                 level_ft,
+                ..
             } => {
                 let via = msg.items.points.first().map(String::as_str);
                 match rules {
@@ -79,6 +80,16 @@ impl AtcEngine {
                 self.taxi_to_any_stand(i)
             }
             PilotIntent::RequestTaxiToStand { stand } => self.taxi_to_stand(i, stand.clone()),
+            // The stand named alone, after landing, is the taxi request; at any other time it
+            // is no request and gets the answer to any call that says nothing Ground serves.
+            PilotIntent::ReportStand { stand }
+                if matches!(
+                    self.strips[i].phase,
+                    FlightPhase::TaxiIn | FlightPhase::Landed
+                ) =>
+            {
+                self.taxi_to_stand(i, Some(stand.clone()))
+            }
             PilotIntent::RequestTaxiHelp => self.taxi_help(i, t),
             PilotIntent::RequestFollowMe => self.follow_me(i, t),
             PilotIntent::ReportOnStand => self.report_on_stand(i, msg.farewell),
@@ -245,7 +256,8 @@ impl AtcEngine {
         self.taxi_to_stand_at(i, pos, name, at)
     }
 
-    /// Taxi to the requested stand, or back to the stand the aircraft started from.
+    /// Taxi to the requested stand, or back to the stand the aircraft started from; an arrival
+    /// with neither is given a stand Ground picks.
     fn taxi_to_stand(&mut self, i: usize, stand: Option<String>) -> Vec<AtcItem> {
         if self.cannot_taxi_to_stand(i) {
             return Vec::new();
@@ -265,6 +277,14 @@ impl AtcEngine {
             },
             None => match self.strips[i].home_stand.clone() {
                 Some(home) => (home, self.strips[i].home_stand_at),
+                // An arrival with no stand to go back to is given one; anyone else is asked.
+                None if matches!(
+                    self.strips[i].phase,
+                    FlightPhase::TaxiIn | FlightPhase::Landed
+                ) =>
+                {
+                    return self.taxi_to_any_stand(i);
+                }
                 None => return vec![AtcItem::SayStand],
             },
         };

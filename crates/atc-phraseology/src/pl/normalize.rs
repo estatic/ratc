@@ -4,7 +4,7 @@
 //! Diacritics are optional: the input and the table are compared folded to ASCII.
 
 use super::numbers::{DIGITS, HUNDREDS, TEENS, TENS};
-use crate::normalize::{Token, normalize as tokenize};
+use crate::normalize::{Token, normalize_without_teens as tokenize};
 
 /// What must follow a phrase for it to take its meaning (one pause comma allowed before a
 /// letter or a number).

@@ -208,6 +208,17 @@ fn record(out: &[AtcOutput], log: &mut Log, texts: &mut Vec<String>) {
 /// Flies `samples` with a pilot who calls at each phase change and reads everything back
 /// (except as `pilot` says). Returns the controller messages and their rendered texts.
 fn fly(e: &mut AtcEngine, samples: Vec<AircraftState>, pilot: Pilot) -> (Log, Vec<String>) {
+    fly_until(e, samples, pilot, |_| false)
+}
+
+/// [`fly`], stopping right after the readback of the first controller-initiated
+/// transmission for which `stop` holds.
+fn fly_until(
+    e: &mut AtcEngine,
+    samples: Vec<AircraftState>,
+    pilot: Pilot,
+    stop: impl Fn(&[AtcOutput]) -> bool,
+) -> (Log, Vec<String>) {
     let cs = Callsign::new("SPTST");
     let (mut log, mut texts) = (Log::new(), Vec::new());
     let mut last_phase = None;
@@ -219,6 +230,9 @@ fn fly(e: &mut AtcEngine, samples: Vec<AircraftState>, pilot: Pilot) -> (Log, Ve
         for o in out.iter().filter(|o| !is_reminder(std::slice::from_ref(o))) {
             let silent = say(e, o.freq_khz, &readback(&o.message.items, CS_ABBR));
             assert!(silent.is_empty(), "readback of {:?}: {silent:?}", o.message);
+        }
+        if stop(&out) {
+            break;
         }
         if out
             .iter()
@@ -908,6 +922,7 @@ fn crossing_airport() -> Airport {
             heading_deg: 0.0,
             kind: Default::default(),
             categories: Vec::new(),
+            operation: Default::default(),
         }],
         ..ap
     }
@@ -2792,6 +2807,51 @@ mod delivery {
         )
     }
 
+    /// C12: a clearance request that names an old ATIS letter gets the current one and
+    /// the QNH ahead of the clearance; the current letter gets neither.
+    #[test]
+    fn delivery_corrects_old_atis() {
+        let request = |letter: &str| {
+            format!(
+                "Zeta Delivery, Sierra Papa Tango Sierra Tango, information {letter}, IFR to Testville, request clearance"
+            )
+        };
+        let mut e = engine();
+        parked(&mut e, Some(12.0 * 3600.0), Some(SUMMER));
+        e.on_weather(weather(1009)); // QNH change: information Bravo
+        let got = items(&say(&mut e, DEL, &request("Alpha")));
+        assert_eq!(got[..2], [AtcItem::AtisCurrent('B'), AtcItem::Qnh(1009)]);
+        assert!(matches!(got[2], AtcItem::ClearedTo { .. }), "{got:?}");
+
+        let mut e = engine();
+        parked(&mut e, Some(12.0 * 3600.0), Some(SUMMER));
+        e.on_weather(weather(1009));
+        let got = items(&say(&mut e, DEL, &request("Bravo")));
+        assert!(matches!(got[0], AtcItem::ClearedTo { .. }), "{got:?}");
+        assert!(
+            !got.iter().any(|i| matches!(i, AtcItem::AtisCurrent(_))),
+            "{got:?}"
+        );
+    }
+
+    /// Final review of 14c: a parked aircraft naming its stand to Delivery makes no taxi
+    /// request, so it is not sent to Ground; it gets the answer to any call.
+    #[test]
+    fn parked_stand_report_is_not_sent_to_ground() {
+        let mut e = engine();
+        parked(&mut e, Some(12.0 * 3600.0), Some(SUMMER));
+        let out = items(&say(
+            &mut e,
+            DEL,
+            &format!("Zeta Delivery, {CS}, stand one"),
+        ));
+        assert!(!out.is_empty(), "silently dropped");
+        assert!(
+            !out.iter().any(|i| matches!(i, AtcItem::Contact { .. })),
+            "{out:?}"
+        );
+    }
+
     #[test]
     fn clearance_read_back_then_ground() {
         let mut e = engine();
@@ -4669,6 +4729,7 @@ mod approach_departure {
                         heading_deg: 0.0,
                         kind: Default::default(),
                         categories: Vec::new(),
+                        operation: Default::default(),
                     });
                 }
             },
@@ -5318,7 +5379,7 @@ mod approach_departure {
     }
 
     /// An aircraft that landed and taxis in north of Stand 1, optionally first seen on it.
-    fn taxiing_in_near_stand_1(e: &mut AtcEngine, home_stand: bool) {
+    pub(super) fn taxiing_in_near_stand_1(e: &mut AtcEngine, home_stand: bool) {
         if home_stand {
             let mut parked = Flight {
                 t: 0.0,
@@ -5381,6 +5442,7 @@ mod approach_departure {
                         heading_deg: 0.0,
                         kind: Default::default(),
                         categories: Vec::new(),
+                        operation: Default::default(),
                     },
                 )
             },
@@ -5406,13 +5468,16 @@ mod approach_departure {
         }
     }
 
-    /// Without a home stand, "request taxi" after landing asks which stand.
+    /// Without a home stand, "request taxi" after landing is given a free stand (C4).
     #[test]
-    fn request_taxi_after_landing_without_a_stand_says_stand() {
+    fn request_taxi_after_landing_without_a_stand_assigns_one() {
         let mut e = engine();
         taxiing_in_near_stand_1(&mut e, false);
         let out = items(&say(&mut e, GND, &format!("{CS}, request taxi")));
-        assert_eq!(out, vec![AtcItem::SayStand], "{out:?}");
+        assert!(
+            matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == "Stand 1"),
+            "{out:?}"
+        );
     }
 
     /// `lon_off` degrees east of Stand 1 (0.0009 is about 100 m).
@@ -5436,12 +5501,13 @@ mod approach_departure {
             heading_deg: 0.0,
             kind,
             categories,
+            operation: Default::default(),
         }
     }
 
     /// ZZZZ with, east of Stand 1 (a gate for props): a de-icing stand (nearest), a
     /// jets-only tie-down, and three props tie-downs GA 1..3 (200, 300, 400 m).
-    fn engine_with_ga_stands(edit: impl FnOnce(&mut Airport)) -> AtcEngine {
+    pub(super) fn engine_with_ga_stands(edit: impl FnOnce(&mut Airport)) -> AtcEngine {
         use atc_navdata::model::{StandCategory as C, StandKind as K};
         engine_airport(
             Strictness::Standard,
@@ -7039,6 +7105,331 @@ mod approach_arrival {
         assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
     }
 
+    /// Flight test 14c, C10: no "check heading" while the readback of the heading is
+    /// pending, nor until the pilot has had the reaction time and the persistence time
+    /// after it was accepted.
+    mod readback_reaction {
+        use super::*;
+
+        #[test]
+        fn heading_check_waits_for_readback() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            p.tick(&mut e);
+            p.reads_back = false;
+            p.obeys_headings = false;
+            let out = p.call(&mut e, APP, INBOUND);
+            let got = items(&out);
+            let assigned = got
+                .iter()
+                .find_map(|i| match i {
+                    AtcItem::Heading { deg, .. } => Some(*deg),
+                    _ => None,
+                })
+                .expect("a heading");
+            let qnh = got
+                .iter()
+                .find_map(|i| match i {
+                    AtcItem::Qnh(q) => Some(*q),
+                    _ => None,
+                })
+                .expect("a QNH");
+            // 78 degrees off the assigned heading (262 for 340), never turning.
+            p.hdg = f64::from(assigned) - 78.0;
+            let good = ifr_readback(&got).expect("a readback");
+            let wrong = good.replace(&spoken(&qnh.to_string()), &spoken(&(qnh + 5).to_string()));
+            assert_ne!(good, wrong);
+            let checks = |p: &Pilot| {
+                p.f.heard
+                    .iter()
+                    .filter(|o| {
+                        o.message
+                            .items
+                            .iter()
+                            .any(|i| matches!(i, AtcItem::CheckHeading(_)))
+                    })
+                    .count()
+            };
+            // The first readback has a wrong QNH: "read back QNH".
+            p.until(&mut e, 10, |p| p.f.t >= 10.0);
+            let out = e.on_transmission(APP, &wrong, Lang::En, SimTime(p.f.t));
+            assert!(!out.is_empty(), "wrong QNH accepted");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+            p.f.heard.extend(out);
+            // The correct readback at 36 s.
+            p.until(&mut e, 20, |p| p.f.t >= 36.0);
+            assert_eq!(checks(&p), 0, "{:?}", p.f.heard);
+            let accepted = p.f.t;
+            let out = e.on_transmission(APP, &good, Lang::En, SimTime(accepted));
+            assert!(out.is_empty(), "{out:?}");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+            // Nothing before the reaction time and the persistence time have run.
+            while p.f.t < accepted + 10.0 + 30.0 {
+                p.tick(&mut e);
+                assert_eq!(checks(&p), 0, "t = {}: {:?}", p.f.t, p.f.heard);
+            }
+            // Still off: one call soon after.
+            for _ in 0..5 {
+                p.tick(&mut e);
+            }
+            assert_eq!(checks(&p), 1, "{:?}", p.f.heard);
+        }
+
+        /// Messages heard by `p` carrying an item `f` matches.
+        fn calls(p: &Pilot, f: impl Fn(&AtcItem) -> bool) -> usize {
+            p.f.heard
+                .iter()
+                .filter(|o| o.message.items.iter().any(&f))
+                .count()
+        }
+
+        fn check_level(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::CheckLevel(_))
+        }
+
+        fn check_heading(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::CheckHeading(_))
+        }
+
+        /// SP-TST inbound on vectors, told to maintain 5000 ft, silent (no readbacks), one
+        /// sample at 5000 ft, then 500 ft low; returns the inbound clearance.
+        fn level_busted(e: &mut AtcEngine, p: &mut Pilot) -> Vec<AtcItem> {
+            p.tick(e);
+            p.reads_back = false;
+            let got = items(&p.call(e, APP, INBOUND));
+            assert!(
+                got.contains(&AtcItem::MaintainLevel(Level::Altitude(5000))),
+                "{got:?}"
+            );
+            p.tick(e);
+            p.f.alt = 4500.0;
+            p.target = 4500.0;
+            got
+        }
+
+        /// A readback of "contact Zeta Tower" pending (nothing about heading or level), as
+        /// if just issued at the pilot's time.
+        fn pending_contact(e: &mut AtcEngine, p: &Pilot) {
+            let mut v = serde_json::to_value(e.snapshot()).unwrap();
+            let strip = &mut v["strips"][0];
+            strip["pending_readback"] =
+                serde_json::to_value(vec![atc_phraseology::ReadbackItem::Frequency(TWR)]).unwrap();
+            strip["pending_items"] = serde_json::to_value(vec![contact_tower()]).unwrap();
+            strip["readback_issued_s"] = p.f.t.into();
+            e.restore(serde_json::from_value(v).unwrap()).unwrap();
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+        }
+
+        fn contact_tower() -> AtcItem {
+            AtcItem::Contact {
+                station: "Zeta Tower".into(),
+                khz: TWR,
+            }
+        }
+
+        /// The level check is held while "maintain 5000" awaits its readback; after it is
+        /// accepted, the bust is called once the reaction time and the 10 s have run.
+        #[test]
+        fn level_check_waits_for_readback() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            let got = level_busted(&mut e, &mut p);
+            p.until(&mut e, 20, |p| p.f.t >= 20.0);
+            assert_eq!(calls(&p, check_level), 0, "{:?}", p.f.heard);
+            let accepted = p.f.t;
+            let rb = ifr_readback(&got).expect("a readback");
+            let out = e.on_transmission(APP, &rb, Lang::En, SimTime(accepted));
+            assert!(out.is_empty(), "{out:?}");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+            while p.f.t < accepted + 10.0 + 10.0 {
+                p.tick(&mut e);
+                assert_eq!(calls(&p, check_level), 0, "t = {}: {:?}", p.f.t, p.f.heard);
+            }
+            for _ in 0..3 {
+                p.tick(&mut e);
+            }
+            assert_eq!(calls(&p, check_level), 1, "{:?}", p.f.heard);
+        }
+
+        /// A pending readback with no heading or level in it holds nothing: a level bust
+        /// meanwhile is called after the usual 10 s.
+        #[test]
+        fn unrelated_pending_readback_does_not_hold_level() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            let got = level_busted(&mut e, &mut p);
+            let rb = ifr_readback(&got).expect("a readback");
+            assert!(say(&mut e, APP, &rb).is_empty());
+            // Settled back at 5000 ft past the reaction time.
+            p.f.alt = 5000.0;
+            p.target = 5000.0;
+            p.until(&mut e, 20, |p| p.f.t >= 20.0);
+            pending_contact(&mut e, &p);
+            p.f.alt = 4500.0;
+            p.target = 4500.0;
+            let bust = p.f.t;
+            p.until(&mut e, 10, |p| calls(p, check_level) > 0);
+            assert!(p.f.t <= bust + 10.0 + 4.0, "t = {}", p.f.t);
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+        }
+
+        /// The readback of a heading that never comes holds the check only up to the
+        /// reminder and the reaction time: a silent pilot off the heading is still called.
+        #[test]
+        fn unanswered_heading_readback_is_still_called() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            p.tick(&mut e);
+            p.reads_back = false;
+            p.obeys_headings = false;
+            let issued = p.f.t;
+            let out = p.call(&mut e, APP, INBOUND);
+            let assigned = items(&out)
+                .iter()
+                .find_map(|i| match i {
+                    AtcItem::Heading { deg, .. } => Some(*deg),
+                    _ => None,
+                })
+                .expect("a heading");
+            p.hdg = f64::from(assigned) - 78.0;
+            p.until(&mut e, 80, |p| calls(p, check_heading) > 0);
+            // Not before the reminder (10 s), the reaction time and the 30 s have run.
+            assert!(p.f.t > issued + 10.0 + 10.0 + 30.0, "t = {}", p.f.t);
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+            for _ in 0..20 {
+                p.tick(&mut e);
+            }
+            assert_eq!(calls(&p, check_heading), 1, "{:?}", p.f.heard);
+        }
+
+        /// An accepted readback with no heading or level in it does not restart the level
+        /// check: the bust is called after the usual 10 s.
+        #[test]
+        fn unrelated_readback_does_not_restart_the_level_check() {
+            let mut e = engine();
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            let got = level_busted(&mut e, &mut p);
+            let rb = ifr_readback(&got).expect("a readback");
+            assert!(say(&mut e, APP, &rb).is_empty());
+            p.f.alt = 5000.0;
+            p.target = 5000.0;
+            p.until(&mut e, 20, |p| p.f.t >= 20.0);
+            pending_contact(&mut e, &p);
+            p.f.alt = 4500.0;
+            p.target = 4500.0;
+            let bust = p.f.t;
+            p.tick(&mut e);
+            p.tick(&mut e);
+            let rb = ifr_readback(&[contact_tower()]).expect("a readback");
+            let out = e.on_transmission(APP, &rb, Lang::En, SimTime(p.f.t));
+            assert!(out.is_empty(), "{out:?}");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_none());
+            p.until(&mut e, 10, |p| calls(p, check_level) > 0);
+            assert!(p.f.t <= bust + 10.0 + 4.0, "t = {}", p.f.t);
+        }
+    }
+
+    /// Flight test 14c, C11: a level bust that matches flying on standard pressure is
+    /// "check altimeter setting", any other bust is "check level".
+    mod altimeter_check {
+        use super::*;
+
+        /// QNH 992 (standard pressure reads 580 ft high), told to maintain 5000 ft, and
+        /// the aircraft level at `alt` ft indicated; the items heard once the pilot has
+        /// read the clearance back and had time to react.
+        fn heard_at(alt: f64) -> Vec<AtcItem> {
+            heard_at_qnh(992, alt)
+        }
+
+        /// [`heard_at`] with another QNH.
+        fn heard_at_qnh(qnh: u16, alt: f64) -> Vec<AtcItem> {
+            let mut e = engine();
+            e.on_weather(weather(qnh));
+            let mut p = Pilot::new(WEST, 5000.0, 0.0);
+            p.tick(&mut e);
+            p.reads_back = false;
+            let got = items(&p.call(&mut e, APP, INBOUND));
+            assert!(
+                got.contains(&AtcItem::MaintainLevel(Level::Altitude(5000))),
+                "{got:?}"
+            );
+            p.tick(&mut e);
+            p.f.alt = alt;
+            p.target = alt;
+            let rb = ifr_readback(&got).expect("a readback");
+            let out = e.on_transmission(APP, &rb, Lang::En, SimTime(p.f.t));
+            assert!(out.is_empty(), "{out:?}");
+            let accepted = p.f.t;
+            while p.f.t < accepted + 10.0 + 10.0 + 5.0 {
+                p.tick(&mut e);
+            }
+            p.f.heard
+                .iter()
+                .flat_map(|o| o.message.items.clone())
+                .collect()
+        }
+
+        #[test]
+        fn std_altimeter_gets_altimeter_check() {
+            let heard = heard_at(4455.0);
+            assert!(
+                heard.contains(&AtcItem::CheckAltimeter {
+                    qnh_hpa: 992,
+                    level: Level::Altitude(5000)
+                }),
+                "{heard:?}"
+            );
+            assert!(
+                !heard.iter().any(|i| matches!(i, AtcItem::CheckLevel(_))),
+                "{heard:?}"
+            );
+        }
+
+        /// QNH 992: 580 ft high is above the assigned level, so the sign rules out
+        /// the standard-pressure error.
+        #[test]
+        fn high_with_low_qnh_is_check_level() {
+            let heard = heard_at(5580.0);
+            assert!(
+                heard.contains(&AtcItem::CheckLevel(Level::Altitude(5000))),
+                "{heard:?}"
+            );
+            assert!(
+                !heard
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::CheckAltimeter { .. })),
+                "{heard:?}"
+            );
+        }
+
+        /// QNH 1035: standard pressure reads about 600 ft high.
+        #[test]
+        fn high_with_high_qnh_is_check_altimeter() {
+            let heard = heard_at_qnh(1035, 5600.0);
+            assert!(
+                heard
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::CheckAltimeter { qnh_hpa: 1035, .. })),
+                "{heard:?}"
+            );
+        }
+
+        #[test]
+        fn plain_level_bust_is_check_level() {
+            let heard = heard_at(5400.0);
+            assert!(
+                heard.contains(&AtcItem::CheckLevel(Level::Altitude(5000))),
+                "{heard:?}"
+            );
+            assert!(
+                !heard
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::CheckAltimeter { .. })),
+                "{heard:?}"
+            );
+        }
+    }
+
     /// Review Focus 5: a heading ignored for 35 s and more is called once, in English.
     #[test]
     fn ignored_heading_is_called_once() {
@@ -7634,6 +8025,72 @@ mod approach_arrival {
             }],
             "{out:?}"
         );
+    }
+
+    /// Flight test 14c, C8 (see the top-level `acknowledgements`): after "check heading",
+    /// a garbled answer gets "say again"; the clear acknowledgement after it is not
+    /// answered.
+    mod acknowledgements {
+        use super::*;
+
+        /// SP-TST inbound on vectors, off its heading until Approach says "check heading";
+        /// returns the assigned heading.
+        fn checked_heading(e: &mut AtcEngine) -> u16 {
+            let (mut p, _) = inbound(e, WEST, 5000.0, 0.0, INBOUND);
+            p.obeys_headings = false;
+            p.hdg += 60.0;
+            p.until(e, 40, |p| {
+                p.heard_item(|i| matches!(i, AtcItem::CheckHeading(_)))
+            });
+            p.f.heard
+                .iter()
+                .flat_map(|o| &o.message.items)
+                .find_map(|i| match i {
+                    AtcItem::CheckHeading(deg) => Some(*deg),
+                    _ => None,
+                })
+                .unwrap()
+        }
+
+        #[test]
+        fn check_heading_ack_after_garble() {
+            let mut e = engine();
+            checked_heading(&mut e);
+            let out = say(&mut e, APP, "check heading, now we've missed your papa.");
+            assert_eq!(items(&out), [AtcItem::SayAgain], "{out:?}");
+            let out = say(&mut e, APP, "check heading Sierra Sierra Tango.");
+            assert!(out.is_empty(), "{out:?}");
+        }
+
+        /// The third garble without a callsign also reminds of the callsign; the "check
+        /// heading" acknowledgement after it is still not answered.
+        #[test]
+        fn check_heading_ack_after_callsign_reminder() {
+            let mut e = engine();
+            checked_heading(&mut e);
+            for _ in 0..2 {
+                let out = say(&mut e, APP, "check heading, now we've missed your papa.");
+                assert_eq!(items(&out), [AtcItem::SayAgain], "{out:?}");
+            }
+            let out = say(&mut e, APP, "check heading, now we've missed your papa.");
+            assert_eq!(
+                items(&out),
+                [AtcItem::SayAgain, AtcItem::UseCallsign],
+                "{out:?}"
+            );
+            let out = say(&mut e, APP, "check heading Sierra Sierra Tango.");
+            assert!(out.is_empty(), "{out:?}");
+        }
+
+        /// The heading's number read back acknowledges "check heading".
+        #[test]
+        fn check_heading_number_acknowledges() {
+            let mut e = engine();
+            let deg = checked_heading(&mut e);
+            let text = format!("{}, Sierra Sierra Tango", spoken(&format!("{deg:03}")));
+            let out = say(&mut e, APP, &text);
+            assert!(out.is_empty(), "{text}: {out:?}");
+        }
     }
 }
 
@@ -9748,6 +10205,65 @@ mod near_callsign {
         );
     }
 
+    /// Registers `cs`, parked at the testkit stand, and calls Tower on its own initiative
+    /// as `spoken_cs`: Tower becomes the owner (and answers "contact Ground").
+    fn on_tower(e: &mut AtcEngine, cs: &str, spoken_cs: &str) {
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new(cs),
+            aircraft_type: "C172".into(),
+        });
+        let first = AircraftState {
+            callsign: Callsign::new(cs),
+            ..track().into_iter().next().unwrap()
+        };
+        assert!(e.on_telemetry(first).is_empty());
+        let out = say(
+            e,
+            TOWER,
+            &format!("Krakow Tower, {spoken_cs}, request taxi"),
+        );
+        assert_eq!(out[0].message.to, Some(Callsign::new(cs)), "{out:?}");
+        assert_eq!(e.strip(&Callsign::new(cs)).unwrap().owner, Role::Tower);
+    }
+
+    /// Tower last spoke to another station (SPTST, registered, not flying), as in flight,
+    /// so a call without a full callsign is not taken for the aircraft on Tower by default.
+    fn tower_spoke_to_another(e: &mut AtcEngine) {
+        let other = say(e, TOWER, &format!("Krakow Tower, {CS}, request taxi"));
+        assert_eq!(
+            other[0].message.to,
+            Some(Callsign::new("SPTST")),
+            "{other:?}"
+        );
+    }
+
+    /// "Sierra Papa" (the first letter lost): N172SP is the only aircraft on Tower that
+    /// fits, so it is taken for it and not asked to say its callsign again.
+    #[test]
+    fn first_letter_dropped_is_the_only_aircraft() {
+        let mut e = engine();
+        on_tower(&mut e, "N172SP", N172SP);
+        tower_spoke_to_another(&mut e);
+        let out = say(&mut e, TOWER, "Krakow Tower, Sierra Papa.");
+        assert!(!items(&out).iter().any(is_say_again_callsign), "{out:?}");
+        assert_eq!(out[0].message.to, Some(Callsign::new("N172SP")), "{out:?}");
+    }
+
+    /// Two aircraft ending "SP" on the frequency: the short callsign fits both, so the
+    /// pilot is asked to say it again.
+    #[test]
+    fn first_letter_dropped_ambiguous_asks() {
+        let mut e = engine();
+        on_tower(&mut e, "N182SP", "November one eight two Sierra Papa");
+        on_tower(&mut e, "N172SP", N172SP);
+        tower_spoke_to_another(&mut e);
+        let out = say(&mut e, TOWER, "Krakow Tower, Sierra Papa.");
+        assert!(
+            matches!(items(&out)[..], [AtcItem::SayAgainCallsign { .. }]),
+            "{out:?}"
+        );
+    }
+
     /// "November Charlie Bravo" is two letters off N172SP: not taken.
     #[test]
     fn two_letters_off_is_not_taken() {
@@ -9793,4 +10309,250 @@ fn ground_hints_carry_stands() {
     let tower = e.stt_hints(&cs, TOWER);
     assert!(!tower.contains(&stand), "{tower:?}");
     assert_eq!(tower.len(), 2, "{tower:?}");
+}
+
+/// C4, C5: after landing the stand comes from Ground, however the pilot asks for it.
+mod arrival_stand {
+    use super::approach_departure::{GND, engine_with_ga_stands, taxiing_in_near_stand_1};
+    use super::*;
+
+    fn taxis_to(out: &[AtcItem], stand: &str) -> bool {
+        matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == stand)
+    }
+
+    /// "Runway vacated, request taxi" with no home stand: Ground picks a free stand (the
+    /// nearest props tie-down) instead of asking the pilot to say one.
+    #[test]
+    fn vacated_request_taxi_assigns_a_stand() {
+        let mut e = engine_with_ga_stands(|_| {});
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(
+            &mut e,
+            GND,
+            &format!("{CS}, runway vacated, request taxi"),
+        ));
+        assert!(taxis_to(&out, "GA 1"), "{out:?}");
+        assert!(!out.contains(&AtcItem::SayStand), "{out:?}");
+    }
+
+    /// The stand alone, as the answer to a "say stand" (or volunteered), is the taxi request.
+    #[test]
+    fn stand_report_after_say_stand_is_taxi_request() {
+        let mut e = engine_with_ga_stands(|_| {});
+        taxiing_in_near_stand_1(&mut e, false);
+        let out = items(&say(&mut e, GND, &format!("{CS}, stand golf alpha two")));
+        assert!(taxis_to(&out, "GA 2"), "{out:?}");
+    }
+
+    /// A parked departure reporting its stand is not taxied anywhere, and not ignored.
+    #[test]
+    fn stand_report_at_departure_stand_is_not_taxi() {
+        let mut e = engine();
+        let first = track().into_iter().next().unwrap();
+        assert!(e.on_telemetry(first).is_empty());
+        let out = items(&say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, {CS}, stand five"),
+        ));
+        assert!(
+            !out.iter().any(|i| matches!(i, AtcItem::Taxi { .. })),
+            "{out:?}"
+        );
+        assert!(!out.is_empty(), "silently dropped");
+    }
+}
+
+/// Flight test 14c, C6-C8: an acknowledgement that names the station, a follow-me readback
+/// heard with homophones, and a "check heading" acknowledgement after a garbled one.
+mod acknowledgements {
+    use super::*;
+
+    /// SP-ABC near stand 20, cleared to stand 4, then led by the follow-me car: the last
+    /// thing Ground told it is "follow the follow-me car to stand four".
+    fn led_to_stand_4() -> AtcEngine {
+        let mut e = abc_near_stand_20(300.0, 167.7, 347.7, 5.0);
+        let clearance = items(&say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, {ABC}, request taxi to stand four"),
+        ));
+        assert!(
+            matches!(&clearance[..], [AtcItem::Taxi { .. }]),
+            "{clearance:?}"
+        );
+        say(
+            &mut e,
+            GROUND,
+            &format!("{ABC}, I am lost, I need help, taxi"),
+        );
+        let out = say(&mut e, GROUND, &format!("{ABC}, I am lost, I need help"));
+        assert_eq!(
+            items(&out),
+            [AtcItem::HoldPosition, AtcItem::FollowMeOnTheWay]
+        );
+        let out = move_abc(&mut e, FOLLOW_ME_READY_S, 300.0, 167.7);
+        assert_eq!(
+            out[0].text,
+            "Sierra Bravo Charlie, follow the follow-me car to stand four"
+        );
+        e
+    }
+
+    /// C6: "Katowice Ground, roger, November Sierra Papa" got "pass your message".
+    #[test]
+    fn station_and_roger_is_acknowledgement() {
+        let mut e = led_to_stand_4();
+        let out = say(&mut e, GROUND, &format!("Krakow Ground, Roger, {ABC}"));
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// A call naming the station with a greeting and nothing told is still a call.
+    #[test]
+    fn station_and_greeting_is_still_a_call() {
+        let mut e = engine();
+        e.register_pilot(PilotProfile {
+            callsign: Callsign::new("SPABC"),
+            aircraft_type: "C172".into(),
+        });
+        let out = say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, good morning, {ABC}"),
+        );
+        assert!(items(&out).contains(&AtcItem::PassYourMessage), "{out:?}");
+    }
+
+    /// C7: "follow the follow me card to stand for" is the readback of "follow the
+    /// follow-me car to stand four", not "say again".
+    #[test]
+    fn follow_me_readback_with_homophones() {
+        let mut e = led_to_stand_4();
+        let out = say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, follow the follow me card to stand for {ABC}"),
+        );
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// "Thank you" next to the station's name acknowledges.
+    #[test]
+    fn station_and_thank_you_is_acknowledgement() {
+        let mut e = led_to_stand_4();
+        let out = say(&mut e, GROUND, &format!("Krakow Ground, thank you, {ABC}"));
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// Flies the full-stop circuit until Tower's "vacate, contact Kraków Ground ..., good
+    /// day" (read back): the last thing told is the hand-off with its farewell.
+    fn handed_to_ground() -> AtcEngine {
+        let mut e = engine();
+        let handoff = |out: &[AtcOutput]| {
+            out.iter().any(|o| {
+                o.freq_khz == TOWER
+                    && o.message.items.contains(&AtcItem::Contact {
+                        station: "Kraków Ground".into(),
+                        khz: GROUND,
+                    })
+                    && o.message
+                        .items
+                        .contains(&AtcItem::Courtesy(Courtesy::GoodDay))
+            })
+        };
+        let (log, _) = fly_until(&mut e, track(), GOOD_PILOT, handoff);
+        assert!(
+            log.iter().any(
+                |(r, i)| *r == Role::Tower && i.contains(&AtcItem::Courtesy(Courtesy::GoodDay))
+            ),
+            "{log:?}"
+        );
+        e
+    }
+
+    /// Final review: "good" was told ("..., good day"), but "Krakow Ground, {CS}, good
+    /// morning" is the first call to Ground, not an acknowledgement.
+    #[test]
+    fn greeting_after_good_day_hand_off_is_a_call() {
+        let mut e = handed_to_ground();
+        let out = say(
+            &mut e,
+            GROUND,
+            &format!("Krakow Ground, {CS}, good morning"),
+        );
+        assert!(!out.is_empty(), "silently dropped");
+        assert!(items(&out).contains(&AtcItem::PassYourMessage), "{out:?}");
+    }
+
+    /// Calling Tower with "good day" after its "good day" is a call too, not silence.
+    #[test]
+    fn good_day_call_after_good_day_hand_off_is_a_call() {
+        let mut e = handed_to_ground();
+        let out = say(&mut e, TOWER, &format!("Krakow Tower, {CS}, good day"));
+        assert!(!out.is_empty(), "silently dropped");
+    }
+}
+
+/// Final review of 14c: "any stand" at EPKK gave a C172 the "Military Apron". A military
+/// stand (apt.dat row 1301) is never given to civil traffic; a light prop prefers a
+/// general-aviation stand.
+mod stand_operation {
+    use super::approach_departure::{GND, engine_with_ga_stands, taxiing_in_near_stand_1};
+    use super::*;
+    use atc_navdata::model::StandOperation;
+
+    fn any_stand(e: &mut AtcEngine) -> Vec<AtcItem> {
+        taxiing_in_near_stand_1(e, false);
+        items(&say(e, GND, &format!("{CS}, any stand")))
+    }
+
+    fn taxis_to(out: &[AtcItem], stand: &str) -> bool {
+        matches!(&out[0], AtcItem::Taxi { to: TaxiTo::Stand { name }, .. } if name == stand)
+    }
+
+    /// The nearest props tie-down is military: the next one is given.
+    #[test]
+    fn military_stand_is_skipped() {
+        let mut e = engine_with_ga_stands(|ap| {
+            for st in &mut ap.stands {
+                if st.name == "GA 1" {
+                    st.operation = StandOperation::Military;
+                }
+            }
+        });
+        let out = any_stand(&mut e);
+        assert!(taxis_to(&out, "GA 2"), "{out:?}");
+    }
+
+    /// Only military stands: none is free for a civil aircraft.
+    #[test]
+    fn only_military_stands_is_no_free_stand() {
+        let mut e = engine_with_ga_stands(|ap| {
+            for st in &mut ap.stands {
+                st.operation = StandOperation::Military;
+            }
+        });
+        let out = any_stand(&mut e);
+        assert_eq!(
+            out,
+            vec![
+                AtcItem::Unable(atc_phraseology::UnableReason::NoFreeStand),
+                AtcItem::SayStand
+            ]
+        );
+    }
+
+    /// A light prop takes a general-aviation stand over a nearer one of no stated use.
+    #[test]
+    fn light_prop_prefers_a_general_aviation_stand() {
+        let mut e = engine_with_ga_stands(|ap| {
+            for st in &mut ap.stands {
+                if st.name == "GA 3" {
+                    st.operation = StandOperation::GeneralAviation;
+                }
+            }
+        });
+        let out = any_stand(&mut e);
+        assert!(taxis_to(&out, "GA 3"), "{out:?}");
+    }
 }

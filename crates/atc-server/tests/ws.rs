@@ -19,8 +19,8 @@ use common::*;
 
 async fn ptt(c: &mut Client, freq_khz: u32) {
     c.send(ClientMsg::PttStart { freq_khz }).await;
-    c.send_audio(0, vec![100; 320]).await;
-    c.send_audio(1, vec![-100; 320]).await;
+    c.send_audio(0, vec![100; 8000]).await;
+    c.send_audio(1, vec![-100; 8000]).await;
     c.send(ClientMsg::PttEnd).await;
 }
 
@@ -149,6 +149,25 @@ async fn ptt_audio_goes_through_stt() {
     );
     assert!(has_taxi(&got), "{got:?}");
     assert_eq!(*srv.stt.languages.lock().unwrap(), [Some("en".to_string())]);
+}
+
+/// A key click (under 0.5 s of audio) never reaches the speech-to-text model: it would
+/// hear words in the noise. The next, long enough transmission is transcribed normally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn too_short_ptt_audio_is_dropped_before_stt() {
+    let srv = start(vec![transcript(TAXI_REQUEST, 0.95)], false).await;
+    let mut c = Client::hello(&srv.url, "SP-ABC").await;
+    c.weather_and_parked(GROUND).await;
+    c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
+    c.send_audio(0, vec![100; 7999]).await;
+    c.send(ClientMsg::PttEnd).await;
+    let got = c.recv_for(Duration::from_millis(300)).await;
+    assert!(!got.iter().any(is_transcript), "{got:?}");
+    assert!(srv.stt.prompts.lock().unwrap().is_empty());
+    ptt(&mut c, GROUND).await;
+    let got = c.recv_until(is_atc_text).await;
+    assert!(has_taxi(&got), "{got:?}");
+    assert_eq!(srv.stt.prompts.lock().unwrap().len(), 1);
 }
 
 /// The readback is transcribed with the controller's last words on the frequency in the
@@ -292,7 +311,7 @@ async fn second_client_hears_relay_and_atc() {
 
     // A second PTT on the same frequency while c1 transmits is blocked.
     c1.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    c1.send_audio(0, vec![7; 320]).await;
+    c1.send_audio(0, vec![7; 8000]).await;
     let relay_start = c2.recv().await;
     assert_eq!(
         relay_start,
@@ -322,7 +341,7 @@ async fn second_client_hears_relay_and_atc() {
         })
         .collect();
     assert_eq!(audio.len(), 1);
-    assert_eq!((audio[0].stream, &audio[0].pcm), (0, &vec![7; 320]));
+    assert_eq!((audio[0].stream, &audio[0].pcm), (0, &vec![7; 8000]));
     assert!(heard.contains(&In::Msg(ServerMsg::RelayEnd {
         from: "SP-ABC".into()
     })));
@@ -507,7 +526,7 @@ async fn relay_frames_skip_listeners_that_retuned() {
     srv.wait_listeners(GROUND, 2).await;
 
     c1.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    c1.send_audio(0, vec![1; 320]).await;
+    c1.send_audio(0, vec![1; 8000]).await;
     let start = c2.recv().await;
     assert!(matches!(start, In::Msg(ServerMsg::RelayStart { .. })));
     let first = c2.recv().await;
@@ -515,7 +534,7 @@ async fn relay_frames_skip_listeners_that_retuned() {
 
     c2.send(ClientMsg::Telemetry(parked(TOWER))).await;
     srv.wait_listeners(GROUND, 1).await;
-    c1.send_audio(1, vec![2; 320]).await;
+    c1.send_audio(1, vec![2; 8000]).await;
     c1.send(ClientMsg::PttEnd).await;
 
     let rest = c2
@@ -1238,7 +1257,7 @@ async fn atc_waits_for_pilot_transmission() {
     let mut c = Client::hello(&srv.url, "SP-ABC").await;
     c.weather_and_parked(GROUND).await;
     c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    c.send_audio(0, vec![100; 320]).await;
+    c.send_audio(0, vec![100; 8000]).await;
     roll_without_clearance(&mut c, 11.0).await;
     // The deviation call waits while the pilot holds the frequency.
     let held = c.recv_for(Duration::from_secs(2)).await;
@@ -1258,7 +1277,7 @@ async fn queued_call_to_the_same_aircraft_goes_before_its_reply() {
     let mut c = Client::hello(&srv.url, "SP-ABC").await;
     c.weather_and_parked(GROUND).await;
     c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    c.send_audio(0, vec![100; 320]).await;
+    c.send_audio(0, vec![100; 8000]).await;
     roll_without_clearance(&mut c, 11.0).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     c.send(ClientMsg::PttEnd).await;
@@ -1280,7 +1299,7 @@ async fn reply_goes_before_queued_call_to_another_aircraft() {
     b.send(ClientMsg::Telemetry(parked(GROUND))).await;
     srv.wait_listeners(GROUND, 2).await;
     a.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    a.send_audio(0, vec![100; 320]).await;
+    a.send_audio(0, vec![100; 8000]).await;
     b.recv_until(|m| matches!(m, In::Msg(ServerMsg::RelayStart { .. })))
         .await;
     roll_without_clearance(&mut b, 11.0).await;
@@ -1308,7 +1327,7 @@ async fn held_ptt_does_not_start_when_frequency_clears() {
     // Ground's clearance is over; the same press (no PttEnd) is still refused.
     c.recv_for(airtime(&first_atc_text(&got))).await;
     c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    c.send_audio(0, vec![100; 320]).await;
+    c.send_audio(0, vec![100; 8000]).await;
     let again = c.recv_until(is_blocked).await;
     assert_eq!(
         again.last(),
@@ -1343,7 +1362,7 @@ async fn reminder_dropped_when_readback_arrives_first() {
         .unwrap()
         .push_back(Ok(transcript(&readback, 0.95)));
     c.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    c.send_audio(0, vec![100; 320]).await;
+    c.send_audio(0, vec![100; 8000]).await;
     // Sim time passes the reminder's 10 s while the pilot is still talking.
     for t in [30.0, 40.0] {
         let mut f = parked(GROUND);
@@ -1396,7 +1415,7 @@ async fn disconnect_frees_floor() {
     b.send(ClientMsg::Telemetry(parked(GROUND))).await;
     srv.wait_listeners(GROUND, 2).await;
     a.send(ClientMsg::PttStart { freq_khz: GROUND }).await;
-    a.send_audio(0, vec![100; 320]).await;
+    a.send_audio(0, vec![100; 8000]).await;
     b.recv_until(|m| matches!(m, In::Msg(ServerMsg::RelayStart { .. })))
         .await;
     // A's held PTT keeps B off the frequency.

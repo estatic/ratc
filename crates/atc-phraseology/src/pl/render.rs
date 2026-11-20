@@ -403,6 +403,7 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         | AtcItem::OffTrack { .. }
         | AtcItem::CheckHeading(_)
         | AtcItem::CheckLevel(_)
+        | AtcItem::CheckAltimeter { .. }
         | AtcItem::CheckEstablished { .. }
         | AtcItem::VisualApproachNotAvailable => crate::render::item_parts(item, out),
     }

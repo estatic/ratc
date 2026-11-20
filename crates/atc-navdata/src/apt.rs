@@ -6,7 +6,7 @@ use atc_geo::LatLon;
 
 use crate::model::{
     ActiveZone, Airport, EdgeKind, FreqKind, Frequency, Runway, RunwayEnd, Stand, StandCategory,
-    StandKind, TaxiEdge, TaxiNetwork, TaxiNode, ZoneKind,
+    StandKind, StandOperation, TaxiEdge, TaxiNetwork, TaxiNode, ZoneKind,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -166,7 +166,15 @@ pub fn parse_apt_dat(text: &str, icao: &str) -> Result<Airport, NavdataError> {
                 name: tail(&tok, 6),
                 kind: StandKind::from_apt(tok.get(4).copied().unwrap_or_default()),
                 categories: StandCategory::list_from_apt(tok.get(5).copied().unwrap_or_default()),
+                operation: StandOperation::Unspecified,
             }),
+            // The operation type of the stand just before; a stray row is ignored.
+            "1301" => {
+                if let Some(st) = ap.stands.last_mut() {
+                    st.operation =
+                        StandOperation::from_apt(tok.get(2).copied().unwrap_or_default());
+                }
+            }
             _ => {}
         }
     }

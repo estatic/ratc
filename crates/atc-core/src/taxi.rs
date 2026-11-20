@@ -559,6 +559,7 @@ mod tests {
             heading_deg: 0.0,
             kind: Default::default(),
             categories: Vec::new(),
+            operation: Default::default(),
         }
     }
 

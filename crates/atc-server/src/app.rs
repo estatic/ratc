@@ -451,6 +451,28 @@ impl Server {
         }
     }
 
+    /// Removes the replies still queued on `freq_khz` for `to`: a newer transmission of the
+    /// aircraft supersedes them. Items on the air were already taken off the queue
+    /// ([`Server::take_on_air`]) and the aircraft's own telemetry calls are not replies, so
+    /// neither is affected. Returns how many were removed.
+    pub(crate) fn drop_queued_replies(&self, freq_khz: u32, to: &Callsign) -> usize {
+        let mut queues = self.queues.lock().unwrap();
+        let Some(q) = queues.get_mut(&freq_khz) else {
+            return 0;
+        };
+        let before = q.len();
+        q.retain(|e| !(e.reply && e.out.message.to.as_ref() == Some(to)));
+        before - q.len()
+    }
+
+    /// [`Server::drop_queued_replies`], logged when it removed any.
+    pub(crate) fn drop_superseded(&self, freq_khz: u32, to: &Callsign) {
+        let dropped = self.drop_queued_replies(freq_khz, to);
+        if dropped > 0 {
+            tracing::info!(dropped, "superseded replies dropped");
+        }
+    }
+
     /// Wakes the speaker of `freq`, starting it on first use.
     fn wake_speaker(self: &Arc<Self>, freq_khz: u32) {
         let mut speakers = self.speakers.lock().unwrap();
@@ -785,6 +807,113 @@ mod tests {
             Duration::from_secs(2)
         );
         assert_eq!(words_airtime(""), Duration::ZERO);
+    }
+
+    /// The EPKK station from the repository data.
+    fn epkk_station() -> LoadedStation {
+        use atc_core::engine::{AtcEngine, EngineConfig};
+        use atc_core::readback::Strictness;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/airports/EPKK");
+        let dir = std::path::PathBuf::from(dir);
+        let procs =
+            parse_procedures(&std::fs::read_to_string(dir.join("procedures.toml")).unwrap())
+                .unwrap();
+        let apt = std::fs::read_to_string(dir.join("apt.dat")).unwrap();
+        let airport = atc_navdata::parse_apt_dat(&apt, "EPKK").unwrap();
+        let engine = AtcEngine::new(
+            airport.clone(),
+            procs.clone(),
+            EngineConfig::new(Strictness::Standard),
+        );
+        LoadedStation {
+            id: "EPKK".into(),
+            dir,
+            procs,
+            airport,
+            engine: Mutex::new(engine),
+        }
+    }
+
+    /// A server for EPKK, and the runtime its speaker tasks are spawned on (never
+    /// run: the tests do not yield, so queued items stay queued).
+    fn queue_server() -> (Arc<Server>, tokio::runtime::Runtime) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let state = AppState {
+            network: Arc::new(Network::new(vec![epkk_station()])),
+            hub: Arc::new(Mutex::new(Hub::default())),
+            stt: Arc::new(atc_voice::FakeStt::default()),
+            tts: Arc::new(atc_voice::FakeTts::default()),
+            stations: StationMap::union([]),
+            stt_prompts: SttPrompts::build("Test", &[]),
+            owner_prompts: OwnerPrompts::default(),
+            radio: RadioTiming::instant(),
+        };
+        (Arc::new(Server::new(state)), rt)
+    }
+
+    fn to_aircraft(to: &str, text: &str) -> AtcOutput {
+        AtcOutput {
+            freq_khz: 121_805,
+            station: "Kraków Ground".into(),
+            message: atc_phraseology::AtcMessage {
+                to: Some(Callsign::new(to)),
+                from: "Kraków Ground".into(),
+                items: vec![atc_phraseology::AtcItem::SayAgain],
+                lang: atc_phraseology::Lang::En,
+            },
+            text: text.into(),
+            reminder: None,
+        }
+    }
+
+    fn queued_texts(server: &Server, freq_khz: u32) -> Vec<String> {
+        let queues = server.queues.lock().unwrap();
+        queues[&freq_khz]
+            .iter()
+            .map(|e| e.out.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn drop_removes_queued_replies_to_aircraft() {
+        let (server, rt) = queue_server();
+        let _g = rt.enter();
+        server.enqueue_front(vec![
+            to_aircraft("N172SP", "first"),
+            to_aircraft("N172SP", "second"),
+            to_aircraft("SPTST", "other"),
+        ]);
+        assert_eq!(
+            server.drop_queued_replies(121_805, &Callsign::new("N172SP")),
+            2
+        );
+        assert_eq!(queued_texts(&server, 121_805), ["other"]);
+        let front = server.queue_front(121_805).unwrap();
+        assert_eq!(front.unsynthesized.unwrap().0, "other");
+    }
+
+    #[test]
+    fn drop_keeps_other_aircraft_and_own_transmissions() {
+        let (server, rt) = queue_server();
+        let _g = rt.enter();
+        server.enqueue_back(vec![to_aircraft("N172SP", "own")]);
+        server.enqueue_front(vec![to_aircraft("N172SP", "reply")]);
+        // Another frequency's replies stay too.
+        let mut elsewhere = to_aircraft("N172SP", "elsewhere");
+        elsewhere.freq_khz = 118_105;
+        server.enqueue_front(vec![elsewhere]);
+        assert_eq!(
+            server.drop_queued_replies(121_805, &Callsign::new("N172SP")),
+            1
+        );
+        assert_eq!(queued_texts(&server, 121_805), ["own"]);
+        assert_eq!(queued_texts(&server, 118_105), ["elsewhere"]);
+        assert_eq!(
+            server.drop_queued_replies(121_805, &Callsign::new("SPTST")),
+            0
+        );
     }
     use atc_navdata::procedures::parse_procedures;
 

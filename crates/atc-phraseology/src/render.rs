@@ -439,6 +439,11 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             "check heading, fly heading {}",
             digits_words(u32::from(*deg), 3)
         )),
+        AtcItem::CheckAltimeter { qnh_hpa, level } => out.push(format!(
+            "check altimeter setting, QNH {}, maintain {}",
+            digits_words(u32::from(*qnh_hpa), 4),
+            level_words(*level)
+        )),
         AtcItem::CheckLevel(l) => out.push(format!("check level, maintain {}", level_words(*l))),
         AtcItem::DistanceToGo(nm) => out.push(format!(
             "{} {} from touchdown",

@@ -62,6 +62,23 @@ fn digit_word(w: &str) -> Option<&'static str> {
     })
 }
 
+/// "ten".."nineteen": a whole number, never part of a digit run ("stand eleven" is 11).
+fn teen_word(w: &str) -> Option<&'static str> {
+    Some(match w {
+        "ten" => "10",
+        "eleven" => "11",
+        "twelve" => "12",
+        "thirteen" => "13",
+        "fourteen" => "14",
+        "fifteen" => "15",
+        "sixteen" => "16",
+        "seventeen" => "17",
+        "eighteen" => "18",
+        "nineteen" => "19",
+        _ => return None,
+    })
+}
+
 fn phonetic(w: &str) -> Option<char> {
     // "zolo"/"zoolo": Whisper's mishearings of "zulu"; "tanga" of "tango".
     if matches!(w, "zulu" | "zolo" | "zoolo") {
@@ -81,6 +98,8 @@ struct Run {
     total: u64,
     scaled: bool,
     active: bool,
+    /// Begun by a teen word ("eleven", "ten thousand").
+    teen: bool,
 }
 
 impl Run {
@@ -100,7 +119,11 @@ impl Run {
         self.scaled = true;
     }
 
-    fn flush(&mut self, out: &mut Vec<Token>) {
+    /// Ends the number; the position in `out` of one begun by a teen goes to `teens`.
+    fn flush(&mut self, out: &mut Vec<Token>, teens: &mut Vec<usize>) {
+        if self.active && self.teen {
+            teens.push(out.len());
+        }
         if self.active {
             if self.scaled {
                 let rest: u64 = self.digits.parse().unwrap_or(0);
@@ -193,6 +216,22 @@ fn expand_literal_callsigns(text: &str) -> String {
 /// a number) yields `Break`. Written registrations such as `SP-ABC` become
 /// letter tokens.
 pub fn normalize(text: &str) -> Vec<Token> {
+    tokens(text, true).0
+}
+
+/// [`normalize`] with, per token, whether it is a number said as a teen word ("eleven",
+/// "ten"): such a number is never part of a callsign.
+pub(crate) fn normalize_tagged(text: &str) -> (Vec<Token>, Vec<bool>) {
+    tokens(text, true)
+}
+
+/// [`normalize`] without the English teen words, for the Polish reading (Polish "ten" is
+/// "this"; Polish reads its own number words).
+pub(crate) fn normalize_without_teens(text: &str) -> Vec<Token> {
+    tokens(text, false).0
+}
+
+fn tokens(text: &str, teens_on: bool) -> (Vec<Token>, Vec<bool>) {
     let lower = expand_literal_callsigns(&hash_numbers(text))
         .to_lowercase()
         .replace("x-ray", "xray");
@@ -227,25 +266,57 @@ pub fn normalize(text: &str) -> Vec<Token> {
     let words = fix_whisper_words(s.split_whitespace().collect());
     let mut out = Vec::new();
     let mut run = Run::default();
+    let mut teens = Vec::new();
+    let teen_word = |w: &str| teen_word(w).filter(|_| teens_on);
+    // The run holds a teen: the next digit starts a new number ("eleven two" is 11, 2),
+    // but "ten thousand" still scales.
+    let mut teen = false;
     for w in words.iter().map(String::as_str) {
+        let digit = digit_word(w).or_else(|| w.chars().all(|c| c.is_ascii_digit()).then_some(w));
+        if teen && (digit.is_some() || teen_word(w).is_some()) {
+            run.flush(&mut out, &mut teens);
+        }
+        teen = false;
         if w == "\u{1}" {
-            run.flush(&mut out);
+            run.flush(&mut out, &mut teens);
             if out.last() != Some(&Token::Break) {
                 out.push(Token::Break);
             }
-        } else if w.chars().all(|c| c.is_ascii_digit()) {
-            run.push(w);
-        } else if let Some(d) = digit_word(w) {
+        } else if let Some(d) = teen_word(w) {
+            run.flush(&mut out, &mut teens);
+            run.push(d);
+            run.teen = true;
+            teen = true;
+        } else if let Some(d) = digit {
             run.push(d);
         } else if run.active && (w == "hundred" || w == "thousand") {
             run.scale(if w == "hundred" { 100 } else { 1000 });
         } else {
-            run.flush(&mut out);
+            run.flush(&mut out, &mut teens);
             word_token(w, &mut run, &mut out);
         }
     }
-    run.flush(&mut out);
-    join_frequency(join_downwind(out))
+    run.flush(&mut out, &mut teens);
+    // The joins below drop Breaks and merge words but keep every Number: teen numbers are
+    // found again by their rank among the numbers.
+    let is_num = |t: &Token| matches!(t, Token::Number(_));
+    let ranks: Vec<usize> = teens
+        .iter()
+        .map(|&k| out[..k].iter().filter(|t| is_num(t)).count())
+        .collect();
+    let toks = join_frequency(join_downwind(out));
+    let mut rank = 0;
+    let tags = toks
+        .iter()
+        .map(|t| {
+            let tagged = is_num(t) && ranks.contains(&rank);
+            if is_num(t) {
+                rank += 1;
+            }
+            tagged
+        })
+        .collect();
+    (toks, tags)
 }
 
 /// Word-level repairs of what Whisper wrote for radio speech: "one way two
@@ -286,7 +357,9 @@ fn fix_whisper_words(words: Vec<&str>) -> Vec<String> {
 
 /// True when the words so far end in a stand number: "stand" then digits.
 fn after_stand_number(words: &[String]) -> bool {
-    let is_digit = |w: &str| w.chars().all(|c| c.is_ascii_digit()) || digit_word(w).is_some();
+    let is_digit = |w: &str| {
+        w.chars().all(|c| c.is_ascii_digit()) || digit_word(w).is_some() || teen_word(w).is_some()
+    };
     let digits = words.iter().rev().take_while(|w| is_digit(w)).count();
     digits > 0
         && words

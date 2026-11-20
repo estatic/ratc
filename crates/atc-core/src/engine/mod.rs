@@ -69,13 +69,15 @@ use atc_navdata::fixes::ProcedureSet;
 use atc_navdata::model::{Airport, Destination};
 use atc_navdata::procedures::{AdjacentUnit, PositionDef, Procedures};
 use atc_phraseology::{
-    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang,
+    AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Courtesy, FlightRules, Lang, Level,
     PilotIntent, PilotMessage, ReadbackItem, Token, UnableReason, Vocabulary, normalize,
     parse_pilot_in, render,
 };
 
 use crate::atis::{AtisService, InitialContact, MAX_TAILWIND_KT, Weather, tailwind_kt};
-use crate::compliance::{ComplianceMonitor, Deviation, hold_line_cross_m};
+use crate::compliance::{
+    ComplianceMonitor, Deviation, REACTION_S, altimeter_error_ft, hold_line_cross_m,
+};
 use crate::handover::FlightHandover;
 use crate::phase::{FlightPhase, PhaseTracker};
 use crate::readback::{
@@ -84,7 +86,7 @@ use crate::readback::{
 use crate::runway::RunwayResource;
 use crate::squawk::{DEFAULT_POOL, discrete_codes};
 use crate::state::{AircraftState, SimTime};
-use crate::strip::{FlightPlan, PilotProfile, Role, Strip};
+use crate::strip::{FlightPlan, PilotProfile, Role, Strip, steers};
 use crate::taxi::TaxiGraph;
 use delivery::RunwayChange;
 
@@ -228,6 +230,27 @@ pub struct AtcEngine {
 /// Words a controller speaks per second, to estimate how long a clearance takes to say.
 const WORDS_PER_S: f64 = 2.5;
 
+/// A missing readback is reminded of this long after the clearance was spoken.
+const REMIND_AFTER_S: f64 = 10.0;
+
+/// The heading and level checks of aircraft `strip` are held at sim time `t` (s): while the
+/// readback of a heading or level instruction is pending, up to the reminder and the
+/// pilot's reaction time after it (a silent pilot is still called), and for the reaction
+/// time after it was accepted ([`REACTION_S`]). A sim clock gone back ends the wait.
+fn holds_clearance_checks(strip: &Strip, t: f64) -> bool {
+    let within = |from: f64, s: f64| (0.0..s).contains(&(t - from));
+    let pending = strip.pending_readback.is_some()
+        && steers(&strip.pending_items)
+        && within(
+            strip.readback_due_s.unwrap_or(strip.readback_issued_s),
+            REMIND_AFTER_S + REACTION_S,
+        );
+    let reacting = strip
+        .readback_done_at
+        .is_some_and(|done| within(done, REACTION_S));
+    pending || reacting
+}
+
 /// A reminder to read back, once per clearance: 10 s of sim time after it was spoken, or at
 /// once when the aircraft, standing when the clearance was issued, moves (over 3 kt) with a
 /// taxi readback pending. Spoken by the position that gave the clearance; `None` when no
@@ -240,7 +263,6 @@ fn readback_reminder(
     gs_kt: f64,
     busy: bool,
 ) -> Option<(Role, Vec<AtcItem>)> {
-    const REMIND_AFTER_S: f64 = 10.0;
     const MOVING_KT: f64 = 3.0;
     let role = strip.readback_role?;
     let mut due = strip.readback_due_s?;
@@ -282,6 +304,49 @@ fn spoken_words(text: &str) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The word speech recognition may write for a told word that sounds the same ("stand
+/// for" for "stand four", "follow-me card" for "follow-me car").
+fn homophone(w: &str) -> &str {
+    match w {
+        "for" => "four",
+        "to" => "two",
+        "card" => "car",
+        _ => w,
+    }
+}
+
+/// The words of `text` as heard ([`spoken_words`]), and the digits of its numbers as
+/// English words ("stand four"), which a homophone may stand for.
+fn told_words(text: &str) -> Vec<String> {
+    const DIGITS: [&str; 10] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ];
+    normalize(text)
+        .into_iter()
+        .flat_map(|t| match t {
+            Token::Word(w) => vec![fold(&w)],
+            Token::Number(d) => d
+                .chars()
+                .filter_map(|c| c.to_digit(10))
+                .map(|d| DIGITS[d as usize].to_string())
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// `message` gives the aircraft something to acknowledge: not only "say again", "pass
+/// your message" or "use your callsign", after which an acknowledgement still answers what
+/// was told before (it stays the last told).
+fn tells_something(message: &AtcMessage) -> bool {
+    !message.items.iter().all(|it| {
+        matches!(
+            it,
+            AtcItem::SayAgain | AtcItem::PassYourMessage | AtcItem::UseCallsign
+        )
+    })
 }
 
 /// Midpoint of the first runway (latitude, longitude).
@@ -686,10 +751,13 @@ impl AtcEngine {
             end_flight_keeping_contact(strip);
         }
         if strip.pending_readback.is_some() && strip.pending_expired() {
-            strip.readback_complete();
+            strip.readback_complete_at(s.t.0);
         }
         let reminder = readback_reminder(strip, s.t.0, s.gs_kt, busy);
         strip.radio_failure = s.xpdr_code == Some(approach::RADIO_FAILURE_SQUAWK);
+        if holds_clearance_checks(strip, s.t.0) {
+            sv.monitor.hold_clearance_checks();
+        }
         let deviations = sv.monitor.update(&s, phase, &strip.permissions);
         let (pos, gs_kt, t, vs_fpm) = (s.pos, s.gs_kt, s.t.0, s.vs_fpm);
         sv.last = s;
@@ -754,6 +822,7 @@ impl AtcEngine {
             .0
             .callsign
             .as_deref()
+            .or(alone.0.short_callsign.as_deref())
             .filter(|_| alone.1.is_none())
             .and_then(|h| self.near_aircraft(role, h));
         if alone.0.intent == PilotIntent::SayAgain {
@@ -844,7 +913,9 @@ impl AtcEngine {
         last.message.items.push(AtcItem::UseCallsign);
         last.text = render(&last.message, full);
         self.strips[i].issued.push(AtcItem::UseCallsign);
-        self.last_told.insert(cs.clone(), last.text.clone());
+        if tells_something(&last.message) {
+            self.last_told.insert(cs.clone(), last.text.clone());
+        }
         self.last_sent.insert((cs, role), last.clone());
     }
 
@@ -955,7 +1026,7 @@ impl AtcEngine {
         // Calling the station it was sent to completes the handover; calling a station on
         // the pilot's own initiative makes it the owner.
         match strip.handoff_to {
-            Some(to) if to == role => strip.readback_complete(),
+            Some(to) if to == role => strip.readback_complete_at(self.now),
             Some(_) => {}
             None => strip.owner = role,
         }
@@ -993,8 +1064,8 @@ impl AtcEngine {
                 || (at_limit && (request || carries_readback(&result, &pending)))
             {
                 // Correct, or asked for often enough: accept and move on.
-                let issued = std::mem::take(&mut strip.pending_items);
-                strip.readback_complete();
+                let issued = strip.pending_items.clone();
+                strip.readback_complete_at(self.now);
                 if !request {
                     let mut items = self.transponder_recheck(i, role);
                     if items.is_empty() && result == ReadbackResult::Correct {
@@ -1165,7 +1236,8 @@ impl AtcEngine {
     }
 
     /// The only aircraft `role` works on its frequency (owned, with surveillance) whose
-    /// callsign is one letter or digit off the heard callsign `heard` ([`near_callsign`]).
+    /// callsign is one letter or digit off (or lacks the first letter of) the heard callsign
+    /// `heard` ([`near_callsign`]).
     /// Unlike [`AtcEngine::only_addressed`] it need not be the one `role` last spoke to:
     /// the transmission names it, nearly. `None`: no such aircraft, or more than one.
     fn near_aircraft(&self, role: Role, heard: &str) -> Option<usize> {
@@ -1300,7 +1372,11 @@ impl AtcEngine {
                 return true;
             }
         }
-        alone.intent == PilotIntent::Unknown && is_request(&joined.intent)
+        // "Stand eleven" alone is a stand report; after "request taxi" it names the stand.
+        matches!(
+            alone.intent,
+            PilotIntent::Unknown | PilotIntent::ReportStand { .. }
+        ) && is_request(&joined.intent)
     }
 
     /// `msg` (no request) repeats the readback of the last clearance aircraft `i` was asked
@@ -1418,15 +1494,19 @@ impl AtcEngine {
     /// message, only a call (station name and greetings), or an acknowledgement (including
     /// a repeat of what it was last told). The parser sorts the words; the station names
     /// and the last transmission to the aircraft are known only here. In Polish a word
-    /// repeats a told word in another form ("kołuję" for "kołuj", see [`inflected`]).
+    /// repeats a told word in another form ("kołuję" for "kołuj", see [`inflected`]); a
+    /// word may sound like a told one ("stand for" for "stand four", see [`homophone`]).
     fn content(&self, i: usize, msg: &PilotMessage) -> Content {
         let words = spoken_words;
         let told = self
             .last_told
             .get(&self.strips[i].callsign)
-            .map_or_else(Vec::new, |t| words(t));
+            .map_or_else(Vec::new, |t| told_words(t));
         let polish = self.strips[i].lang == Lang::Pl;
-        let was_told = |w: &str| told.iter().any(|t| t == w || (polish && inflected(t, w)));
+        let was_told = |w: &str| {
+            told.iter()
+                .any(|t| t == w || homophone(t) == homophone(w) || (polish && inflected(t, w)))
+        };
 
         let station: Vec<String> = self
             .procs
@@ -1435,6 +1515,9 @@ impl AtcEngine {
             .flat_map(|p| words(&p.callsign))
             .collect();
         let (mut called, mut greeted, mut acked) = (false, false, false);
+        // "Roger", "wilco", thanks, or a repeat of a told word; a farewell is not, nor a
+        // greeting word that was told ("good" of a hand-off's "good day").
+        let mut confirmed = msg.ack;
         let sorted = msg
             .ack_words
             .iter()
@@ -1447,14 +1530,17 @@ impl AtcEngine {
                 called = true;
             } else if kind == Some(true) || was_told(&w) {
                 acked = true;
+                confirmed |= kind.is_none() || w == "thank" || w == "thanks";
             } else if kind == Some(false) {
                 greeted = true;
             } else {
                 return Content::Message;
             }
         }
-        // A bare callsign acknowledges; naming the station or greeting it is a call.
-        if called || (greeted && !acked) {
+        // A bare callsign acknowledges; naming the station or greeting it is a call. Naming
+        // the station with "roger" or a told word ("Krakow Ground, roger") acknowledges;
+        // a greeting with thanks ("hello, thanks") acknowledges too.
+        if (called && !confirmed) || (greeted && !acked) {
             Content::Call
         } else {
             Content::Acknowledgement
@@ -1715,7 +1801,9 @@ impl AtcEngine {
                 .is_some_and(|sv| sv.last.gs_kt > 3.0);
         }
         let cs = strip.callsign.clone();
-        self.last_told.insert(cs.clone(), text.clone());
+        if tells_something(&message) {
+            self.last_told.insert(cs.clone(), text.clone());
+        }
         let out = AtcOutput {
             freq_khz,
             station,
@@ -1789,6 +1877,7 @@ impl AtcEngine {
                 _ => None,
             })
             .collect();
+        let qnh = self.atis.as_ref().map(|a| a.current().weather.qnh_hpa);
         let strip = &mut self.strips[i];
         if deviations.contains(&Deviation::LandingWithoutClearance) {
             strip.uncleared_landing = true;
@@ -1804,7 +1893,23 @@ impl AtcEngine {
                 }
                 Deviation::TakeoffWithoutClearance => items.push(AtcItem::TakenOffWithoutClearance),
                 Deviation::LandingWithoutClearance => items.push(AtcItem::LandedWithoutClearance),
-                Deviation::AltitudeDeviation { assigned, .. } => match level {
+                Deviation::AltitudeDeviation { assigned, actual } => match level {
+                    // The error is what standard pressure at this QNH would give: the
+                    // pilot has not set the altimeter.
+                    Some(level @ Level::Altitude(_))
+                        if off_circuit
+                            && let Some(qnh) = qnh
+                            && {
+                                let err = altimeter_error_ft(f64::from(qnh));
+                                err.abs() >= 200.0
+                                    && (f64::from(actual - assigned) - err).abs() <= 100.0
+                            } =>
+                    {
+                        items.push(AtcItem::CheckAltimeter {
+                            qnh_hpa: qnh,
+                            level,
+                        })
+                    }
                     Some(level) if off_circuit => items.push(AtcItem::CheckLevel(level)),
                     _ => items.push(AtcItem::CheckAltitude {
                         circuit_ft: assigned.unsigned_abs(),
@@ -2155,15 +2260,20 @@ fn letters_lost(full: &str, heard: &str) -> bool {
 }
 
 /// `heard` differs from the callsign `known` by exactly one letter or digit (a
-/// substitution), in full or abbreviated form ("NSB" for N172SP, abbreviated "NSP").
+/// substitution), in full or abbreviated form ("NSB" for N172SP, abbreviated "NSP"), or is
+/// that callsign without its first character, at least two left ("SP" for N172SP).
 fn near_callsign(heard: &str, known: &str) -> bool {
     let heard = Callsign::new(heard).0;
     let known = Callsign::new(known);
+    let first_lost = |k: &str| heard.chars().count() >= 2 && k.chars().skip(1).eq(heard.chars());
     let one_off = |k: &str| {
         heard.chars().count() == k.chars().count()
             && heard.chars().zip(k.chars()).filter(|(a, b)| a != b).count() == 1
     };
-    one_off(&known.0) || one_off(&known.abbreviated())
+    one_off(&known.0)
+        || one_off(&known.abbreviated())
+        || first_lost(&known.0)
+        || first_lost(&known.abbreviated())
 }
 
 /// "full stop" anywhere in the transmission (also inside a position report), heard in

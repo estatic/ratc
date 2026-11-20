@@ -100,6 +100,35 @@ pub struct Stand {
     /// Aircraft categories the stand takes (row 1300, field 5); empty: all.
     #[serde(default)]
     pub categories: Vec<StandCategory>,
+    /// Kind of operation the stand serves (apt.dat row 1301 after the stand, field 2).
+    #[serde(default)]
+    pub operation: StandOperation,
+}
+
+/// Operation type of a stand (apt.dat row 1301: `general_aviation`, `airline`, `cargo`,
+/// `military`, `none`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StandOperation {
+    GeneralAviation,
+    Airline,
+    Cargo,
+    Military,
+    /// `none`, no row 1301, or anything unknown.
+    #[default]
+    Unspecified,
+}
+
+impl StandOperation {
+    /// The apt.dat keyword; anything unknown is `Unspecified`.
+    pub fn from_apt(s: &str) -> Self {
+        match s {
+            "general_aviation" => StandOperation::GeneralAviation,
+            "airline" => StandOperation::Airline,
+            "cargo" => StandOperation::Cargo,
+            "military" => StandOperation::Military,
+            _ => StandOperation::Unspecified,
+        }
+    }
 }
 
 /// Type of a stand (apt.dat row 1300: `gate`, `tie_down`, `hangar`, `misc`).

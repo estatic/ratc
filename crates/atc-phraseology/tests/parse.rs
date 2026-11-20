@@ -352,6 +352,31 @@ fn qnh_and_squawk_digits_continue_across_commas() {
     assert_eq!(m.items.squawk, vec![7000]);
 }
 
+/// A QNH below 1000 is read without the leading zero; a stray "and" from the
+/// transcriber inside the digits is tolerated.
+#[test]
+fn qnh_below_1000_without_leading_zero() {
+    assert_eq!(en("QNH niner niner two").items.qnh, vec![992]);
+    assert_eq!(en("QNH zero niner niner two").items.qnh, vec![992]);
+    assert_eq!(en("QNH one zero one three").items.qnh, vec![1013]);
+    assert_eq!(en("QNH zero nine and nine two").items.qnh, vec![992]);
+    assert!(en("QNH one zero one").items.qnh.is_empty());
+}
+
+#[test]
+fn qnh_three_digits_do_not_swallow_what_follows() {
+    let m = en("QNH niner niner two, squawk four two zero one");
+    assert_eq!(m.items.qnh, vec![992]);
+    assert_eq!(m.items.squawk, vec![4201]);
+    assert_eq!(
+        en("QNH niner niner two, one zero miles from touchdown")
+            .items
+            .qnh,
+        vec![992]
+    );
+    assert_eq!(en("QNH niner niner two and one").items.qnh, vec![992]);
+}
+
 /// Common Whisper mishearings of "via" and "Zulu" (heard in X-Plane acceptance).
 #[test]
 fn misheard_via_and_zulu() {
@@ -629,7 +654,8 @@ fn ifr_clearance_request_with_place_name() {
         PilotIntent::RequestClearance {
             destination: Some("EPKT".into()),
             rules: Some(FlightRules::Ifr),
-            level_ft: None
+            level_ft: None,
+            atis: Some('A'),
         }
     );
 }
@@ -644,7 +670,8 @@ fn clearance_request_with_spelled_icao_and_level() {
         PilotIntent::RequestClearance {
             destination: Some("EPWA".into()),
             rules: Some(FlightRules::Ifr),
-            level_ft: Some(10_000)
+            level_ft: Some(10_000),
+            atis: None,
         }
     );
     let none = with("Delivery, Sierra Bravo Charlie, request clearance");
@@ -653,7 +680,8 @@ fn clearance_request_with_spelled_icao_and_level() {
         PilotIntent::RequestClearance {
             destination: None,
             rules: None,
-            level_ft: None
+            level_ft: None,
+            atis: None,
         }
     );
 }
@@ -879,7 +907,8 @@ fn clearance_request_without_rules() {
         PilotIntent::RequestClearance {
             destination: Some("EPKT".into()),
             rules: None,
-            level_ft: None
+            level_ft: None,
+            atis: None,
         }
     );
     let vfr = with("Delivery, Sierra Bravo Charlie, VFR to Katowice, request clearance");
@@ -1153,4 +1182,161 @@ fn any_stand_is_heard() {
     ] {
         assert!(!en(text).items.any_stand, "{text}");
     }
+}
+
+#[test]
+fn heading_after_comma() {
+    let m = en(
+        "Turn left heading, two nine five, one zero miles from touchdown, cleared ILS approach, runway two seven, report established, November Sierra Papa",
+    );
+    assert_eq!(m.items.headings, vec![295]);
+    assert_eq!(
+        m.items.approaches,
+        vec![(ApproachKind::Ils, "27".to_string())]
+    );
+    assert_eq!(m.intent, PilotIntent::Readback);
+}
+
+#[test]
+fn heading_break_needs_three_digits() {
+    let m = en("turn left heading, one zero miles");
+    assert!(m.items.headings.is_empty());
+}
+
+#[test]
+fn teens_are_numbers() {
+    let toks = normalize("stand eleven");
+    assert_eq!(
+        toks[toks.len() - 2..],
+        [Token::Word("stand".into()), Token::Number("11".into())]
+    );
+    assert_eq!(normalize("nineteen"), vec![Token::Number("19".into())]);
+    assert_eq!(normalize("ten"), vec![Token::Number("10".into())]);
+}
+
+#[test]
+fn stand_number_is_not_callsign() {
+    let m = en("Katowice Ground, runway vacated, request taxi, stand 11, November Sierra Papa.");
+    assert_eq!(m.callsign.as_deref(), Some("NSP"));
+    assert_eq!(
+        m.intent,
+        PilotIntent::RequestTaxiToStand {
+            stand: Some("stand 11".into())
+        }
+    );
+}
+
+#[test]
+fn stand_alone_is_report_stand() {
+    for text in [
+        "Katowice Ground, stand eleven, November Sierra Papa.",
+        "November Sierra Papa, stand eleven.",
+    ] {
+        let m = en(text);
+        assert_eq!(
+            m.intent,
+            PilotIntent::ReportStand {
+                stand: "stand 11".into()
+            },
+            "{text}"
+        );
+        assert_eq!(m.callsign.as_deref(), Some("NSP"), "{text}");
+    }
+}
+
+#[test]
+fn stand_with_request_keeps_request() {
+    let m = en("Krakow Ground, SPABC, stand nine, request start-up");
+    assert!(
+        matches!(m.intent, PilotIntent::RequestStartUp { .. }),
+        "{:?}",
+        m.intent
+    );
+}
+
+#[test]
+fn two_letter_callsign_is_short() {
+    let m = en("Katowice Tower, Sierra Papa.");
+    assert_eq!(m.callsign, None);
+    assert_eq!(m.short_callsign.as_deref(), Some("SP"));
+}
+
+#[test]
+fn teen_after_callsign_is_not_callsign() {
+    assert_eq!(
+        en("SPABC, ten miles final").callsign.as_deref(),
+        Some("SPABC")
+    );
+    assert_eq!(
+        en("Krakow Tower, SPABC, ten miles south")
+            .callsign
+            .as_deref(),
+        Some("SPABC")
+    );
+    let m = en("Katowice Tower, Sierra Papa, ten miles south");
+    assert_eq!(m.callsign, None);
+    assert_eq!(m.short_callsign.as_deref(), Some("SP"));
+}
+
+#[test]
+fn stand_by_is_not_report_stand() {
+    for text in [
+        "Krakow Ground, SPABC, stand by",
+        "Krakow Tower, SPABC, stand by one",
+    ] {
+        let m = en(text);
+        assert!(
+            !matches!(m.intent, PilotIntent::ReportStand { .. }),
+            "{text}: {:?}",
+            m.intent
+        );
+    }
+}
+
+#[test]
+fn short_callsign_after_stand() {
+    let m = en("Katowice Ground, stand eleven, Sierra Papa");
+    assert_eq!(
+        m.intent,
+        PilotIntent::ReportStand {
+            stand: "stand 11".into()
+        }
+    );
+    assert_eq!(m.short_callsign.as_deref(), Some("SP"));
+}
+
+#[test]
+fn digit_runs_unchanged_by_teens() {
+    assert_eq!(
+        en("one one eight decimal one zero five").items.freqs_khz,
+        vec![118_105]
+    );
+    assert_eq!(
+        en("flight level one one zero").items.flight_levels,
+        vec![110]
+    );
+    assert_eq!(
+        normalize("ten thousand"),
+        vec![Token::Number("10000".into())]
+    );
+    assert_eq!(
+        en("climb ten thousand feet").items.altitudes_ft,
+        vec![10_000]
+    );
+}
+
+#[test]
+fn clearance_request_keeps_the_heard_atis_letter() {
+    let m = with(
+        "Kraków Delivery November one seven two Sierra Papa, Cessna one seven two stand nine right information Alpha IFR to Katowice request clearance.",
+    );
+    assert_eq!(
+        m.intent,
+        PilotIntent::RequestClearance {
+            destination: Some("EPKT".into()),
+            rules: Some(FlightRules::Ifr),
+            level_ft: None,
+            atis: Some('A'),
+        }
+    );
 }

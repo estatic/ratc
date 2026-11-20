@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::normalize::{Token, normalize};
+use crate::normalize::{Token, normalize, normalize_tagged};
 use crate::pl;
 use crate::pl::normalize::fold;
 use crate::types::{
@@ -106,6 +106,7 @@ pub fn parse_pilot_in(
         addressee: None,
         station_called: false,
         callsign: None,
+        short_callsign: None,
         intent: PilotIntent::Unknown,
         items: HeardItems::default(),
         greeting: None,
@@ -117,22 +118,39 @@ pub fn parse_pilot_in(
         raw: text.to_string(),
     };
     // The words as said, each with the canonical words it was read as (`None`: itself).
-    let (toks, said) = match lang {
+    let (toks, said, teens) = match lang {
         Lang::En => {
-            let toks = normalize(text);
+            let (toks, teens) = normalize_tagged(text);
             let said = words(&toks).into_iter().map(|(_, w)| (w, None)).collect();
-            (toks, said)
+            (toks, said, teens)
         }
-        Lang::Pl => pl::normalize::normalize_said(text),
+        Lang::Pl => {
+            let (toks, said) = pl::normalize::normalize_said(text);
+            let teens = vec![false; toks.len()];
+            (toks, said, teens)
+        }
     };
     let mut scan = Scan::new(&toks, vocab);
+    scan.teen = teens;
     scan.scan_addressee();
     let found = scan.scan_known_callsign(known);
     scan.scan_any_stand();
+    scan.scan_stand_numbers();
     scan.scan_items();
     scan.single_place_destination();
     msg.callsign = found.or_else(|| scan.find_callsign());
     msg.intent = scan.intent();
+    // English only: the Polish reading never reports a stand alone nor a short callsign.
+    if lang == Lang::En {
+        if msg.intent == PilotIntent::Unknown
+            && let Some(stand) = scan.stand_heard()
+        {
+            msg.intent = PilotIntent::ReportStand { stand };
+        }
+        if msg.callsign.is_none() {
+            msg.short_callsign = scan.find_short_callsign();
+        }
+    }
     msg.addressee = scan.addressee;
     msg.station_called = scan.station_called;
     msg.items = scan.items;
@@ -280,6 +298,11 @@ struct Scan<'a> {
     /// Tokens already explained by an addressee/item; excluded from
     /// callsign detection.
     used: Vec<bool>,
+    /// Numbers marked used as a stand's designator ([`Scan::scan_stand_numbers`]); the
+    /// stand reader still reads them.
+    stand_num: Vec<bool>,
+    /// Numbers said as a teen word ("ten miles"): never part of a callsign.
+    teen: Vec<bool>,
     items: HeardItems,
     atis: Option<char>,
     addressee: Option<String>,
@@ -389,6 +412,8 @@ impl<'a> Scan<'a> {
             vocab,
             approach_kind: None,
             used: vec![false; toks.len()],
+            stand_num: vec![false; toks.len()],
+            teen: vec![false; toks.len()],
             items: HeardItems::default(),
             atis: None,
             addressee: None,
@@ -453,6 +478,33 @@ impl<'a> Scan<'a> {
             k = self.skip_break(k);
         }
         (out.len() == len).then_some((out, k))
+    }
+
+    /// A QNH value from `j`: four digits worth 900 to 1100 (a leading zero allowed), else
+    /// three digits worth 900 to 999 ("QNH niner niner two"); digits that follow and fit
+    /// neither stay unread. Pause commas, and a stray "and" after the first or second
+    /// digit, are read over.
+    fn qnh_value(&self, j: usize) -> Option<(u16, usize)> {
+        let mut out = String::new();
+        let mut k = j;
+        // The longest valid reading so far: value and end index.
+        let mut best = None;
+        while out.len() < 4 {
+            let Some(d) = self.num(k) else { break };
+            out.push_str(d);
+            k += 1;
+            let v: Option<u16> = out.parse().ok();
+            match (out.len(), v) {
+                (3, Some(v)) if (900..=999).contains(&v) => best = Some((v, k)),
+                (4, Some(v)) if (900..=1100).contains(&v) => best = Some((v, k)),
+                _ => {}
+            }
+            k = self.skip_break(k);
+            if out.len() <= 2 && self.w(k) == Some("and") && self.num(k + 1).is_some() {
+                k += 1;
+            }
+        }
+        best
     }
 
     /// Number of designators from `j` up to a Break, a word, the callsign or the end; `None` when no
@@ -523,6 +575,7 @@ impl<'a> Scan<'a> {
         let mut run = Vec::new();
         while k >= self.start && k < self.toks.len() {
             match self.toks[k] {
+                Token::Number(_) if self.teen[k] => break,
                 Token::Letter(_) | Token::Number(_) => run.push(k),
                 Token::Break => {}
                 Token::Word(_) => break,
@@ -732,9 +785,7 @@ impl<'a> Scan<'a> {
                 self.mark(i, j);
             }
             "qnh" => {
-                if let Some((d, end)) = self.digits(self.skip_break(i + 1), 4)
-                    && let Ok(v) = d.parse()
-                {
+                if let Some((v, end)) = self.qnh_value(self.skip_break(i + 1)) {
                     self.items.qnh.push(v);
                     self.mark(i, end);
                 }
@@ -747,22 +798,25 @@ impl<'a> Scan<'a> {
                     self.mark(i, end);
                 }
             }
+            // "heading, two nine five": the value may follow a pause comma.
             "heading" => {
-                if let Some(d) = self.num(i + 1)
+                let j = self.skip_break(i + 1);
+                if let Some(d) = self.num(j)
                     && d.len() == 3
                     && let Ok(v) = d.parse::<u16>()
                     && v <= 360
                 {
                     self.items.headings.push(v);
-                    self.mark(i, i + 2);
+                    self.mark(i, j + 1);
                 }
             }
             "altitude" => {
-                if let Some(d) = self.num(i + 1)
+                let j = self.skip_break(i + 1);
+                if let Some(d) = self.num(j)
                     && let Ok(v) = d.parse()
                 {
                     self.items.altitudes_ft.push(v);
-                    self.mark(i, i + 2);
+                    self.mark(i, j + 1);
                 }
             }
             "feet" | "foot" => {
@@ -1166,13 +1220,15 @@ impl<'a> Scan<'a> {
         true
     }
 
-    /// First series of unexplained letters/digits, after the addressee,
-    /// that is at least 3 characters long and contains a letter.
-    fn find_callsign(&self) -> Option<String> {
+    /// Series of unexplained letters/digits after the addressee, spelled, each with
+    /// whether it holds a letter.
+    fn letter_digit_runs(&self) -> Vec<(String, bool)> {
+        let mut runs = Vec::new();
         let mut cur = String::new();
         let mut has_letter = false;
         for i in self.start..=self.toks.len() {
-            let tok = if self.used.get(i).copied().unwrap_or(true) {
+            // A teen number ("SPABC, ten miles") is no part of a callsign.
+            let tok = if self.used.get(i).copied().unwrap_or(true) || self.teen[i] {
                 None
             } else {
                 self.toks.get(i)
@@ -1187,20 +1243,165 @@ impl<'a> Scan<'a> {
                 Some(Token::Break)
                     if !cur.is_empty()
                         && !self.used.get(i + 1).copied().unwrap_or(true)
+                        && !self.teen.get(i + 1).copied().unwrap_or(false)
                         && matches!(
                             self.toks.get(i + 1),
                             Some(Token::Letter(_) | Token::Number(_))
                         ) => {}
                 _ => {
-                    if has_letter && cur.chars().count() >= 3 {
-                        return Some(cur);
+                    if !cur.is_empty() {
+                        runs.push((std::mem::take(&mut cur), has_letter));
                     }
-                    cur.clear();
                     has_letter = false;
                 }
             }
         }
-        None
+        runs
+    }
+
+    /// First series of unexplained letters/digits, after the addressee,
+    /// that is at least 3 characters long and contains a letter.
+    fn find_callsign(&self) -> Option<String> {
+        self.letter_digit_runs()
+            .into_iter()
+            .find(|(run, letter)| *letter && run.chars().count() >= 3)
+            .map(|(run, _)| run)
+    }
+
+    /// First series of unexplained letters/digits, after the addressee, of exactly two
+    /// characters with a letter ("Sierra Papa"): too short for a callsign.
+    fn find_short_callsign(&self) -> Option<String> {
+        self.letter_digit_runs()
+            .into_iter()
+            .find(|(run, letter)| *letter && run.chars().count() == 2)
+            .map(|(run, _)| run)
+    }
+
+    /// The stand named from the keyword at `s` ("stand", "parking", "apron"): the keyword
+    /// and its designator joined by spaces (`"stand 9 R"`), `None` with no designator.
+    fn stand_name(&self, s: usize) -> Option<String> {
+        self.stand_span(s).map(|(name, _)| name)
+    }
+
+    /// [`Self::stand_name`] with the index just past the stand.
+    fn stand_span(&self, s: usize) -> Option<(String, usize)> {
+        let n = self.toks.len();
+        let keyword = self.w(s)?;
+        let mut end = n.min(s + 11);
+        let mut parts = vec![keyword.to_string()];
+        // The pilot's callsign (already taken) ends the stand; "left" / "right" /
+        // "centre" right after a number is the stand's letter ("nine right" is 9R).
+        let mut skip = 0;
+        for j in s + 1..n.min(s + 11) {
+            if j < skip {
+                continue;
+            }
+            // "GALPHA" in capitals is read as a registration, its letters taken.
+            const GALPHA: [char; 6] = ['G', 'A', 'L', 'P', 'H', 'A'];
+            if parts.len() > 1
+                && (0..GALPHA.len()).all(
+                    |k| matches!(self.toks.get(j + k), Some(Token::Letter(c)) if *c == GALPHA[k]),
+                )
+            {
+                parts.push("galpha".to_string());
+                skip = j + GALPHA.len();
+                end = skip;
+                continue;
+            }
+            // ("for galpha" may have been taken for a destination.)
+            if self.used.get(j).copied().unwrap_or(false)
+                && !self.stand_num[j]
+                && !matches!(&self.toks[j], Token::Word(w) if w == "for")
+            {
+                end = j;
+                break;
+            }
+            let after_number = matches!(self.toks[j - 1], Token::Number(_));
+            match &self.toks[j] {
+                Token::Letter(c) => parts.push(c.to_string()),
+                Token::Number(d) => parts.push(d.clone()),
+                Token::Word(w) if after_number && side_letter(w).is_some() => {
+                    parts.extend(side_letter(w).map(String::from));
+                }
+                Token::Word(w) if is_stand_word(w) || is_apron_misheard(w) => {
+                    parts.push(w.clone());
+                }
+                // "apron for Golf Alpha": the 4 of the stand; "galpha": two letters
+                // run together.
+                Token::Word(w)
+                    if (w == "for"
+                        && parts
+                            .last()
+                            .is_some_and(|p| p == "apron" || is_apron_misheard(p)))
+                        || w == "galpha"
+                        || w == "gulf" =>
+                {
+                    parts.push(w.clone());
+                }
+                // A comma inside the stand name ("Aparon 4, Gulf Alpha").
+                Token::Break
+                    if parts.len() > 1
+                        && matches!(
+                            self.toks.get(j + 1),
+                            Some(Token::Letter(_)) | Some(Token::Word(_))
+                        )
+                        && (matches!(self.toks.get(j + 1), Some(Token::Letter(_)))
+                            || self.w(j + 1) == Some("gulf"))
+                        && !self.used.get(j + 1).copied().unwrap_or(false)
+                        && parts.iter().any(|p| p == "apron" || is_apron_misheard(p))
+                        && !self.callsign_after(j) => {}
+                Token::Word(_) | Token::Break => {
+                    end = j;
+                    break;
+                }
+            }
+        }
+        (parts.len() > 1).then(|| (parts.join(" "), end))
+    }
+
+    /// Three or more letters right after the Break at `j`: a callsign, not more of a stand
+    /// ("stand 11, November Sierra Papa").
+    fn callsign_after(&self, j: usize) -> bool {
+        self.toks[j + 1..]
+            .iter()
+            .take_while(|t| matches!(t, Token::Letter(_)))
+            .count()
+            >= 3
+    }
+
+    /// The number after a stand keyword belongs to the stand ("stand 11", "stand eleven"):
+    /// marked used before the callsign search so it never opens the callsign.
+    fn scan_stand_numbers(&mut self) {
+        for i in 0..self.toks.len() {
+            if matches!(self.w(i), Some("stand" | "parking"))
+                && matches!(self.toks.get(i + 1), Some(Token::Number(_)))
+                && !self.used[i + 1]
+            {
+                self.used[i + 1] = true;
+                self.stand_num[i + 1] = true;
+            }
+        }
+    }
+
+    /// A stand report: "stand" and its designator (a number or a letter, not "stand by"),
+    /// as [`Self::stand_name`] reads it, with no other words after the addressee than
+    /// greetings.
+    fn stand_heard(&self) -> Option<String> {
+        let (i, name, end) = (0..self.toks.len())
+            .filter(|&i| {
+                self.w(i) == Some("stand")
+                    && matches!(
+                        self.toks.get(i + 1),
+                        Some(Token::Letter(_) | Token::Number(_))
+                    )
+            })
+            .find_map(|i| self.stand_span(i).map(|(name, end)| (i, name, end)))?;
+        let other_words = (self.start..self.toks.len()).any(|k| {
+            !(i..end).contains(&k)
+                && !self.used[k]
+                && self.w(k).is_some_and(|w| !GREETING_WORDS.contains(&w))
+        });
+        (!other_words).then_some(name)
     }
 
     /// Some word sequence of `pats` anywhere in the message.
@@ -1334,6 +1535,7 @@ impl<'a> Scan<'a> {
                     None
                 },
                 level_ft,
+                atis: self.atis,
             });
         }
         if self.request_then(4, |k| {
@@ -1399,73 +1601,14 @@ impl<'a> Scan<'a> {
             let Some(k) = (i + 1..n.min(i + 4)).find(|&k| self.w(k) == Some("taxi")) else {
                 continue;
             };
-            let mut s = k + 1;
+            // "request taxi, stand 11": the stand may follow a pause comma.
+            let mut s = self.skip_break(k + 1);
             if self.w(s) == Some("to") {
                 s += 1;
             }
-            if let Some(keyword @ ("stand" | "parking" | "apron")) = self.w(s) {
-                let mut parts = vec![keyword.to_string()];
-                // The pilot's callsign (already taken) ends the stand; "left" / "right" /
-                // "centre" right after a number is the stand's letter ("nine right" is 9R).
-                let mut skip = 0;
-                for j in s + 1..n.min(s + 11) {
-                    if j < skip {
-                        continue;
-                    }
-                    // "GALPHA" in capitals is read as a registration, its letters taken.
-                    const GALPHA: [char; 6] = ['G', 'A', 'L', 'P', 'H', 'A'];
-                    if parts.len() > 1
-                        && (0..GALPHA.len()).all(|k| {
-                            matches!(self.toks.get(j + k), Some(Token::Letter(c)) if *c == GALPHA[k])
-                        })
-                    {
-                        parts.push("galpha".to_string());
-                        skip = j + GALPHA.len();
-                        continue;
-                    }
-                    // ("for galpha" may have been taken for a destination.)
-                    if self.used.get(j).copied().unwrap_or(false)
-                        && !matches!(&self.toks[j], Token::Word(w) if w == "for")
-                    {
-                        break;
-                    }
-                    let after_number = matches!(self.toks[j - 1], Token::Number(_));
-                    match &self.toks[j] {
-                        Token::Letter(c) => parts.push(c.to_string()),
-                        Token::Number(d) => parts.push(d.clone()),
-                        Token::Word(w) if after_number && side_letter(w).is_some() => {
-                            parts.extend(side_letter(w).map(String::from));
-                        }
-                        Token::Word(w) if is_stand_word(w) || is_apron_misheard(w) => {
-                            parts.push(w.clone());
-                        }
-                        // "apron for Golf Alpha": the 4 of the stand; "galpha": two letters
-                        // run together.
-                        Token::Word(w)
-                            if (w == "for"
-                                && parts
-                                    .last()
-                                    .is_some_and(|p| p == "apron" || is_apron_misheard(p)))
-                                || w == "galpha"
-                                || w == "gulf" =>
-                        {
-                            parts.push(w.clone());
-                        }
-                        // A comma inside the stand name ("Aparon 4, Gulf Alpha").
-                        Token::Break
-                            if parts.len() > 1
-                                && matches!(
-                                    self.toks.get(j + 1),
-                                    Some(Token::Letter(_)) | Some(Token::Word(_))
-                                )
-                                && (matches!(self.toks.get(j + 1), Some(Token::Letter(_)))
-                                    || self.w(j + 1) == Some("gulf"))
-                                && !self.used.get(j + 1).copied().unwrap_or(false) => {}
-                        Token::Word(_) | Token::Break => break,
-                    }
-                }
+            if let Some("stand" | "parking" | "apron") = self.w(s) {
                 return PilotIntent::RequestTaxiToStand {
-                    stand: (parts.len() > 1).then(|| parts.join(" ")),
+                    stand: self.stand_name(s),
                 };
             }
             let vfr_circuits = (0..n).any(|j| matches!(self.w(j), Some("circuit" | "circuits")));

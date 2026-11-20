@@ -47,6 +47,7 @@ impl AtcEngine {
             PilotIntent::ReportLeg(_) | PilotIntent::RequestFullStop => vec![AtcItem::Roger],
             PilotIntent::RequestTaxi { .. }
             | PilotIntent::RequestTaxiToStand { .. }
+            | PilotIntent::ReportStand { .. }
             | PilotIntent::RequestTaxiHelp
             | PilotIntent::RequestStartUp { .. } => self.redirect(i, Role::Ground),
             PilotIntent::RequestClearance { .. } => {

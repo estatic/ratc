@@ -32,6 +32,15 @@ const HEADING_TOL_DEG: f64 = 20.0;
 const HEADING_PERSIST_S: f64 = 30.0;
 /// The heading gap closing at least this fast (degrees per second): turning onto it.
 const TURNING_DEG_S: f64 = 1.0;
+/// Time the pilot is given to start following an instruction once its readback has been
+/// accepted, before the heading and level checks start their persistence time.
+pub const REACTION_S: f64 = 10.0;
+
+/// True altitude minus indicated altitude (feet) for a pilot flying on standard pressure
+/// (1013.25 hPa) when the actual QNH is `qnh_hpa`: about 27.3 ft per hPa.
+pub fn altimeter_error_ft(qnh_hpa: f64) -> f64 {
+    (qnh_hpa - 1013.25) * 27.3
+}
 
 /// What the aircraft is currently allowed to do.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -150,7 +159,9 @@ pub fn hold_line_cross_m(rwy: &RunwayFrame, hold_points: &[LatLon]) -> Option<f6
 ///   [`ComplianceMonitor::with_magnetic_variation`]); more than 200 ft past the cleared level
 ///   on the far side from where the aircraft was when it was given (above it when climbing to
 ///   it, below it when descending to it), or more than 200 ft off it either way once it was
-///   reached, for 10 s (climbing or descending to it is no deviation);
+///   reached, for 10 s (climbing or descending to it is no deviation); the heading and level
+///   checks are held, and start their time afresh after, while
+///   [`ComplianceMonitor::hold_clearance_checks`] is called (the readback pending);
 /// - telemetry gap (`dt > 5 s`, `dt <= 0`, or position jump `> 2 * gs * dt + 500 m`, gs being
 ///   the larger of the two samples): the altitude timer and the previous-sample memory are reset
 ///   and nothing is reported for that sample.
@@ -182,6 +193,10 @@ pub struct ComplianceMonitor {
     /// The aircraft was above the cleared level at the first sample under it (descending to
     /// it); `None` until that sample.
     level_from_above: Option<bool>,
+    /// The heading and level checks are held for the current sample
+    /// ([`ComplianceMonitor::hold_clearance_checks`]).
+    #[serde(skip)]
+    held: bool,
 }
 
 impl ComplianceMonitor {
@@ -219,6 +234,7 @@ impl ComplianceMonitor {
             level: Latch::default(),
             level_reached: false,
             level_from_above: None,
+            held: false,
         }
     }
 
@@ -238,12 +254,20 @@ impl ComplianceMonitor {
         self.clearance = c;
     }
 
+    /// Holds the heading and level checks for this sample (the readback is pending, or the
+    /// pilot is still reacting to it): their persistence time starts again, so they cannot
+    /// fire before it has run in full after the hold. Call it before [`Self::update`].
+    pub fn hold_clearance_checks(&mut self) {
+        self.held = true;
+    }
+
     pub fn update(
         &mut self,
         s: &AircraftState,
         phase: FlightPhase,
         perm: &Permissions,
     ) -> Vec<Deviation> {
+        let held = std::mem::take(&mut self.held);
         let prev = self.prev.replace((s.t.0, s.pos, s.gs_kt, s.on_ground));
         let prev_phase = self.prev_phase.replace(phase);
         if let Some((t, pos, gs, _)) = prev {
@@ -311,13 +335,27 @@ impl ComplianceMonitor {
         }
 
         self.check_altitude(s, phase, perm, &mut out);
-        self.check_clearance(s, phase, &mut out);
+        self.check_clearance(s, phase, held, &mut out);
         out
     }
 
-    /// The [`IfrClearance`] checks (see the type docs); nothing outside `Airborne`.
-    fn check_clearance(&mut self, s: &AircraftState, phase: FlightPhase, out: &mut Vec<Deviation>) {
+    /// The [`IfrClearance`] checks (see the type docs); nothing outside `Airborne`. `held`:
+    /// the heading and level checks neither fire nor start their persistence time.
+    fn check_clearance(
+        &mut self,
+        s: &AircraftState,
+        phase: FlightPhase,
+        held: bool,
+        out: &mut Vec<Deviation>,
+    ) {
         let t = s.t.0;
+        let release = |m: &mut Self| {
+            if held {
+                m.heading.since = None;
+                m.level.since = None;
+            }
+        };
+        release(self);
         let airborne = phase == FlightPhase::Airborne && !s.on_ground;
         let c = &self.clearance;
 
@@ -384,6 +422,7 @@ impl ComplianceMonitor {
                 actual: s.alt_ft_msl.round() as i32,
             });
         }
+        release(self);
     }
 
     fn check_altitude(
@@ -1010,6 +1049,37 @@ mod tests {
             vec![Deviation::HeadingDeviation {
                 assigned: 90,
                 actual: 120
+            }]
+        );
+    }
+
+    /// While the checks are held (the readback pending) nothing fires; the persistence time
+    /// starts when the hold ends.
+    #[test]
+    fn held_checks_do_not_fire() {
+        let mut f = fixture();
+        f.mon.set_clearance(IfrClearance {
+            heading_deg: Some(340),
+            ..IfrClearance::default()
+        });
+        let mut got = Vec::new();
+        // Magnetic 262 for 60 s, held every sample: nothing.
+        for k in 0..30 {
+            let t = f64::from(k) * 2.0;
+            f.mon.hold_clearance_checks();
+            got.extend(airborne(&mut f, t, 0.0, 3000.0, 262.0));
+        }
+        assert!(got.is_empty(), "{got:?}");
+        // 30 s more without the hold: one deviation.
+        for k in 30..46 {
+            let t = f64::from(k) * 2.0;
+            got.extend(airborne(&mut f, t, 0.0, 3000.0, 262.0));
+        }
+        assert_eq!(
+            got,
+            vec![Deviation::HeadingDeviation {
+                assigned: 340,
+                actual: 262
             }]
         );
     }
