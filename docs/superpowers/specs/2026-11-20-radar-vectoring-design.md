@@ -99,8 +99,10 @@ track, heading, ground speed, altitude.
   two seven zero to re-intercept the localizer". At most one unsolicited correction per
   20 s per aircraft.
 - After the approach clearance, until established: crossing the final approach course by more
-  than about 0.3 NM, or flying towards it at more than 45 degrees within 1 NM of it, gets a
-  re-intercept correction (heading up to 45 degrees onto the course).
+  than about 0.3 NM while moving away from it by at least 3 degrees, or flying towards it at
+  more than about 50 degrees (45 plus heading rounding) within 1 NM of it, gets a re-intercept
+  correction (heading up to 45 degrees onto the course). An aircraft within 1 NM that is
+  already turning back towards the course (an autopilot capture overshooting) is left alone.
 - If the re-plan cannot join the final at least 2 NM outside the FAF, the aircraft is taken
   off the approach: "turn <left/right> heading <h>, <climb/maintain> <alt>, I will vector you
   for a new approach" (approach clearance cancelled), and a new pattern is planned.
