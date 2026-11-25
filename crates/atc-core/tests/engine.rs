@@ -7977,9 +7977,10 @@ mod approach_arrival {
             p.obeys_headings = false;
             p.delayed.clear();
             p.hdg = 230.0;
-            p.until(&mut e, 30, |p| p.f.t >= 40.0);
-            p.f.alt = 4400.0;
-            p.target = 4400.0;
+            p.until(&mut e, 30, |p| p.f.t >= 14.0);
+            let cleared_before = e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft;
+            p.f.alt = f64::from(cleared_before) - 600.0;
+            p.target = p.f.alt;
             // Both checks noted in a window that ends now.
             let mut v = serde_json::to_value(e.snapshot()).unwrap();
             let plan = &mut v["strips"][0]["plan"];
@@ -8003,14 +8004,13 @@ mod approach_arrival {
                     )
                 })
                 .collect();
-            // One level item, the level the aircraft is now cleared to.
+            // 600 ft low: one level item, the check of the level it is cleared to (no
+            // descent though the new path starts on the intercept).
             let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
-            let cleared = Level::Altitude(plan.cleared_ft);
-            assert!(
-                matches!(
-                    levels.as_slice(),
-                    [AtcItem::CheckLevel(l) | AtcItem::DescendTo(l)] if *l == cleared
-                ),
+            assert_eq!(plan.cleared_ft, cleared_before);
+            assert_eq!(
+                levels,
+                [&AtcItem::CheckLevel(Level::Altitude(cleared_before))],
                 "{items:#?}"
             );
             assert!(
@@ -8037,6 +8037,47 @@ mod approach_arrival {
                     ))),
                 "{:#?}",
                 approach_said(&p)
+            );
+        }
+
+        /// A level bust low where the new path needs the descent at once (it starts on the
+        /// intercept): "check level" for the cleared level, no descent with it.
+        #[test]
+        fn low_bust_gets_the_check_not_a_descent() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(25.5, -6.0), 5000.0, 255.0, 100.0);
+            p.obeys_headings = false;
+            p.delayed.clear();
+            // Its own track takes it to where the path starts on the intercept.
+            p.until(&mut e, 30, |p| p.f.t >= 40.0);
+            // Cleared to 5000 ft, 600 ft low; the level check noted in a window that ends now.
+            p.f.alt = 4400.0;
+            p.target = 4400.0;
+            let mut v = serde_json::to_value(e.snapshot()).unwrap();
+            let snap = &mut v["strips"][0]["plan"];
+            snap["cleared_ft"] = 5000.into();
+            snap["deferred_level"] = true.into();
+            snap["last_correction_s"] = (p.f.t - 19.0).into();
+            e.restore(serde_json::from_value(v).unwrap()).unwrap();
+            let said = corrections_while(&mut e, &mut p, 3, |_| true);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let items = &said[0].1;
+            assert!(
+                has(items, |i| *i == AtcItem::CheckLevel(Level::Altitude(5000))),
+                "{items:#?}"
+            );
+            assert!(
+                !has(items, |i| matches!(
+                    i,
+                    AtcItem::DescendTo(_) | AtcItem::ClearedApproach { .. }
+                )),
+                "{items:#?}"
+            );
+            // The new path starts on the intercept (where the descent is due at once).
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept), "{items:#?}");
+            assert_eq!(
+                e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+                5000
             );
         }
 

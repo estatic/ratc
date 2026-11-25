@@ -149,8 +149,9 @@ pub(super) enum Correction {
     /// changes).
     Altitude,
     /// Off its cleared level: the monitor's wording, "check level" / "check altimeter
-    /// setting" (this item, the only level item; the descent instead when the new path needs
-    /// it now), the heading only when it changes, never the approach clearance.
+    /// setting" (this item, the only level item; for an aircraft at or above its cleared
+    /// level, the descent instead when the new path needs it now), the heading only when it
+    /// changes, never the approach clearance.
     Level(AtcItem),
 }
 
@@ -832,8 +833,19 @@ impl AtcEngine {
         if intercept || (s.alt_ft_msl - f64::from(plan.cleared_ft)).abs() <= LEVEL_TOLERANCE_FT {
             self.strips[i].missed_climb = false;
         }
-        let descend_to = vectoring::descent_due(&vp, &r)
+        let mut descend_to = vectoring::descent_due(&vp, &r)
             .filter(|&ft| !self.strips[i].missed_climb && ft < plan.cleared_ft);
+        // Below its cleared level within 20 s of a correction (just told "check level,
+        // maintain <level>"): no descent yet, it would contradict the call.
+        let below = s.alt_ft_msl - f64::from(plan.cleared_ft) <= -LEVEL_TOLERANCE_FT;
+        if correction.is_none()
+            && below
+            && plan
+                .last_correction_s
+                .is_some_and(|t| (0.0..vectoring::CORRECTION_INTERVAL_S).contains(&(self.now - t)))
+        {
+            descend_to = None;
+        }
         let v = self.leg_vector(i, &leg, &s);
         let actual = self.magnetic_heading(&s);
         let changed = plan.heading.is_none_or(|h| {
@@ -878,12 +890,15 @@ impl AtcEngine {
                     level_call = Some(item.clone());
                 }
             }
-            // The level call is the only level item and no approach clearance goes with it;
-            // when the new path needs the descent now, the descent is said instead (it
-            // answers the bust as well, and the call would contradict it).
+            // The level call is the only level item and no approach clearance goes with it.
+            // An aircraft at or above its cleared level, where the new path needs the
+            // descent now: the descent instead (it answers the bust as well, and the call
+            // would contradict it). Below it: the call, and no descent with it.
             if level_call.is_some() {
                 clear = false;
-                if descend_to.is_some() {
+                if below {
+                    descend_to = None;
+                } else if descend_to.is_some() {
                     level_call = None;
                 }
             }
