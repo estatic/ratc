@@ -16,3 +16,4 @@ pub mod strip;
 pub mod taxi;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
+pub mod vectoring;

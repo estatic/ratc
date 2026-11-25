@@ -31,7 +31,7 @@ const HEADING_TOL_DEG: f64 = 20.0;
 /// ... before it has lasted this long.
 const HEADING_PERSIST_S: f64 = 30.0;
 /// The heading gap closing at least this fast (degrees per second): turning onto it.
-const TURNING_DEG_S: f64 = 1.0;
+pub(crate) const TURNING_DEG_S: f64 = 1.0;
 /// Time the pilot is given to start following an instruction once its readback has been
 /// accepted, before the heading and level checks start their persistence time.
 pub const REACTION_S: f64 = 10.0;
@@ -85,6 +85,10 @@ pub struct IfrClearance {
     pub heading_deg: Option<u16>,
     /// Cleared level, ft.
     pub level_ft: Option<i32>,
+    /// Heading error tolerated on `heading_deg`, degrees (`None`: 20). Planned radar
+    /// vectors use the planner's 15 ([`crate::vectoring::HEADING_TOLERANCE_DEG`]).
+    #[serde(default)]
+    pub heading_tol_deg: Option<f64>,
 }
 
 /// One deviation check for one instruction (`key`): reported once when the deviation has
@@ -386,7 +390,7 @@ impl ComplianceMonitor {
         self.heading_gap = assigned.map(|_| (gap, t));
         if self.heading.update(
             assigned,
-            gap > HEADING_TOL_DEG && !turning,
+            gap > c.heading_tol_deg.unwrap_or(HEADING_TOL_DEG) && !turning,
             t,
             HEADING_PERSIST_S,
         ) && let Some(a) = assigned

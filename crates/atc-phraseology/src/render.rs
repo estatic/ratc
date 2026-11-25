@@ -2,8 +2,8 @@
 //! (the output is fed to a TTS engine).
 
 use crate::types::{
-    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Compass8, Courtesy,
-    Lang, Level, ReadbackItem, Side, TaxiTo, Turn, UnableReason, Wind,
+    ApproachKind, AtcItem, AtcMessage, Callsign, CircuitLeg, ClearanceKind, Compass8, CourseName,
+    Courtesy, Lang, Level, ReadbackItem, Side, TaxiTo, Turn, UnableReason, Wind,
 };
 
 const DIGITS: [&str; 10] = [
@@ -44,10 +44,24 @@ fn render_en(msg: &AtcMessage, first_contact: bool) -> String {
     if let Some(cs) = &msg.to {
         parts.push(callsign_words(cs, first_contact));
     }
-    for item in &msg.items {
-        item_parts(item, &mut parts);
+    for (k, item) in msg.items.iter().enumerate() {
+        if check_heading_then_turn(&msg.items, k) {
+            parts.push("check heading".into());
+        } else {
+            item_parts(item, &mut parts);
+        }
     }
     parts.join(", ")
+}
+
+/// Item `k` of `items` is "check heading" to `h` followed by the turn onto `h`: said as
+/// "check heading, turn left heading <h>" (the heading once), not "check heading, fly
+/// heading <h>, turn left heading <h>".
+pub(crate) fn check_heading_then_turn(items: &[AtcItem], k: usize) -> bool {
+    match (items.get(k), items.get(k + 1)) {
+        (Some(AtcItem::CheckHeading(h)), Some(AtcItem::Heading { deg, .. })) => h == deg,
+        _ => false,
+    }
 }
 
 /// The callsign as said on the radio in `lang`, in full or abbreviated
@@ -457,6 +471,28 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
             if *nm == 1 { "mile" } else { "miles" },
             compass_words(*side)
         )),
+        AtcItem::OffCourse {
+            tenths_nm,
+            side,
+            course,
+        } => out.push(format!(
+            "you are {} {} of the {}",
+            tenths_miles_words(*tenths_nm),
+            compass_words(*side),
+            course_words(*course)
+        )),
+        AtcItem::ReIntercept(course) => {
+            // Continues the heading just spoken, without a comma.
+            let tail = format!("to re-intercept the {}", course_words(*course));
+            match out.last_mut() {
+                Some(last) => {
+                    last.push(' ');
+                    last.push_str(&tail);
+                }
+                None => out.push(tail),
+            }
+        }
+        AtcItem::NewApproach => out.push("I will vector you for a new approach".into()),
         AtcItem::CheckEstablished { kind, runway } => out.push(format!(
             "check established, report established {} runway {}",
             match kind {
@@ -593,6 +629,28 @@ fn metres_words(n: u32) -> String {
         }
     }
     parts.join(" ")
+}
+
+/// A distance in tenths of a nautical mile as spoken: "half a mile", "one and a half miles".
+fn tenths_miles_words(tenths: u16) -> String {
+    match tenths {
+        5 => "half a mile".into(),
+        10 => "one mile".into(),
+        15 => "one and a half miles".into(),
+        t if t % 10 == 0 => format!("{} miles", digits_words(u32::from(t / 10), 1)),
+        t => format!(
+            "{} point {} miles",
+            digits_words(u32::from(t / 10), 1),
+            digits_words(u32::from(t % 10), 1)
+        ),
+    }
+}
+
+fn course_words(c: CourseName) -> &'static str {
+    match c {
+        CourseName::Localizer => "localizer",
+        CourseName::FinalApproachCourse => "final approach course",
+    }
 }
 
 /// A compass point as spoken: "north", "north east".

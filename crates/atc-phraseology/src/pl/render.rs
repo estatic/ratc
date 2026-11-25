@@ -20,8 +20,12 @@ pub fn render(msg: &AtcMessage, first_contact: bool) -> String {
     if let Some(cs) = &msg.to {
         parts.push(callsign_words(cs, first_contact));
     }
-    for item in &msg.items {
-        item_parts(item, &mut parts);
+    for (k, item) in msg.items.iter().enumerate() {
+        if crate::render::check_heading_then_turn(&msg.items, k) {
+            parts.push("check heading".into());
+        } else {
+            item_parts(item, &mut parts);
+        }
     }
     parts.join(", ")
 }
@@ -402,6 +406,9 @@ fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
         | AtcItem::RadarServiceTerminated
         | AtcItem::OffTrack { .. }
         | AtcItem::CheckHeading(_)
+        | AtcItem::OffCourse { .. }
+        | AtcItem::ReIntercept(_)
+        | AtcItem::NewApproach
         | AtcItem::CheckLevel(_)
         | AtcItem::CheckAltimeter { .. }
         | AtcItem::CheckEstablished { .. }

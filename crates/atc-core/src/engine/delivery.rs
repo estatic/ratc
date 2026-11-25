@@ -197,8 +197,13 @@ impl AtcEngine {
                 direct: None,
                 heading: None,
                 approach_cleared: false,
-                pattern: None,
+                vector_plan: None,
+                last_correction_s: None,
+                heading_from: None,
+                deferred_heading: false,
+                deferred_level: false,
                 established_check: false,
+                established_reported: false,
             };
             (exit.into_iter().collect(), plan)
         };
@@ -262,8 +267,13 @@ impl AtcEngine {
             direct: None,
             heading: None,
             approach_cleared: false,
-            pattern: None,
+            vector_plan: None,
+            last_correction_s: None,
+            heading_from: None,
+            deferred_heading: false,
+            deferred_level: false,
             established_check: false,
+            established_reported: false,
         };
         Some((items, plan))
     }
@@ -327,7 +337,10 @@ impl AtcEngine {
             plan.cruise_ft = target_ft;
         }
         plan.dep_runway = Some(runway.to_string());
-        RunwayChange::Amended { items, plan }
+        RunwayChange::Amended {
+            items,
+            plan: Box::new(plan),
+        }
     }
 
     /// `ft` as an altitude up to the transition altitude, a flight level above it.
@@ -431,7 +444,7 @@ pub(super) enum RunwayChange {
     /// The announcement ("runway changed", SID, climb) and the amended plan.
     Amended {
         items: Vec<AtcItem>,
-        plan: FlightPlan,
+        plan: Box<FlightPlan>,
     },
     /// An IFR flight has no SID from the new runway: it keeps the `cleared` runway.
     NoSid { cleared: String },

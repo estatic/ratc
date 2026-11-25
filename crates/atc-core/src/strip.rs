@@ -10,6 +10,7 @@ use crate::compliance::Permissions;
 use crate::phase::FlightPhase;
 use crate::readback::{Strictness, required_readback};
 use crate::taxi::TaxiTarget;
+use crate::vectoring::VectorPlan;
 
 /// Controller position handled by the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -80,19 +81,29 @@ pub struct FlightPlan {
     pub heading: Option<u16>,
     /// The approach has been cleared ("cleared ILS approach").
     pub approach_cleared: bool,
-    /// Vectored around a pattern (downwind, base) onto the final: the current leg.
-    pub pattern: Option<PatternLeg>,
+    /// The planned path of the radar vectoring (`None` until vectoring starts). Old
+    /// snapshots had a `pattern` leg instead: ignored on load.
+    #[serde(default)]
+    pub vector_plan: Option<VectorPlan>,
+    /// When the last unsolicited vectoring correction was transmitted, seconds.
+    #[serde(default)]
+    pub last_correction_s: Option<f64>,
+    /// The aircraft's heading (magnetic) when `heading` was given: still on it after the
+    /// reaction time, it has not turned ("check heading").
+    #[serde(default)]
+    pub heading_from: Option<u16>,
+    /// A heading or level check of a planned flight that fell within the 20 s after a
+    /// correction: made when that window has run, if the aircraft is still off.
+    #[serde(default)]
+    pub deferred_heading: bool,
+    #[serde(default)]
+    pub deferred_level: bool,
     /// "Check established" has been said for the current approach clearance.
     pub established_check: bool,
-}
-
-/// Leg of the radar pattern flown by an arrival that comes from the far side of the final.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PatternLeg {
-    /// Parallel to the final, outbound, abeam it.
-    Downwind,
-    /// Perpendicular to the final, towards it.
-    Base,
+    /// "Established" was reported while still turning onto the final (spec 14b, decision
+    /// 1): transferred to Tower as soon as the radar shows it established.
+    #[serde(default)]
+    pub established_reported: bool,
 }
 
 /// Where a VFR flight is in its entry to, or exit from, the control zone via the published

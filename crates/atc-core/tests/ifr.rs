@@ -165,72 +165,14 @@ fn setup() -> (LatLon, LatLon) {
     (thr, destination(thr, 270.0, 8.0 * M_PER_NM))
 }
 
-/// The lead point 3 NM back along the 30-degree intercept track from the south (060).
-fn lead_south(point: LatLon) -> LatLon {
-    destination(point, 240.0, 3.0 * M_PER_NM)
-}
-
-#[test]
-fn vector_far_heads_for_the_lead_point() {
-    let (thr, point) = setup();
-    // 15 NM south of the intercept point, heading north: towards the lead point SW of it.
-    let ac = destination(point, 180.0, 15.0 * M_PER_NM);
-    let want = (bearing_deg(ac, lead_south(point)) / 5.0).round() as u16 * 5;
-    let (v, intercept) = vector_to_final(ac, 0.0, thr, 90.0, 8.0, 3000, 0.0);
-    assert_eq!(v.heading_deg, want, "{v:?}");
-    assert_eq!(want, 350);
-    assert!(!intercept);
-    assert_eq!(v.alt_ft, 3000);
-    // heading east, needs to turn left
-    let (v, _) = vector_to_final(ac, 90.0, thr, 90.0, 8.0, 3000, 0.0);
-    assert_eq!(v.turn, Turn::Left);
-}
-
-#[test]
-fn vector_from_the_side_turns_in_at_the_lead_point() {
-    let (thr, point) = setup();
-    // Coming from the south at right angles to the final: short of the lead point still
-    // towards it (the 30-degree track would join inside the intercept point) ...
-    let short = destination(lead_south(point), 180.0, 0.5 * M_PER_NM);
-    assert!(!vector_to_final(short, 0.0, thr, 90.0, 8.0, 3000, 0.0).1);
-    // ... just past it the intercept heading: the track joins at the intercept point.
-    let ac = destination(lead_south(point), 0.0, 0.2 * M_PER_NM);
-    assert!(distance_m(ac, point) > 2.0 * M_PER_NM);
-    let (v, intercept) = vector_to_final(ac, 0.0, thr, 90.0, 8.0, 3000, 0.0);
-    assert!(intercept);
-    assert_eq!((v.heading_deg, v.turn), (60, Turn::Right));
-}
-
-#[test]
-fn vector_near_intercepts_at_thirty_degrees() {
-    let (thr, point) = setup();
-    // 2 NM before the point, south of the line
-    let ac = destination(point, 270.0, 1.0 * M_PER_NM);
-    let ac = destination(ac, 180.0, 1.5 * M_PER_NM);
-    assert!(distance_m(ac, point) < 3.0 * M_PER_NM);
-    let (v, intercept) = vector_to_final(ac, 45.0, thr, 90.0, 8.0, 3000, 0.0);
-    assert!(intercept);
-    assert_eq!(v.heading_deg, 60);
-    assert_eq!(v.turn, Turn::Right);
-    // north of the line: 120
-    let ac_n = destination(point, 0.0, 1.8 * M_PER_NM);
-    let (v, _) = vector_to_final(ac_n, 200.0, thr, 90.0, 8.0, 3000, 0.0);
-    assert_eq!(v.heading_deg, 120);
-    assert_eq!(v.turn, Turn::Left);
-}
-
 #[test]
 fn vector_heading_is_magnetic() {
-    let (thr, point) = setup();
-    let ac = destination(point, 180.0, 15.0 * M_PER_NM);
-    // true heading 349 to the lead point; variation 6E -> magnetic 343 -> 345
-    let (v, _) = vector_to_final(ac, 10.0, thr, 90.0, 8.0, 3000, 6.0);
-    assert_eq!(v.heading_deg, 345);
-    assert_eq!(v.turn, Turn::Left);
-    // 090 true with 90E: wrap to 360 rather than 0
-    let ac_w = destination(lead_south(point), 270.0, 15.0 * M_PER_NM);
-    let (v, _) = vector_to_final(ac_w, 0.0, thr, 90.0, 8.0, 3000, 90.0);
-    assert_eq!(v.heading_deg, 360);
+    // 349 true with variation 6E -> magnetic 343 -> 345, left from 010.
+    let v = vector_on(349.0, 10.0, 3000, 6.0);
+    assert_eq!((v.heading_deg, v.turn, v.alt_ft), (345, Turn::Left, 3000));
+    // 090 true with 90E: wrap to 360 rather than 0.
+    let v = vector_on(90.0, 0.0, 3000, 90.0);
+    assert_eq!((v.heading_deg, v.turn), (360, Turn::Right));
 }
 
 #[test]

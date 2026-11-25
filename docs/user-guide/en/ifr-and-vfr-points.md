@@ -288,6 +288,8 @@ Pilot:
 
 > Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
 
+Approach watches the turn onto the localizer. If you turn late or fly through the course, it says where you are and gives a heading to re-intercept (`you are zero point three miles south of the localizer, turn right heading two eight zero to re-intercept the localizer`); read it back and fly it. Report "established" only when you are on the localizer: if the radar does not show it yet, Approach answers "negative" with the same kind of correction and keeps you. If you report "established" while you are already turning onto the localizer, Approach says nothing and hands you over to Tower as soon as you are on it. (`scenarios/epkk-vectoring-late-turn.toml` replays a late intercept.)
+
 Hold heading 220 and intercept the LOC/GS (in the G1000 activate the approach, **Activate Approach** / **Activate Vector-to-Final**, then NAV/APR on the autopilot). When you are on the localizer and the glideslope:
 
 > Sierra Bravo Charlie, established ILS runway two five

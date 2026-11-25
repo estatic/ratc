@@ -16,9 +16,9 @@ start = { lat = 50.40857, lon = 19.19819, alt = 4000, hdg = 131 }
 # Open loop: the legs fly the headings Approach gives (magnetic, `hdg`).
 waypoints = [
   { hdg = 105, nm = 5, alt = 5000, kt = 100 },
-  { hdg = 105, nm = 16.4, alt = 5000, kt = 100 },
-  { hdg = 105, nm = 13.4, alt = 3000, kt = 100 },
-  { hdg = 160, nm = 3.3, alt = 3000, kt = 100 },
+  { hdg = 105, nm = 26.5, alt = 5000, kt = 100 },
+  { hdg = 105, nm = 4.5, alt = 3000, kt = 100 },
+  { hdg = 160, nm = 2.3, alt = 3000, kt = 100 },
   { hdg = 220, nm = 3.4, alt = 3000, kt = 90 },
   { fix = "KK371", alt = 3000, kt = 90 },
 ]
@@ -49,8 +49,9 @@ at = "heard:cleared ils"
 freq = "approach"
 text = "Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie"
 
+# Reported once on the localizer (established by radar, plan 14b).
 [[say]]
-at = "phase:Final"
+t = 1525.0
 freq = "approach"
 text = "Sierra Bravo Charlie, established ILS runway two five"
 
@@ -60,7 +61,7 @@ freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
 [[say]]
-at = "phase:Final"
+t = 1525.0
 freq = "tower"
 text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established ILS runway two five"
 

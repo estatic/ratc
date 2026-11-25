@@ -88,6 +88,7 @@ use crate::squawk::{DEFAULT_POOL, discrete_codes};
 use crate::state::{AircraftState, SimTime};
 use crate::strip::{FlightPlan, PilotProfile, Role, Strip, steers};
 use crate::taxi::TaxiGraph;
+use crate::vectoring::{Radar, RadarTrack};
 use delivery::RunwayChange;
 
 /// A parked aircraft within this distance of a stand started from it.
@@ -175,6 +176,9 @@ struct Surveillance {
     monitor: ComplianceMonitor,
     last: AircraftState,
     circuit_alt_ft: i32,
+    /// Radar track and drift from the recent samples (an older snapshot: empty).
+    #[serde(default)]
+    radar: RadarTrack,
 }
 
 #[derive(Clone, Debug)]
@@ -619,6 +623,21 @@ impl AtcEngine {
         })
     }
 
+    /// What the radar shows of aircraft `i`: the track from its recent positions (the heading
+    /// until there are enough of them), ground speed, altitude and vertical speed; `None`
+    /// when the aircraft is not tracked.
+    pub fn radar(&self, i: usize) -> Option<Radar> {
+        let sv = self.tracks.get(&self.strips.get(i)?.callsign)?;
+        let s = &sv.last;
+        Some(Radar {
+            pos: s.pos,
+            track_deg: sv.radar.track_deg().unwrap_or(s.heading_deg),
+            gs_kt: s.gs_kt,
+            alt_ft: s.alt_ft_msl,
+            vs_fpm: s.vs_fpm,
+        })
+    }
+
     pub fn strip(&self, cs: &Callsign) -> Option<&Strip> {
         self.strip_index(cs).map(|i| &self.strips[i])
     }
@@ -760,6 +779,7 @@ impl AtcEngine {
         }
         let deviations = sv.monitor.update(&s, phase, &strip.permissions);
         let (pos, gs_kt, t, vs_fpm) = (s.pos, s.gs_kt, s.t.0, s.vs_fpm);
+        sv.radar.push(t, pos, s.heading_deg, gs_kt);
         sv.last = s;
         self.note_missed_approach(i, prev, phase, pos, vs_fpm);
 
@@ -785,8 +805,13 @@ impl AtcEngine {
         out.extend(self.tower_call(i));
         out.extend(self.landing_unprompted(i, prev));
         out.extend(self.vfr_exit_update(i));
-        out.extend(self.establish_check(i));
-        out.extend(self.approach_update(i));
+        // Approach's watch of the final first (spec 14b): a correction or break-off is not
+        // joined by "check established" in the same sample.
+        let approach = self.approach_update(i);
+        if approach.is_empty() {
+            out.extend(self.establish_check(i));
+        }
+        out.extend(approach);
         out
     }
 
@@ -1120,6 +1145,18 @@ impl AtcEngine {
         }
         // A "ready for departure" after Tower already gave the departure is not answered.
         if items.is_empty() && role == Role::Tower && self.repeated_ready(i, &msg.intent) {
+            return Vec::new();
+        }
+        // "Established" reported during the turn onto the final: noted, answered by the
+        // transfer to Tower once the radar shows it established (spec 14b, decision 1).
+        if items.is_empty()
+            && role == Role::Approach
+            && msg.intent == PilotIntent::ReportEstablished
+            && self.strips[i]
+                .plan
+                .as_ref()
+                .is_some_and(|p| p.established_reported)
+        {
             return Vec::new();
         }
         // A request this position does not serve, made to another open position: sent there.
@@ -1654,7 +1691,7 @@ impl AtcEngine {
             } => {
                 items.extend(change);
                 let strip = &mut self.strips[i];
-                strip.plan = Some(plan);
+                strip.plan = Some(*plan);
                 strip.expect_readback(&items, self.cfg.strictness, self.now);
             }
             RunwayChange::NoSid { cleared } => {
@@ -1745,6 +1782,7 @@ impl AtcEngine {
             .with_magnetic_variation(self.procs.magnetic_variation_deg),
             last: s.clone(),
             circuit_alt_ft: circuit.altitude_ft_msl,
+            radar: RadarTrack::default(),
         })
     }
 
@@ -1862,27 +1900,46 @@ impl AtcEngine {
     /// uncleared landing is also an incursion: only the landing is spoken. "Hold position"
     /// must be read back; it replaces any open readback and cancels an open handover.
     /// Always in English, whatever the aircraft's language: the spec ("Язык") keeps urgent
-    /// instructions in English; the aircraft's language is left as it is.
-    fn deviation_replies(&mut self, i: usize, deviations: Vec<Deviation>) -> Vec<AtcOutput> {
+    /// instructions in English; the aircraft's language is left as it is. An arrival on
+    /// planned vectors (spec 14b, decision 2): its heading and level checks are the
+    /// planner's ([`AtcEngine::planned_checks`]), never called here.
+    fn deviation_replies(&mut self, i: usize, mut deviations: Vec<Deviation>) -> Vec<AtcOutput> {
         // Handed off to an adjacent unit: nobody here watches it any more. Radio failure
         // (7600): no deviation calls (AIP AD 2.22 §2.1, the airspace is kept clear instead).
         if self.strips[i].handed_off.is_some() || self.strips[i].radio_failure {
             return Vec::new();
         }
+        let owned = |d: &Deviation| {
+            matches!(
+                d,
+                Deviation::HeadingDeviation { .. } | Deviation::AltitudeDeviation { .. }
+            )
+        };
+        let heading_off = deviations
+            .iter()
+            .any(|d| matches!(d, Deviation::HeadingDeviation { .. }));
+        let level_off = deviations
+            .iter()
+            .any(|d| matches!(d, Deviation::AltitudeDeviation { .. }));
+        let mut items = Vec::new();
+        if let Some(planned) = self.planned_checks(i, heading_off, level_off) {
+            deviations.retain(|d| !owned(d));
+            items = planned;
+        }
         let off_circuit = self.strips[i].phase == FlightPhase::Airborne;
         let levels: Vec<_> = deviations
             .iter()
             .map(|d| match d {
-                Deviation::AltitudeDeviation { assigned, .. } => Some(self.level(*assigned)),
+                Deviation::AltitudeDeviation { assigned, actual } if off_circuit => {
+                    Some(self.level_call(*assigned, *actual))
+                }
                 _ => None,
             })
             .collect();
-        let qnh = self.atis.as_ref().map(|a| a.current().weather.qnh_hpa);
         let strip = &mut self.strips[i];
         if deviations.contains(&Deviation::LandingWithoutClearance) {
             strip.uncleared_landing = true;
         }
-        let mut items = Vec::new();
         for (d, level) in deviations.into_iter().zip(levels) {
             match d {
                 Deviation::RunwayIncursion { runway } => {
@@ -1893,25 +1950,9 @@ impl AtcEngine {
                 }
                 Deviation::TakeoffWithoutClearance => items.push(AtcItem::TakenOffWithoutClearance),
                 Deviation::LandingWithoutClearance => items.push(AtcItem::LandedWithoutClearance),
-                Deviation::AltitudeDeviation { assigned, actual } => match level {
-                    // The error is what standard pressure at this QNH would give: the
-                    // pilot has not set the altimeter.
-                    Some(level @ Level::Altitude(_))
-                        if off_circuit
-                            && let Some(qnh) = qnh
-                            && {
-                                let err = altimeter_error_ft(f64::from(qnh));
-                                err.abs() >= 200.0
-                                    && (f64::from(actual - assigned) - err).abs() <= 100.0
-                            } =>
-                    {
-                        items.push(AtcItem::CheckAltimeter {
-                            qnh_hpa: qnh,
-                            level,
-                        })
-                    }
-                    Some(level) if off_circuit => items.push(AtcItem::CheckLevel(level)),
-                    _ => items.push(AtcItem::CheckAltitude {
+                Deviation::AltitudeDeviation { assigned, .. } => match level {
+                    Some(call) => items.push(call),
+                    None => items.push(AtcItem::CheckAltitude {
                         circuit_ft: assigned.unsigned_abs(),
                     }),
                 },
@@ -1930,6 +1971,29 @@ impl AtcEngine {
         let owner = strip.owner;
         // Spec, "Язык": urgent instructions are always English.
         self.transmit_in(i, owner, items, Lang::En)
+    }
+
+    /// The call for an aircraft off the circuit at `actual` ft, off its cleared level
+    /// `assigned` ft: "check altimeter setting, QNH <q>, maintain <level>" when the error is
+    /// what standard pressure at this QNH would give (the pilot has not set the altimeter),
+    /// else "check level, maintain <level>".
+    pub(super) fn level_call(&self, assigned: i32, actual: i32) -> AtcItem {
+        let level = self.level(assigned);
+        let qnh = self.atis.as_ref().map(|a| a.current().weather.qnh_hpa);
+        match (level, qnh) {
+            (Level::Altitude(_), Some(qnh))
+                if {
+                    let err = altimeter_error_ft(f64::from(qnh));
+                    err.abs() >= 200.0 && (f64::from(actual - assigned) - err).abs() <= 100.0
+                } =>
+            {
+                AtcItem::CheckAltimeter {
+                    qnh_hpa: qnh,
+                    level,
+                }
+            }
+            _ => AtcItem::CheckLevel(level),
+        }
     }
 
     /// Ground -> Tower once holding short. Tower -> Approach for an IFR flight once airborne
@@ -1993,7 +2057,7 @@ impl AtcEngine {
         let mut runway = self.departure_runway(i);
         let amended = match self.runway_change(i, &runway) {
             RunwayChange::Same => None,
-            RunwayChange::Amended { items, plan } => Some((items, plan)),
+            RunwayChange::Amended { items, plan } => Some((items, *plan)),
             RunwayChange::NoSid { cleared } => {
                 tracing::info!(
                     "{}: no SID from runway {runway}, keeps runway {cleared}",
@@ -2069,6 +2133,11 @@ impl AtcEngine {
         let strip = &mut self.strips[i];
         strip.handoff_to = Some(to);
         strip.expect_readback(&items, self.cfg.strictness, self.now);
+        // Checks noted by the planner are not made once the flight is handed over.
+        if let Some(p) = strip.plan.as_mut() {
+            p.deferred_heading = false;
+            p.deferred_level = false;
+        }
         items
     }
 

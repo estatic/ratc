@@ -5,7 +5,7 @@
 //! bug: `magnetic = true - mag_var_deg` (variation east positive). CIFP courses are
 //! magnetic (ARINC 424); convert with `true = magnetic + mag_var_deg` before use.
 
-use atc_geo::{LatLon, M_PER_NM, RunwayFrame, bearing_deg, destination, distance_m};
+use atc_geo::{LatLon, M_PER_NM, bearing_deg, distance_m};
 use atc_navdata::cifp::{self, AltConstraint, PathTerm};
 use atc_navdata::fixes::{ProcedureSet, ResolvedProcedure};
 use atc_phraseology::Turn;
@@ -269,78 +269,6 @@ pub struct Vector {
     pub turn: Turn,
     /// Altitude to maintain, ft.
     pub alt_ft: i32,
-}
-
-/// Distance back along the intercept track from the intercept point to the lead point, NM.
-const LEAD_NM: f64 = 3.0;
-/// The intercept heading is given when the 30-degree track from the aircraft would join the
-/// final between the intercept point and this far outside it, NM (the turn onto the
-/// intercept takes the join point a little further in).
-const JOIN_OUTSIDE_NM: f64 = 6.0;
-/// Within this of the intercept point the intercept heading is given in any case, NM.
-const NEAR_POINT_NM: f64 = 2.0;
-
-/// Vector towards the final approach course, and whether it is the intercept heading. The
-/// intercept point lies on the final course `intercept_nm` before the threshold `thr`; the
-/// intercept track joins it at 30 degrees from the side the aircraft is on. The heading is
-/// direct to the lead point 3 NM back along that intercept track; the intercept heading is
-/// given once the 30-degree track from the aircraft would join the final between the
-/// intercept point and 6 NM outside it (or within 2 NM of it): an aircraft coming from the
-/// side joins the final at about the intercept point, not miles inside it.
-///
-/// `ac_hdg` and `course_deg` are true; `mag_var_deg` is the variation (east positive) and the
-/// returned heading is magnetic (`true - mag_var_deg`), rounded to 5 degrees.
-pub fn vector_to_final(
-    ac: LatLon,
-    ac_hdg: f64,
-    thr: LatLon,
-    course_deg: f64,
-    intercept_nm: f64,
-    alt_ft: i32,
-    mag_var_deg: f64,
-) -> (Vector, bool) {
-    let point = destination(thr, course_deg + 180.0, intercept_nm * M_PER_NM);
-    let (along, right) = RunwayFrame {
-        origin: thr,
-        course_deg,
-    }
-    .to_local(ac);
-    // Out along the approach, and to the right of the landing direction, in NM.
-    let (x, y) = (-along / M_PER_NM, right / M_PER_NM);
-    // From the right of the landing direction the intercept turns left of the course.
-    let intercept_hdg = if y > 0.0 {
-        course_deg - 30.0
-    } else {
-        course_deg + 30.0
-    };
-    let lead = lead_point(ac, thr, course_deg, intercept_nm);
-    let join_nm = x - y.abs() * 3f64.sqrt();
-    let intercept = (x > 0.0 && (intercept_nm..=intercept_nm + JOIN_OUTSIDE_NM).contains(&join_nm))
-        || distance_m(ac, point) <= NEAR_POINT_NM * M_PER_NM;
-    let true_hdg = if intercept {
-        intercept_hdg
-    } else {
-        bearing_deg(ac, lead)
-    };
-    (vector_on(true_hdg, ac_hdg, alt_ft, mag_var_deg), intercept)
-}
-
-/// The lead point [`vector_to_final`] steers aircraft `ac` to: 3 NM back along the
-/// 30-degree intercept track (from the side `ac` is on) that joins the final course
-/// `course_deg` (true) of threshold `thr` `intercept_nm` out.
-pub fn lead_point(ac: LatLon, thr: LatLon, course_deg: f64, intercept_nm: f64) -> LatLon {
-    let point = destination(thr, course_deg + 180.0, intercept_nm * M_PER_NM);
-    let (_, right) = RunwayFrame {
-        origin: thr,
-        course_deg,
-    }
-    .to_local(ac);
-    let intercept_hdg = if right > 0.0 {
-        course_deg - 30.0
-    } else {
-        course_deg + 30.0
-    };
-    destination(point, intercept_hdg + 180.0, LEAD_NM * M_PER_NM)
 }
 
 /// The vector to fly true heading `true_hdg` from true heading `ac_hdg`: magnetic

@@ -829,3 +829,87 @@ fn follow_missed_approach_renders() {
         render(&m, true)
     );
 }
+
+#[test]
+fn vectoring_correction_items() {
+    let off = |tenths_nm| AtcItem::OffCourse {
+        tenths_nm,
+        side: Compass8::North,
+        course: CourseName::Localizer,
+    };
+    assert_eq!(one(off(5)), "you are half a mile north of the localizer");
+    assert_eq!(one(off(10)), "you are one mile north of the localizer");
+    assert_eq!(
+        one(off(15)),
+        "you are one and a half miles north of the localizer"
+    );
+    assert_eq!(
+        one(off(23)),
+        "you are two point three miles north of the localizer"
+    );
+    assert_eq!(
+        one(AtcItem::OffCourse {
+            tenths_nm: 10,
+            side: Compass8::South,
+            course: CourseName::FinalApproachCourse
+        }),
+        "you are one mile south of the final approach course"
+    );
+    assert_eq!(
+        one(AtcItem::NewApproach),
+        "I will vector you for a new approach"
+    );
+    let combined = msg(
+        None,
+        "Kraków Approach",
+        vec![
+            AtcItem::Negative,
+            off(5),
+            AtcItem::Heading {
+                deg: 260,
+                turn: Some(Turn::Left),
+            },
+            AtcItem::ReIntercept(CourseName::Localizer),
+        ],
+    );
+    assert_eq!(
+        render(&combined, false),
+        "negative, you are half a mile north of the localizer, turn left heading two six zero to re-intercept the localizer"
+    );
+}
+
+/// Plan 14b: the planner's "check heading" correction comes with the turn, said once.
+#[test]
+fn check_heading_with_the_turn() {
+    let m = msg(
+        None,
+        "Kraków Approach",
+        vec![
+            AtcItem::CheckHeading(280),
+            AtcItem::Heading {
+                deg: 280,
+                turn: Some(Turn::Left),
+            },
+        ],
+    );
+    assert_eq!(
+        render(&m, false),
+        "check heading, turn left heading two eight zero"
+    );
+    // Another heading after it is said as it is.
+    let m = msg(
+        None,
+        "Kraków Approach",
+        vec![
+            AtcItem::CheckHeading(280),
+            AtcItem::Heading {
+                deg: 270,
+                turn: Some(Turn::Left),
+            },
+        ],
+    );
+    assert_eq!(
+        render(&m, false),
+        "check heading, fly heading two eight zero, turn left heading two seven zero"
+    );
+}

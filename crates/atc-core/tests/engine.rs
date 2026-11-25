@@ -3833,6 +3833,34 @@ mod delivery {
         assert_eq!(plan(&fresh).dep_runway, None);
     }
 
+    /// Plan 14b: a snapshot with the old `pattern` field loads (the field is ignored), has
+    /// no vector plan, and the next telemetry sample does not panic.
+    #[test]
+    fn old_snapshot_with_pattern_loads() {
+        let mut e = engine();
+        ifr_cleared_on_27(&mut e);
+        let mut json = serde_json::to_value(e.snapshot()).unwrap();
+        let plan_json = json["strips"][0]["plan"].as_object_mut().unwrap();
+        for k in ["vector_plan", "last_correction_s"] {
+            assert!(plan_json.remove(k).is_some(), "{k}");
+        }
+        plan_json.insert("pattern".into(), serde_json::json!("Base"));
+        for t in json["tracks"].as_array_mut().unwrap() {
+            assert!(t[1].as_object_mut().unwrap().remove("radar").is_some());
+        }
+        let mut fresh = engine();
+        fresh
+            .restore(serde_json::from_value(json).unwrap())
+            .unwrap();
+        let p = plan(&fresh);
+        assert!(p.vector_plan.is_none());
+        // The next sample works, and the radar falls back to the heading.
+        parked(&mut fresh, None, None);
+        let radar = fresh.radar(0).expect("tracked");
+        assert_eq!(radar.track_deg, 0.0);
+        assert!(fresh.radar(5).is_none());
+    }
+
     /// A snapshot written before `requested_runway` existed restores without it.
     #[test]
     fn old_snapshot_without_requested_runway_restores() {
@@ -6049,6 +6077,24 @@ mod approach_arrival {
         reads_back: bool,
         /// Positions of fixes the pilot may be sent direct to.
         fixes: HashMap<String, LatLon>,
+        /// Delay before a heading or level instruction is acted on, s (0: at once).
+        reaction_s: f64,
+        /// Steady wind `(from deg true, kt)`: the ground track is the heading plus drift.
+        wind: Option<(f64, f64)>,
+        /// True airspeed (the ground speed without wind), kt.
+        gs: f64,
+        /// Rate of turn, degrees per second (infinite: the heading is taken at once).
+        turn_rate: f64,
+        /// Heading being turned onto (with a finite `turn_rate`).
+        turning_to: Option<f64>,
+        /// Instructions heard but not acted on yet (`reaction_s`): when, and what.
+        delayed: Vec<(f64, AtcItem)>,
+        /// Once cleared for the approach, intercepts and tracks the final of RWY 27.
+        flies_final: bool,
+        /// Added once to the next heading acted on (a pilot flying a wrong heading), degrees.
+        heading_error: Option<f64>,
+        /// Cleared for the approach; `Some(true)` once the final is captured.
+        on_final: Option<bool>,
     }
 
     impl Pilot {
@@ -6069,18 +6115,67 @@ mod approach_arrival {
                 obeys_headings: true,
                 reads_back: true,
                 fixes: HashMap::from([("IAFOX".to_string(), IAF)]),
+                reaction_s: 0.0,
+                wind: None,
+                gs: 100.0,
+                turn_rate: f64::INFINITY,
+                turning_to: None,
+                delayed: Vec::new(),
+                flies_final: false,
+                on_final: None,
+                heading_error: None,
+            }
+        }
+
+        /// A pilot that reacts after 5 s, turns at standard rate and flies the final once
+        /// cleared, at `gs` kt.
+        fn realistic(pos: LatLon, alt: f64, hdg: f64, gs: f64) -> Self {
+            Pilot {
+                reaction_s: 5.0,
+                gs,
+                turn_rate: 3.0,
+                flies_final: true,
+                ..Pilot::new(pos, alt, hdg)
             }
         }
 
         /// One 2 s step; new instructions are followed and read back.
         fn tick(&mut self, e: &mut AtcEngine) {
+            let now = self.f.t;
+            let (due, later): (Vec<_>, Vec<_>) =
+                self.delayed.drain(..).partition(|(t, _)| *t <= now);
+            self.delayed = later;
+            for (_, it) in due {
+                self.act(&it);
+            }
             if let Some(p) = self.to {
                 self.hdg = bearing_deg(self.f.pos, p);
             }
+            self.fly_final();
+            if let Some(want) = self.turning_to {
+                let gap = (want - self.hdg + 540.0).rem_euclid(360.0) - 180.0;
+                let step = self.turn_rate * DT;
+                if gap.abs() <= step {
+                    self.hdg = want;
+                    self.turning_to = None;
+                } else {
+                    self.hdg = (self.hdg + step * gap.signum()).rem_euclid(360.0);
+                }
+            }
             let vs = ((self.target - self.f.alt) * 30.0).clamp(-500.0, 500.0);
+            // Air vector plus wind (blowing from `from`, towards `from + 180`).
+            let (mut east, mut north) = (
+                self.gs * self.hdg.to_radians().sin(),
+                self.gs * self.hdg.to_radians().cos(),
+            );
+            if let Some((from, kt)) = self.wind {
+                east -= kt * from.to_radians().sin();
+                north -= kt * from.to_radians().cos();
+            }
+            let (gs, track) = (east.hypot(north), east.atan2(north).to_degrees());
             let before = self.f.heard.len();
-            self.f.step(e, self.hdg, 100.0, vs, false);
-            self.f.pos = destination(self.f.pos, self.hdg, 100.0 * 1852.0 / 3600.0 * DT);
+            self.f.step(e, self.hdg, gs, vs, false);
+            self.f.pos = destination(self.f.pos, track, gs * 1852.0 / 3600.0 * DT);
             self.f.alt += vs * DT / 60.0;
             let new: Vec<AtcOutput> = self.f.heard[before..].to_vec();
             for o in new {
@@ -6088,24 +6183,66 @@ mod approach_arrival {
             }
         }
 
+        /// Cleared and flying the final: captures the final of RWY 27 when one turn radius
+        /// from it (by the turn to make), then holds it.
+        fn fly_final(&mut self) {
+            let Some(captured) = self.on_final else {
+                return;
+            };
+            let course = bearing_deg(THR_27, END_27);
+            let (_, right) = RunwayFrame {
+                origin: THR_27,
+                course_deg: course,
+            }
+            .to_local(self.f.pos);
+            let y_nm = right / M_PER_NM;
+            let gap = ((self.hdg - course + 540.0).rem_euclid(360.0) - 180.0).to_radians();
+            let radius_nm = self.gs / 3600.0 / self.turn_rate.to_radians();
+            let converging = y_nm * gap.sin() < 0.0;
+            if captured || (converging && y_nm.abs() <= radius_nm * (1.0 - gap.cos()) + 0.05) {
+                self.on_final = Some(true);
+                self.to = None;
+                self.turning_to = Some(course - (y_nm * 100.0).clamp(-30.0, 30.0));
+            }
+        }
+
+        /// Acts on a heading or level instruction.
+        fn act(&mut self, it: &AtcItem) {
+            match it {
+                AtcItem::Heading { deg, .. } if self.obeys_headings => {
+                    let deg = (f64::from(*deg) + self.heading_error.take().unwrap_or(0.0))
+                        .rem_euclid(360.0);
+                    if self.turn_rate.is_finite() {
+                        self.turning_to = Some(deg);
+                    } else {
+                        self.hdg = deg;
+                    }
+                    self.to = None;
+                }
+                AtcItem::DescendTo(Level::Altitude(a))
+                | AtcItem::ClimbTo(Level::Altitude(a))
+                | AtcItem::MaintainLevel(Level::Altitude(a)) => self.target = f64::from(*a),
+                AtcItem::ClearedApproach { .. } if self.flies_final => {
+                    self.on_final.get_or_insert(false);
+                }
+                _ => {}
+            }
+        }
+
         /// Follows `o` and reads it back.
         fn hear(&mut self, e: &mut AtcEngine, o: &AtcOutput) {
             for it in &o.message.items {
                 match it {
-                    AtcItem::Heading { deg, .. } if self.obeys_headings => {
-                        self.hdg = f64::from(*deg);
-                        self.to = None;
-                    }
-                    AtcItem::DescendTo(Level::Altitude(a))
-                    | AtcItem::ClimbTo(Level::Altitude(a))
-                    | AtcItem::MaintainLevel(Level::Altitude(a)) => self.target = f64::from(*a),
                     AtcItem::DirectTo { fix } => self.to = self.fixes.get(fix).copied(),
                     AtcItem::Contact { khz, .. } => self.f.com1 = *khz,
-                    _ => {}
+                    it if self.reaction_s > 0.0 => {
+                        self.delayed.push((self.f.t + self.reaction_s, it.clone()))
+                    }
+                    it => self.act(it),
                 }
             }
             if let Some(rb) = ifr_readback(&o.message.items).filter(|_| self.reads_back) {
-                let out = say(e, o.freq_khz, &rb);
+                let out = e.on_transmission(o.freq_khz, &rb, Lang::En, SimTime(self.f.t));
                 assert!(out.is_empty(), "readback {rb:?} answered: {out:?}");
             }
         }
@@ -6206,8 +6343,13 @@ mod approach_arrival {
                 direct: None,
                 heading: None,
                 approach_cleared: false,
-                pattern: None,
+                vector_plan: None,
+                last_correction_s: None,
+                heading_from: None,
+                deferred_heading: false,
+                deferred_level: false,
                 established_check: false,
+                established_reported: false,
             }),
             squawk: Some(4601),
             cleared_ft: Some(cleared_ft).filter(|&ft| ft > 0),
@@ -6247,8 +6389,13 @@ mod approach_arrival {
             direct: None,
             heading: None,
             approach_cleared: false,
-            pattern: None,
+            vector_plan: None,
+            last_correction_s: None,
+            heading_from: None,
+            deferred_heading: false,
+            deferred_level: false,
             established_check: false,
+            established_reported: false,
         });
         e.import_flight(h);
         let mut p = Pilot::new(WEST, 5000.0, 90.0);
@@ -6598,6 +6745,9 @@ mod approach_arrival {
         let mut e = engine();
         let start = destination(intercept_point(), 0.0, 9.0 * M_PER_NM);
         let (mut p, _) = inbound(&mut e, start, 3000.0, 180.0, INBOUND);
+        // Plan 14b: the intercept heading comes one turn lead before the turn point, so the
+        // pilot turns at standard rate (after 5 s), not instantly.
+        (p.turn_rate, p.reaction_s) = (3.0, 5.0);
         p.until(&mut e, 600, |p| {
             p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
         });
@@ -6610,8 +6760,7 @@ mod approach_arrival {
         });
         let out_nm = -frame.to_local(p.f.pos).0 / M_PER_NM;
         assert!(out_nm >= 7.0, "joined the final {out_nm:.1} NM out");
-        // One heading to the lead point, one onto the intercept: no re-vector as the
-        // bearing to the lead point swings near it.
+        // One heading to the lead point (the base), one onto the intercept.
         let headings =
             p.f.heard
                 .iter()
@@ -6637,10 +6786,15 @@ mod approach_arrival {
                 }
             }
         });
-        let (_, out) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        // Plan 14b: the descent comes when the planned path needs it, to the FAF's 3000 ft.
+        let (mut p, _) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
+        p.until(&mut e, 400, |p| {
+            p.heard_item(|i| matches!(i, AtcItem::DescendTo(_)))
+        });
         assert!(
-            items(&out).contains(&AtcItem::DescendTo(Level::Altitude(3000))),
-            "{out:?}"
+            p.heard_item(|i| *i == AtcItem::DescendTo(Level::Altitude(3000))),
+            "{:?}",
+            p.f.heard
         );
     }
 
@@ -6651,12 +6805,17 @@ mod approach_arrival {
         let mut e = engine();
         let (mut p, out) = inbound(&mut e, INSIDE, 5000.0, 180.0, INBOUND);
         let first = items(&out);
-        // Towards the lead point 3 NM back along the 30-degree intercept from the north.
-        let lead = destination(intercept_point(), 60.0, 3.0 * M_PER_NM);
-        let want = (bearing_deg(INSIDE, lead) / 5.0).round() as u16 * 5;
+        // Plan 14b: the turn at the lead point would be more than 90 degrees from here (5 NM
+        // out, 6 NM north): a pattern, the downwind first, 4 NM abeam out to 11 NM.
+        let downwind_end = destination(
+            destination(THR_27, 90.0, 11.0 * M_PER_NM),
+            0.0,
+            4.0 * M_PER_NM,
+        );
+        let want = (bearing_deg(INSIDE, downwind_end) / 5.0).round() as u16 * 5;
         assert!(
             matches!(first.as_slice(),
-                [AtcItem::Identified, AtcItem::Heading { deg, .. }, AtcItem::DescendTo(Level::Altitude(3000)),
+                [AtcItem::Identified, AtcItem::Heading { deg, .. }, AtcItem::MaintainLevel(Level::Altitude(5000)),
                  AtcItem::Qnh(1013), AtcItem::ExpectApproach { kind: ApproachKind::Ils, .. }]
                 if *deg == want),
             "{first:?}, want heading {want}"
@@ -6673,8 +6832,9 @@ mod approach_arrival {
                 if runway == "27"),
             "{clearance:?}"
         );
-        let to_point = distance_m(p.f.pos, intercept_point()) / M_PER_NM;
-        assert!(to_point <= 3.0, "{to_point} NM from the intercept point");
+        // At the end of the base (3 NM beyond the 8 NM point), one turn lead before it.
+        let out_nm = distance_m(p.f.pos, THR_27) / M_PER_NM;
+        assert!((10.0..=11.5).contains(&out_nm), "{out_nm} NM out");
         let dtg = distance_m(p.f.pos, THR_27) / M_PER_NM;
         assert!(
             clearance.contains(&AtcItem::DistanceToGo(dtg.round() as u16)),
@@ -7105,6 +7265,1466 @@ mod approach_arrival {
         assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
     }
 
+    /// Plan 14b: vectors along a planned path (spec "The planned path", "Giving the next
+    /// instruction"), flown by a pilot that reacts after 5 s and turns at standard rate.
+    mod planned_vectors {
+        use atc_core::vectoring::LegKind;
+        use atc_phraseology::{Compass8, CourseName, Turn};
+
+        use super::*;
+
+        /// The point `out_nm` out on the final of RWY 27 and `right_nm` right of the landing
+        /// direction (north).
+        fn at(out_nm: f64, right_nm: f64) -> LatLon {
+            let p = destination(THR_27, 90.0, out_nm * M_PER_NM);
+            destination(p, 0.0, right_nm * M_PER_NM)
+        }
+
+        /// NM out on the final and right of it.
+        fn local(pos: LatLon) -> (f64, f64) {
+            let (along, right) = RunwayFrame {
+                origin: THR_27,
+                course_deg: bearing_deg(THR_27, END_27),
+            }
+            .to_local(pos);
+            (-along / M_PER_NM, right / M_PER_NM)
+        }
+
+        /// The ZZZZ ILS 27 FAF (ZZ021) from the threshold, NM.
+        fn faf_nm() -> f64 {
+            distance_m(
+                LatLon {
+                    lat: 10.0,
+                    lon: 9.93,
+                },
+                THR_27,
+            ) / M_PER_NM
+        }
+
+        /// South-east of the final, as south-east of EPKK final 25: a long base to the lead
+        /// point of the intercept.
+        const SOUTH_EAST: (f64, f64) = (25.0, -5.0);
+        /// North of the 8 NM point, flying south: a short base, then the intercept.
+        const NORTH: (f64, f64) = (8.0, 9.0);
+
+        /// A [`Pilot::realistic`] at `pos` calling inbound after one sample.
+        fn called_in(e: &mut AtcEngine, pos: LatLon, alt: f64, hdg: f64, gs: f64) -> Pilot {
+            let mut p = Pilot::realistic(pos, alt, hdg, gs);
+            p.tick(e);
+            assert!(p.f.heard.is_empty(), "{:?}", p.f.heard);
+            p.call(e, APP, INBOUND);
+            p
+        }
+
+        fn cleared(p: &Pilot) -> bool {
+            p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
+        }
+
+        /// What Approach said, transmission by transmission.
+        fn approach_said(p: &Pilot) -> Vec<Vec<AtcItem>> {
+            p.f.heard
+                .iter()
+                .filter(|o| o.freq_khz == APP)
+                .map(|o| o.message.items.clone())
+                .collect()
+        }
+
+        /// The current leg of the strip's vector plan.
+        fn leg_kind(e: &AtcEngine) -> Option<LegKind> {
+            let plan = e.strip(&cs())?.plan.as_ref()?;
+            plan.vector_plan.as_ref().map(|v| v.leg().kind)
+        }
+
+        /// Ticks until the approach clearance, noting the plan's leg at every heading given.
+        fn legs_at_headings(e: &mut AtcEngine, p: &mut Pilot) -> Vec<LegKind> {
+            let mut kinds = vec![leg_kind(e).expect("a vector plan")];
+            for _ in 0..2000 {
+                if cleared(p) {
+                    return kinds;
+                }
+                let n = p.f.heard.len();
+                p.tick(e);
+                if p.f.heard[n..].iter().any(|o| {
+                    o.message
+                        .items
+                        .iter()
+                        .any(|i| matches!(i, AtcItem::Heading { .. }))
+                }) {
+                    kinds.push(leg_kind(e).expect("a vector plan"));
+                }
+            }
+            panic!("not cleared: {:#?}", p.f.heard);
+        }
+
+        #[test]
+        fn direct_join_flown_to_established() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = called_in(&mut e, at(x, y), 5000.0, 290.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            p.until(&mut e, 1200, cleared);
+            let said = approach_said(&p);
+            assert_eq!(said.len(), 3, "{said:#?}");
+            assert!(
+                matches!(
+                    said[0].as_slice(),
+                    [
+                        AtcItem::Identified,
+                        AtcItem::Heading { .. },
+                        AtcItem::MaintainLevel(Level::Altitude(5000)),
+                        AtcItem::Qnh(_),
+                        AtcItem::ExpectApproach { .. }
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert_eq!(said[1], vec![AtcItem::DescendTo(Level::Altitude(3000))]);
+            assert!(
+                matches!(
+                    said[2].as_slice(),
+                    [
+                        AtcItem::Heading { deg: 300, .. },
+                        AtcItem::DistanceToGo(_),
+                        AtcItem::ClearedApproach {
+                            kind: ApproachKind::Ils,
+                            ..
+                        },
+                        AtcItem::ReportEstablished
+                    ]
+                ),
+                "{said:#?}"
+            );
+            // Flown onto the final: established outside the FAF, never more than 0.5 NM off
+            // the course once joined, and nothing more from Approach on the way but the
+            // transfer to Tower at the FAF.
+            let n = p.f.heard.len();
+            let (mut joined, mut established_at, mut worst) = (false, None, 0.0f64);
+            for _ in 0..600 {
+                p.tick(&mut e);
+                let (x, y) = local(p.f.pos);
+                if x < faf_nm() {
+                    break;
+                }
+                joined |= y.abs() <= 0.3;
+                if joined {
+                    worst = worst.max(y.abs());
+                    let gap = (p.hdg - 270.0 + 540.0).rem_euclid(360.0) - 180.0;
+                    if y.abs() <= 0.3 && gap.abs() <= 15.0 && established_at.is_none() {
+                        established_at = Some(x);
+                    }
+                }
+            }
+            let out = established_at.expect("established on the final");
+            assert!(out > faf_nm() + 1.0, "established {out:.1} NM out");
+            assert!(worst <= 0.5, "{worst:.2} NM off the course after joining");
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .filter(|o| o.freq_khz == APP)
+                    .all(|o| contact_of(o).is_some_and(|(_, khz)| khz == TWR)),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+        }
+
+        #[test]
+        fn pattern_from_far_side() {
+            let mut e = engine();
+            // West of the field, flying east across it.
+            let mut p = called_in(&mut e, at(-12.0, 0.0), 5000.0, 90.0, 100.0);
+            let kinds = legs_at_headings(&mut e, &mut p);
+            assert_eq!(
+                kinds,
+                vec![LegKind::Downwind, LegKind::Base, LegKind::Intercept],
+                "{:#?}",
+                approach_said(&p)
+            );
+            // The base towards the centreline from the circuit side (left: south), the
+            // intercept 30 degrees onto the course.
+            let headings: Vec<u16> = approach_said(&p)
+                .iter()
+                .flatten()
+                .filter_map(|i| match i {
+                    AtcItem::Heading { deg, .. } => Some(*deg),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(headings[1..], [360, 300], "{headings:?}");
+            let (x, y) = local(p.f.pos);
+            assert!(x > 8.0 && y < 0.0, "cleared at {x:.1}, {y:.1}");
+        }
+
+        /// The NM from the course when the intercept heading is given at `gs` kt.
+        fn off_course_at_intercept(gs: f64) -> f64 {
+            let mut e = engine();
+            let (x, y) = NORTH;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 180.0, gs);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            p.until(&mut e, 1000, cleared);
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept));
+            local(p.f.pos).1.abs()
+        }
+
+        #[test]
+        fn intercept_given_earlier_for_faster_aircraft() {
+            let slow = off_course_at_intercept(100.0);
+            let fast = off_course_at_intercept(180.0);
+            assert!(
+                fast > slow + 0.2,
+                "100 kt: {slow:.2} NM, 180 kt: {fast:.2} NM"
+            );
+        }
+
+        /// A direct join from the first call: the intercept heading comes with the approach
+        /// clearance in the first reply, not repeated on the next sample.
+        #[test]
+        fn direct_join_cleared_in_the_first_reply() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(14.0, -3.0), 3000.0, 300.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept));
+            let said = approach_said(&p);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            assert!(
+                matches!(
+                    said[0].as_slice(),
+                    [
+                        AtcItem::Identified,
+                        AtcItem::Heading { deg: 300, .. },
+                        AtcItem::MaintainLevel(Level::Altitude(3000)),
+                        AtcItem::Qnh(_),
+                        AtcItem::DistanceToGo(_),
+                        AtcItem::ClearedApproach {
+                            kind: ApproachKind::Ils,
+                            ..
+                        },
+                        AtcItem::ReportEstablished
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert!(
+                e.strip(&cs())
+                    .unwrap()
+                    .plan
+                    .as_ref()
+                    .unwrap()
+                    .approach_cleared
+            );
+            for _ in 0..30 {
+                p.tick(&mut e);
+            }
+            assert_eq!(approach_said(&p).len(), 1, "{:#?}", approach_said(&p));
+        }
+
+        #[test]
+        fn descent_reaches_intercept_altitude_before_intercept() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = called_in(&mut e, at(x, y), 6000.0, 290.0, 100.0);
+            // The descent to 3000 ft is not given much earlier than the plan needs it: from
+            // the turn onto the intercept no farther than the descent at 300 ft/NM, the turn
+            // lead and 1 NM.
+            p.until(&mut e, 1200, |p| {
+                p.heard_item(|i| *i == AtcItem::DescendTo(Level::Altitude(3000)))
+            });
+            let vp = e
+                .strip(&cs())
+                .unwrap()
+                .plan
+                .clone()
+                .unwrap()
+                .vector_plan
+                .unwrap();
+            assert_eq!(vp.leg().kind, LegKind::Base);
+            let (base, int) = (&vp.legs[0], &vp.legs[1]);
+            let gap = (int.track_deg - base.track_deg + 540.0).rem_euclid(360.0) - 180.0;
+            let lead = atc_core::vectoring::turn_lead_m(100.0, gap) / M_PER_NM;
+            let to_turn = distance_m(p.f.pos, base.to) / M_PER_NM;
+            let limit = (p.f.alt - 3000.0) / 300.0 + lead + 1.0;
+            assert!(
+                to_turn <= limit,
+                "descent {to_turn:.1} NM before the turn, limit {limit:.1}"
+            );
+            p.until(&mut e, 1200, cleared);
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            assert_eq!(plan.cleared_ft, 3000);
+            assert!(
+                (p.f.alt - 3000.0).abs() <= 300.0,
+                "{:.0} ft at the intercept heading",
+                p.f.alt
+            );
+            // The descent came before the intercept, not with it.
+            let said = approach_said(&p);
+            assert!(
+                !said
+                    .last()
+                    .unwrap()
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::DescendTo(_))),
+                "{said:#?}"
+            );
+        }
+
+        /// The strip's last correction time.
+        fn last_correction(e: &AtcEngine) -> Option<f64> {
+            e.strip(&cs())?.plan.as_ref()?.last_correction_s
+        }
+
+        /// Ticks while `go` holds (at most `max` steps); every correction made meanwhile
+        /// (the strip's correction time set), as the time and what Approach said with it.
+        fn corrections_while(
+            e: &mut AtcEngine,
+            p: &mut Pilot,
+            max: usize,
+            go: impl Fn(&Pilot) -> bool,
+        ) -> Vec<(f64, Vec<AtcItem>)> {
+            let mut out = Vec::new();
+            for _ in 0..max {
+                if !go(p) {
+                    break;
+                }
+                let (before, n) = (last_correction(e), p.f.heard.len());
+                p.tick(e);
+                if last_correction(e) != before {
+                    let said = p.f.heard[n..]
+                        .iter()
+                        .filter(|o| o.freq_khz == APP)
+                        .flat_map(|o| o.message.items.clone())
+                        .collect();
+                    out.push((p.f.t, said));
+                }
+            }
+            out
+        }
+
+        fn has(items: &[AtcItem], f: impl Fn(&AtcItem) -> bool) -> bool {
+            items.iter().any(f)
+        }
+
+        fn off_course(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::OffCourse { .. })
+        }
+
+        fn check_heading(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::CheckHeading(_))
+        }
+
+        fn heard_heading(p: &Pilot, from: usize, deg: u16) -> bool {
+            p.f.heard[from..].iter().any(|o| {
+                o.message
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, AtcItem::Heading { deg: d, .. } if *d == deg))
+            })
+        }
+
+        /// Flies on until the FAF; the NM out on the final where the aircraft was first
+        /// established (within 0.3 NM, heading within 15 degrees).
+        fn established_out(e: &mut AtcEngine, p: &mut Pilot) -> f64 {
+            for _ in 0..900 {
+                p.tick(e);
+                let (x, y) = local(p.f.pos);
+                if x < faf_nm() {
+                    break;
+                }
+                let gap = (p.hdg - 270.0 + 540.0).rem_euclid(360.0) - 180.0;
+                if y.abs() <= 0.3 && gap.abs() <= 15.0 {
+                    return x;
+                }
+            }
+            panic!("not established: {:#?}", approach_said(p));
+        }
+
+        /// A base of about 17 NM whose track is 2.4 degrees off the 5-degree heading given for
+        /// it, flown exactly on that heading: the leg is the track the heading makes good, so
+        /// no correction (planned on the exact track it would end 0.7 NM off).
+        #[test]
+        fn long_leg_on_its_rounded_heading_is_not_corrected() {
+            let mut e = engine();
+            let mut p = Pilot::new(at(27.0, -5.165), 3000.0, 270.0);
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            let base = &plan.vector_plan.as_ref().unwrap().legs[0];
+            assert_eq!(base.kind, LegKind::Base);
+            assert!(distance_m(base.from, base.to) / M_PER_NM > 15.0);
+            assert_eq!(plan.heading, Some(285), "{:#?}", approach_said(&p));
+            let said = corrections_while(&mut e, &mut p, 1000, |p| !cleared(p));
+            assert!(said.is_empty(), "{said:#?}");
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+        }
+
+        /// The turn onto base made 40 s late: the aircraft overshoots the base leg; Approach
+        /// re-plans from where it is and gives the new heading, without a reason (on a base
+        /// the offset from the localizer is not the error); at most two corrections, then
+        /// established without the pilot correcting on its own.
+        #[test]
+        fn late_turn_on_base_gets_correction() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(-12.0, 0.0), 5000.0, 90.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Downwind));
+            // Slow on the base turn only.
+            p.reaction_s = 40.0;
+            let n = p.f.heard.len();
+            p.until(&mut e, 1500, |p| heard_heading(p, n, 360));
+            p.reaction_s = 5.0;
+            let said = corrections_while(&mut e, &mut p, 1500, |p| !cleared(p));
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            assert!(!said.is_empty(), "{:#?}", approach_said(&p));
+            assert!(said.len() <= 2, "{said:#?}");
+            for (_, items) in &said {
+                assert!(!has(items, off_course), "{said:#?}");
+                assert!(
+                    has(items, |i| matches!(
+                        i,
+                        AtcItem::Heading { turn: Some(_), .. }
+                    )),
+                    "{said:#?}"
+                );
+            }
+            let out = established_out(&mut e, &mut p);
+            assert!(out > faf_nm() + 1.0, "established {out:.1} NM out");
+        }
+
+        /// A heading turned onto but flown 20 degrees off, on the long leg south-east of the
+        /// final (within 45 degrees of parallel to it): the plain correction with the
+        /// reason, once, after the readback hold; never "check heading".
+        #[test]
+        fn wrong_heading_gets_correction() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = Pilot::realistic(at(x, y), 5000.0, 290.0, 100.0);
+            p.heading_error = Some(20.0);
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            let called = p.f.t;
+            let said = corrections_while(&mut e, &mut p, 1500, |p| !cleared(p));
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let (t, items) = &said[0];
+            assert!(*t > called + 10.0, "t = {t}");
+            assert!(
+                matches!(
+                    items.as_slice(),
+                    [
+                        AtcItem::OffCourse {
+                            side: Compass8::South,
+                            course: CourseName::Localizer,
+                            ..
+                        },
+                        AtcItem::Heading { .. },
+                        ..
+                    ]
+                ),
+                "{said:#?}"
+            );
+            established_out(&mut e, &mut p);
+            assert!(!p.heard_item(check_heading), "{:#?}", approach_said(&p));
+        }
+
+        /// A wrong heading on the downwind (parallel to the final): the plain correction
+        /// names the aircraft's side of the localizer, then the heading.
+        #[test]
+        fn wrong_heading_on_downwind_names_the_side() {
+            let mut e = engine();
+            let mut p = Pilot::realistic(at(-12.0, 0.0), 5000.0, 90.0, 100.0);
+            p.heading_error = Some(-25.0);
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert_eq!(leg_kind(&e), Some(LegKind::Downwind));
+            let said = corrections_while(&mut e, &mut p, 60, |_| true);
+            let (_, items) = said.first().expect("a correction");
+            // Turned 25 degrees left of the downwind (east): north of the centreline.
+            assert!(
+                matches!(
+                    items.as_slice(),
+                    [
+                        AtcItem::OffCourse {
+                            side: Compass8::North,
+                            course: CourseName::Localizer,
+                            ..
+                        },
+                        AtcItem::Heading { .. },
+                        ..
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert!(!p.heard_item(check_heading), "{:#?}", approach_said(&p));
+        }
+
+        /// The base turned onto at once (no reaction time, an instant turn): inside the base
+        /// leg by more than the tolerance, but closing it at 15 degrees: no correction.
+        #[test]
+        fn early_turn_converging_is_silent() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(-12.0, 0.0), 5000.0, 90.0, 100.0);
+            // The downwind heading flown (5 s reaction); the base comes next, flown at once,
+            // 15 degrees towards the base leg.
+            for _ in 0..10 {
+                p.tick(&mut e);
+            }
+            assert_eq!(leg_kind(&e), Some(LegKind::Downwind));
+            p.reaction_s = 0.0;
+            p.turn_rate = f64::INFINITY;
+            p.heading_error = Some(15.0);
+            let start = p.f.heard.len();
+            let said = corrections_while(&mut e, &mut p, 1500, |p| !cleared(p));
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            assert!(heard_heading(&p, start, 360), "{:#?}", approach_said(&p));
+            assert!(said.is_empty(), "{said:#?}");
+        }
+
+        /// 20 kt of wind across the final: at most one correction per leg.
+        #[test]
+        fn crosswind_leg_is_flown_without_repeated_corrections() {
+            let mut e = engine();
+            let mut p = Pilot::realistic(at(-12.0, 0.0), 5000.0, 90.0, 100.0);
+            p.wind = Some((360.0, 20.0));
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            let mut per_leg: Vec<(LegKind, usize)> = Vec::new();
+            for _ in 0..2000 {
+                if cleared(&p) {
+                    break;
+                }
+                let kind = leg_kind(&e).expect("a vector plan");
+                if !corrections_while(&mut e, &mut p, 1, |_| true).is_empty() {
+                    match per_leg.iter_mut().find(|(k, _)| *k == kind) {
+                        Some((_, c)) => *c += 1,
+                        None => per_leg.push((kind, 1)),
+                    }
+                }
+            }
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            assert!(
+                per_leg.iter().all(|&(_, c)| c <= 1),
+                "{per_leg:?}: {:#?}",
+                approach_said(&p)
+            );
+        }
+
+        /// A pilot slow to read back the first heading (and flying it 20 degrees off): no
+        /// correction before the readback is in and the 10 s after it have run.
+        #[test]
+        fn no_correction_during_readback() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = Pilot::realistic(at(x, y), 5000.0, 290.0, 100.0);
+            p.heading_error = Some(20.0);
+            p.reads_back = false;
+            p.tick(&mut e);
+            let out = p.call(&mut e, APP, INBOUND);
+            let rb = ifr_readback(&items(&out)).expect("a readback");
+            // The pending readback holds the checks up to the reminder and the reaction
+            // time; read back just before that runs out.
+            let said = corrections_while(&mut e, &mut p, 100, |p| p.f.t < 18.0);
+            assert!(said.is_empty(), "{said:#?}");
+            assert!(e.strip(&cs()).unwrap().pending_readback.is_some());
+            let accepted = p.f.t;
+            let out = e.on_transmission(APP, &rb, Lang::En, SimTime(accepted));
+            assert!(out.is_empty(), "{out:?}");
+            p.reads_back = true;
+            let said = corrections_while(&mut e, &mut p, 600, only_reminders);
+            let (t, _) = said.first().expect("a correction");
+            assert!(*t >= accepted + 10.0, "t = {t}, accepted {accepted}");
+        }
+
+        /// Approach has said nothing since the call but the reminder (no correction yet).
+        fn only_reminders(p: &Pilot) -> bool {
+            p.f.heard
+                .iter()
+                .filter(|o| o.freq_khz == APP)
+                .skip(1)
+                .all(|o| has(&o.message.items, |i| matches!(i, AtcItem::ReadBack(_))))
+        }
+
+        /// The approach clearance is not given with a "check heading" correction: only once
+        /// the heading is flown.
+        fn no_clearance_with_check_heading(said: &[(f64, Vec<AtcItem>)]) {
+            for (_, items) in said {
+                if has(items, check_heading) {
+                    assert!(
+                        !has(items, |i| matches!(i, AtcItem::ClearedApproach { .. })),
+                        "{said:#?}"
+                    );
+                }
+            }
+        }
+
+        /// A planned flight still on its previous heading after the reaction time gets the
+        /// planner's "check heading" correction (with the turn, the plan rebuilt), once;
+        /// never compliance's bare "check heading, fly heading"; every heading or level call
+        /// is a planner correction.
+        #[test]
+        fn compliance_silent_while_planned() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = called_in(&mut e, at(x, y), 5000.0, 200.0, 100.0);
+            let first = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            let assigned = first.heading.unwrap();
+            assert!(assigned.abs_diff(200) > 30, "{assigned}");
+            // Never turns (it has not yet: 5 s reaction).
+            p.obeys_headings = false;
+            p.delayed.clear();
+            // The first call after the reaction time and the monitor's 30 s; none again
+            // before the corrected heading's readback, reaction time and 30 s have run.
+            let n = p.f.heard.len();
+            let said = corrections_while(&mut e, &mut p, 35, |_| true);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let deg = match said[0].1.as_slice() {
+                [
+                    AtcItem::CheckHeading(h),
+                    AtcItem::Heading { deg, turn: Some(_) },
+                    ..,
+                ] => {
+                    assert_eq!(h, deg);
+                    *deg
+                }
+                other => panic!("{other:#?}"),
+            };
+            no_clearance_with_check_heading(&said);
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            assert_eq!(plan.heading, Some(deg));
+            assert_ne!(plan.vector_plan, first.vector_plan, "the plan is rebuilt");
+            // Every call to the aircraft since was a correction.
+            let calls = p.f.heard[n..]
+                .iter()
+                .filter(|o| {
+                    has(&o.message.items, |i| {
+                        matches!(i, AtcItem::CheckHeading(_) | AtcItem::CheckLevel(_))
+                    })
+                })
+                .count();
+            assert_eq!(calls, said.len());
+        }
+
+        /// A "check heading" correction whose new path starts on the intercept carries no
+        /// approach clearance: it comes once the heading is flown.
+        #[test]
+        fn check_heading_onto_the_intercept_clears_once_flown() {
+            let mut e = engine();
+            // Beyond a direct join, given a base it never turns onto; its own track takes it
+            // to where a direct 30-degree join fits.
+            let mut p = called_in(&mut e, at(25.5, -6.0), 3000.0, 255.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            p.obeys_headings = false;
+            p.delayed.clear();
+            let said = corrections_while(&mut e, &mut p, 60, |p| !p.heard_item(check_heading));
+            let (_, items) = said.last().expect("a correction");
+            assert!(has(items, check_heading), "{said:#?}");
+            no_clearance_with_check_heading(&said);
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept), "{said:#?}");
+            assert!(
+                !e.strip(&cs())
+                    .unwrap()
+                    .plan
+                    .as_ref()
+                    .unwrap()
+                    .approach_cleared
+            );
+            // Now flown: the clearance follows, without the heading again.
+            let deg = e
+                .strip(&cs())
+                .unwrap()
+                .plan
+                .as_ref()
+                .unwrap()
+                .heading
+                .unwrap();
+            p.hdg = f64::from(deg);
+            let n = p.f.heard.len();
+            p.until(&mut e, 10, cleared);
+            let msg = p.f.heard[n..]
+                .iter()
+                .find(|o| {
+                    has(&o.message.items, |i| {
+                        matches!(i, AtcItem::ClearedApproach { .. })
+                    })
+                })
+                .unwrap();
+            assert!(
+                matches!(
+                    msg.message.items.as_slice(),
+                    [
+                        AtcItem::DistanceToGo(_),
+                        AtcItem::ClearedApproach { .. },
+                        AtcItem::ReportEstablished
+                    ]
+                ),
+                "{:?}",
+                msg.message.items
+            );
+        }
+
+        /// A level bust on planned vectors: "check level" from the planner, counted as its
+        /// correction, the plan rebuilt.
+        #[test]
+        fn level_bust_is_the_planners_correction() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = called_in(&mut e, at(x, y), 5000.0, 290.0, 100.0);
+            p.until(&mut e, 10, |p| p.f.t >= 14.0);
+            let first = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            p.f.alt = 4400.0;
+            p.target = 4400.0;
+            let n = p.f.heard.len();
+            let said = corrections_while(&mut e, &mut p, 15, |_| true);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            assert!(
+                has(&said[0].1, |i| *i
+                    == AtcItem::CheckLevel(Level::Altitude(5000))),
+                "{said:#?}"
+            );
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            assert_ne!(plan.vector_plan, first.vector_plan, "the plan is rebuilt");
+            let calls = p.f.heard[n..]
+                .iter()
+                .filter(|o| has(&o.message.items, |i| matches!(i, AtcItem::CheckLevel(_))))
+                .count();
+            assert_eq!(calls, 1);
+        }
+
+        /// The heading and level checks due together (both noted within the window, made as
+        /// it ends): one message, the heading correction with the level call after it as the
+        /// only level item; no descent and no approach clearance with it, though the new
+        /// path starts on the intercept below the cleared level.
+        #[test]
+        fn heading_and_level_checks_due_together() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(25.5, -6.0), 5000.0, 255.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            // Turned, but onto a wrong heading, and 600 ft low.
+            p.obeys_headings = false;
+            p.delayed.clear();
+            p.hdg = 230.0;
+            p.until(&mut e, 30, |p| p.f.t >= 14.0);
+            let cleared_before = e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft;
+            p.f.alt = f64::from(cleared_before) - 600.0;
+            p.target = p.f.alt;
+            // Both checks noted in a window that ends now.
+            let mut v = serde_json::to_value(e.snapshot()).unwrap();
+            let plan = &mut v["strips"][0]["plan"];
+            plan["deferred_heading"] = true.into();
+            plan["deferred_level"] = true.into();
+            plan["last_correction_s"] = (p.f.t - 19.0).into();
+            e.restore(serde_json::from_value(v).unwrap()).unwrap();
+            let said = corrections_while(&mut e, &mut p, 3, |_| true);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let items = &said[0].1;
+            let levels: Vec<&AtcItem> = items
+                .iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        AtcItem::CheckLevel(_)
+                            | AtcItem::CheckAltimeter { .. }
+                            | AtcItem::DescendTo(_)
+                            | AtcItem::ClimbTo(_)
+                            | AtcItem::MaintainLevel(_)
+                    )
+                })
+                .collect();
+            // 600 ft low: one level item, the check of the level it is cleared to (no
+            // descent though the new path starts on the intercept).
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            assert_eq!(plan.cleared_ft, cleared_before);
+            assert_eq!(
+                levels,
+                [&AtcItem::CheckLevel(Level::Altitude(cleared_before))],
+                "{items:#?}"
+            );
+            assert!(
+                has(items, |i| matches!(i, AtcItem::Heading { .. })),
+                "{items:#?}"
+            );
+            assert!(
+                !has(items, |i| matches!(i, AtcItem::ClearedApproach { .. })),
+                "{items:#?}"
+            );
+            assert!(!plan.approach_cleared);
+            assert!(!plan.deferred_heading && !plan.deferred_level);
+            // Nothing contradicting it right after.
+            let n = p.f.heard.len();
+            for _ in 0..5 {
+                p.tick(&mut e);
+            }
+            assert!(
+                !p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, |i| matches!(
+                        i,
+                        AtcItem::DescendTo(_) | AtcItem::ClimbTo(_) | AtcItem::MaintainLevel(_)
+                    ))),
+                "{:#?}",
+                approach_said(&p)
+            );
+        }
+
+        /// A level bust low where the new path needs the descent at once (it starts on the
+        /// intercept): "check level" for the cleared level, no descent with it.
+        #[test]
+        fn low_bust_gets_the_check_not_a_descent() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(25.5, -6.0), 5000.0, 255.0, 100.0);
+            p.obeys_headings = false;
+            p.delayed.clear();
+            // Its own track takes it to where the path starts on the intercept.
+            p.until(&mut e, 30, |p| p.f.t >= 40.0);
+            // Cleared to 5000 ft, 600 ft low; the level check noted in a window that ends now.
+            p.f.alt = 4400.0;
+            p.target = 4400.0;
+            let mut v = serde_json::to_value(e.snapshot()).unwrap();
+            let snap = &mut v["strips"][0]["plan"];
+            snap["cleared_ft"] = 5000.into();
+            snap["deferred_level"] = true.into();
+            snap["last_correction_s"] = (p.f.t - 19.0).into();
+            e.restore(serde_json::from_value(v).unwrap()).unwrap();
+            let said = corrections_while(&mut e, &mut p, 3, |_| true);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let items = &said[0].1;
+            assert!(
+                has(items, |i| *i == AtcItem::CheckLevel(Level::Altitude(5000))),
+                "{items:#?}"
+            );
+            assert!(
+                !has(items, |i| matches!(
+                    i,
+                    AtcItem::DescendTo(_) | AtcItem::ClearedApproach { .. }
+                )),
+                "{items:#?}"
+            );
+            // The new path starts on the intercept (where the descent is due at once).
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept), "{items:#?}");
+            assert_eq!(
+                e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+                5000
+            );
+        }
+
+        /// A heading check that fires within 20 s of a level correction is not lost: it is
+        /// made once the 20 s have run.
+        #[test]
+        fn check_within_the_window_is_deferred() {
+            let mut e = engine();
+            let (x, y) = SOUTH_EAST;
+            let mut p = Pilot::realistic(at(x, y), 5000.0, 290.0, 100.0);
+            // Turned, but 20 degrees off: the monitor's heading check 30 s after the hold.
+            p.heading_error = Some(20.0);
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            // The level bust from 17 s: its check 10 s later, before the heading's.
+            p.until(&mut e, 20, |p| p.f.t >= 17.0);
+            p.f.alt = 4400.0;
+            p.target = 4400.0;
+            let said = corrections_while(&mut e, &mut p, 60, |_| true);
+            assert!(said.len() >= 2, "{said:#?}");
+            let (tl, level) = &said[0];
+            assert!(
+                has(level, |i| matches!(i, AtcItem::CheckLevel(_))),
+                "{said:#?}"
+            );
+            assert!(
+                !has(level, |i| matches!(i, AtcItem::Heading { .. })),
+                "{said:#?}"
+            );
+            let (th, heading) = &said[1];
+            assert!(
+                has(heading, |i| matches!(i, AtcItem::Heading { .. })),
+                "{said:#?}"
+            );
+            assert!(*th >= tl + 20.0, "{tl} -> {th}");
+            // The monitor's heading check fired inside the window (30 s after the hold).
+            assert!(*th <= 12.0 + 30.0 + 20.0 + 4.0, "{tl} -> {th}");
+        }
+
+        /// Plan 14b, after the approach clearance (spec goal 5, decisions 1, 3, 5).
+        const ESTABLISHED: &str =
+            "Zeta Approach, Sierra Sierra Tango, established ILS runway two seven";
+
+        fn re_intercept(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::ReIntercept(_))
+        }
+
+        fn new_approach(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::NewApproach)
+        }
+
+        fn contact_tower(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::Contact { khz, .. } if *khz == TWR)
+        }
+
+        /// Within 0.3 NM of the final and heading within 15 degrees of it, outside the
+        /// threshold.
+        fn on_course(p: &Pilot) -> bool {
+            let (x, y) = local(p.f.pos);
+            let gap = (p.hdg - 270.0 + 540.0).rem_euclid(360.0) - 180.0;
+            x > 0.0 && y.abs() <= 0.3 && gap.abs() <= 15.0
+        }
+
+        fn approach_cleared(e: &AtcEngine) -> bool {
+            e.strip(&cs())
+                .unwrap()
+                .plan
+                .as_ref()
+                .unwrap()
+                .approach_cleared
+        }
+
+        /// South of the final 18 NM out, on the 30-degree intercept: cleared in the first
+        /// reply, joining about 13 NM out.
+        const ON_INTERCEPT: (f64, f64) = (18.0, -3.0);
+
+        /// Flight test C13: a 90-degree base, the intercept heading (with the approach
+        /// clearance) flown about 40 s late. Approach corrects it to re-intercept, and it ends
+        /// established outside the FAF without the pilot correcting on its own.
+        #[test]
+        fn late_intercept_turn_gets_correction() {
+            let mut e = engine();
+            let (x, y) = NORTH;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 180.0, 160.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            // Slow on the intercept turn only.
+            p.until(&mut e, 100, |p| p.f.t >= 20.0);
+            assert!(!cleared(&p), "{:#?}", approach_said(&p));
+            p.reaction_s = 40.0;
+            p.until(&mut e, 1000, cleared);
+            p.reaction_s = 5.0;
+            let said = corrections_while(&mut e, &mut p, 600, |p| !on_course(p));
+            assert!(!said.is_empty(), "{:#?}", approach_said(&p));
+            assert!(said.len() <= 2, "{said:#?}");
+            for (_, items) in &said {
+                assert!(
+                    has(items, |i| *i == AtcItem::ReIntercept(CourseName::Localizer)),
+                    "{said:#?}"
+                );
+                assert!(!has(items, new_approach), "{said:#?}");
+            }
+            let (x, _) = local(p.f.pos);
+            assert!(x > faf_nm(), "established {x:.1} NM out");
+            assert!(approach_cleared(&e));
+        }
+
+        /// Flight test B8: the localizer flown through on the intercept heading (the pilot
+        /// does not capture it, and is slow to turn back: 1 NM through): "you are ... north of the
+        /// localizer, turn left heading ... to re-intercept the localizer", then established
+        /// and transferred to Tower inside the FAF.
+        #[test]
+        fn overshoot_gets_reintercept() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 205.0);
+            p.flies_final = false;
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.reaction_s = 18.0;
+            let said = corrections_while(&mut e, &mut p, 600, |p| !p.heard_item(re_intercept));
+            assert_eq!(said.len(), 1, "{said:#?}");
+            assert!(
+                matches!(
+                    said[0].1.as_slice(),
+                    [
+                        AtcItem::OffCourse {
+                            side: Compass8::North,
+                            course: CourseName::Localizer,
+                            ..
+                        },
+                        AtcItem::Heading {
+                            turn: Some(Turn::Left),
+                            ..
+                        },
+                        AtcItem::ReIntercept(CourseName::Localizer)
+                    ]
+                ),
+                "{said:#?}"
+            );
+            // Its localizer capture armed now; flown back, the worst overshoot noted.
+            p.on_final = Some(false);
+            p.reaction_s = 5.0;
+            let mut worst = 0.0f64;
+            let n = p.f.heard.len();
+            for _ in 0..900 {
+                if p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower))
+                {
+                    break;
+                }
+                p.tick(&mut e);
+                worst = worst.max(local(p.f.pos).1);
+            }
+            assert!(worst >= 1.0, "{worst:.2} NM overshoot");
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower)),
+                "{:#?}",
+                approach_said(&p)
+            );
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .filter(|o| o.freq_khz == APP)
+                    .all(|o| has(&o.message.items, contact_tower)),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+            assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        }
+
+        /// Decision 1: the pilot reports established 0.6 NM off the localizer: "negative",
+        /// the correction, and the flight stays with Approach; reported again on the course,
+        /// it goes to Tower.
+        #[test]
+        fn early_established_report_is_checked() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.until(&mut e, 900, |p| local(p.f.pos).1 >= -0.6);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Negative,
+                        AtcItem::OffCourse {
+                            tenths_nm: 5..=7,
+                            side: Compass8::South,
+                            course: CourseName::Localizer,
+                        },
+                        AtcItem::Heading { .. },
+                        AtcItem::ReIntercept(CourseName::Localizer)
+                    ]
+                ),
+                "{got:#?}"
+            );
+            let strip = e.strip(&cs()).unwrap();
+            assert_eq!((strip.owner, strip.handoff_to), (Role::Approach, None));
+            assert!(approach_cleared(&e));
+            p.until(&mut e, 300, on_course);
+            p.tick(&mut e);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+            assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        }
+
+        /// Decision 5: the localizer flown through near the FAF, where no re-intercept can
+        /// join 2 NM outside it: just north of the centreline, the turn is left, towards the
+        /// circuit side (south) where the new pattern is flown, not through the heading to
+        /// the north: "turn left heading ..., maintain three thousand feet, I will
+        /// vector you for a new approach"; the approach clearance cancelled (not a missed
+        /// approach), then a new pattern and a new intercept, established outside the FAF.
+        #[test]
+        fn late_overshoot_breaks_off() {
+            let mut e = engine();
+            let mut p = near_faf_not_capturing(&mut e, 3000.0);
+            let said = corrections_while(&mut e, &mut p, 300, |p| !p.heard_item(new_approach));
+            let (_, items) = said.last().expect("a break-off");
+            assert!(
+                matches!(
+                    items.as_slice(),
+                    [
+                        AtcItem::Heading {
+                            turn: Some(Turn::Left),
+                            ..
+                        },
+                        AtcItem::MaintainLevel(Level::Altitude(3000)),
+                        AtcItem::NewApproach
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert!(!has(items, re_intercept), "{said:#?}");
+            let strip = e.strip(&cs()).unwrap();
+            assert!(!strip.missed_approach);
+            assert_eq!((strip.owner, strip.handoff_to), (Role::Approach, None));
+            assert!(!approach_cleared(&e));
+            assert_eq!(leg_kind(&e), Some(LegKind::Downwind));
+            // Around again: a new intercept with the approach clearance, then established.
+            p.flies_final = true;
+            let n = p.f.heard.len();
+            p.until(&mut e, 2000, |p| {
+                p.f.heard[n..].iter().any(|o| {
+                    has(&o.message.items, |i| {
+                        matches!(i, AtcItem::ClearedApproach { .. })
+                    })
+                })
+            });
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept));
+            let out = established_out(&mut e, &mut p);
+            assert!(out > faf_nm() + 1.0, "established {out:.1} NM out");
+        }
+
+        /// Cleared at `alt` on a steep intercept 8.5 NM out, 1 NM south of the final (it
+        /// joins at the FAF margin), flown by a pilot that does not capture the localizer.
+        fn near_faf_not_capturing(e: &mut AtcEngine, alt: f64) -> Pilot {
+            let mut p = called_in(e, at(8.5, -1.0), alt, 300.0, 100.0);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.flies_final = false;
+            p.on_final = None;
+            p.delayed
+                .retain(|(_, i)| !matches!(i, AtcItem::ClearedApproach { .. }));
+            p
+        }
+
+        /// Broken off below the intercept altitude: the climb to it.
+        #[test]
+        fn break_off_below_intercept_altitude_climbs() {
+            let mut e = engine();
+            let mut p = near_faf_not_capturing(&mut e, 2500.0);
+            let said = corrections_while(&mut e, &mut p, 300, |p| !p.heard_item(new_approach));
+            let (_, items) = said.last().expect("a break-off");
+            assert!(
+                matches!(
+                    items.as_slice(),
+                    [
+                        AtcItem::Heading { .. },
+                        AtcItem::ClimbTo(Level::Altitude(3000)),
+                        AtcItem::NewApproach
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert_eq!(
+                e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+                3000
+            );
+        }
+
+        /// "Established" reported crossing the localizer near the FAF on a steep heading: no
+        /// re-intercept can join in time, so "negative" and the break-off.
+        #[test]
+        fn established_report_can_break_off() {
+            let mut e = engine();
+            let mut p = near_faf_not_capturing(&mut e, 3000.0);
+            p.until(&mut e, 300, |p| local(p.f.pos).1 >= -0.1);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Negative,
+                        AtcItem::Heading { .. },
+                        AtcItem::MaintainLevel(Level::Altitude(3000)),
+                        AtcItem::NewApproach
+                    ]
+                ),
+                "{got:#?}"
+            );
+            assert!(!approach_cleared(&e));
+            assert_eq!(e.strip(&cs()).unwrap().handoff_to, None);
+        }
+
+        /// "Established" reported during the localizer capture turn: no reply now (never a
+        /// bare "negative", nor a heading that would undo the turn); the Tower contact as
+        /// soon as the radar shows it established.
+        #[test]
+        fn report_during_capture_is_transferred_once_established() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            p.until(&mut e, 900, |p| {
+                p.on_final == Some(true) && p.turning_to.is_some() && !on_course(p)
+            });
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(items(&out).is_empty(), "{out:#?}");
+            let strip = e.strip(&cs()).unwrap();
+            assert_eq!(strip.handoff_to, None);
+            assert!(strip.plan.as_ref().unwrap().established_reported);
+            let n = p.f.heard.len();
+            p.until(&mut e, 60, |p| {
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower))
+            });
+            // Transferred once on the course, well before the FAF.
+            assert!(on_course(&p), "{:?}", local(p.f.pos));
+            assert!(local(p.f.pos).0 > faf_nm() + 1.0);
+            assert!(
+                !p.heard_item(|i| matches!(
+                    i,
+                    AtcItem::Negative | AtcItem::ReIntercept(_) | AtcItem::OffCourse { .. }
+                )),
+                "{:#?}",
+                approach_said(&p)
+            );
+        }
+
+        /// A localizer capture that overshoots by about 0.4 NM, already turning back (a fast
+        /// aircraft rolling at less than standard rate): no call while it turns back, then
+        /// established and, reported so, transferred to Tower.
+        #[test]
+        fn capture_overshoot_turning_back_is_not_corrected() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 205.0);
+            p.flies_final = false;
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.until(&mut e, 900, |p| local(p.f.pos).1 >= 0.05);
+            // The capture turn starts just past the course, at 1.2 degrees per second.
+            p.turn_rate = 1.2;
+            p.on_final = Some(true);
+            let mut worst = 0.0f64;
+            let n = p.f.heard.len();
+            for _ in 0..300 {
+                if on_course(&p) && local(p.f.pos).1 < 0.1 {
+                    break;
+                }
+                p.tick(&mut e);
+                worst = worst.max(local(p.f.pos).1);
+            }
+            assert!((0.31..=0.5).contains(&worst), "{worst:.2} NM overshoot");
+            assert!(on_course(&p), "{:?}", local(p.f.pos));
+            assert!(
+                p.f.heard[n..].iter().all(|o| o.freq_khz != APP),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+            assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        }
+
+        /// A re-intercept planned at about 45 degrees (the steepest), its heading rounded to
+        /// 5 degrees and flown with a crosswind: the radar shows it converging at a little
+        /// more than 45, which is the planned re-intercept, not another flight through the
+        /// course: one call, then established.
+        #[test]
+        fn steep_reintercept_is_called_once() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 100.0);
+            p.flies_final = false;
+            // From the north-west: the drift is to the left on the re-intercept heading.
+            p.wind = Some((315.0, 3.0));
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.until(&mut e, 30, |p| p.f.t >= 30.0);
+            // Through the localizer near the FAF margin, moving away to the north.
+            p.f.pos = at(faf_nm() + 2.97, 0.95);
+            p.hdg = 300.0;
+            (p.turn_rate, p.reaction_s) = (f64::INFINITY, 0.0);
+            let said = corrections_while(&mut e, &mut p, 30, |p| !p.heard_item(re_intercept));
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let heading = said[0].1.iter().find_map(|i| match i {
+                AtcItem::Heading { deg, .. } => Some(*deg),
+                _ => None,
+            });
+            assert_eq!(heading, Some(225), "{said:#?}");
+            // Its localizer capture armed now.
+            p.on_final = Some(false);
+            let said = corrections_while(&mut e, &mut p, 300, |p| !on_course(p));
+            assert!(said.is_empty(), "{said:#?}");
+            assert!(local(p.f.pos).0 > faf_nm() + 1.0, "{:?}", local(p.f.pos));
+            p.tick(&mut e);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+        }
+
+        /// A watched flight flying through the final between the FAF and the threshold: the
+        /// break-off alone in that sample, never with "check established".
+        #[test]
+        fn no_check_established_with_a_break_off() {
+            let mut e = engine();
+            let mut p = near_faf_not_capturing(&mut e, 3000.0);
+            p.until(&mut e, 30, |p| p.f.t >= 20.0);
+            // Inside the FAF, through the localizer to the north and moving away.
+            p.f.pos = at(faf_nm() - 1.0, 0.5);
+            p.hdg = 300.0;
+            let n = p.f.heard.len();
+            p.tick(&mut e);
+            let said: Vec<AtcItem> = p.f.heard[n..]
+                .iter()
+                .flat_map(|o| o.message.items.clone())
+                .collect();
+            assert!(has(&said, new_approach), "{said:#?}");
+            assert!(
+                !has(&said, |i| matches!(i, AtcItem::CheckEstablished { .. })),
+                "{said:#?}"
+            );
+            for _ in 0..30 {
+                p.tick(&mut e);
+            }
+            assert!(
+                !p.heard_item(|i| matches!(i, AtcItem::CheckEstablished { .. })),
+                "{:#?}",
+                approach_said(&p)
+            );
+        }
+
+        /// Decision 3 with an offset final: a non-ILS final published about 4 degrees off the
+        /// runway's course (its FAF 0.4 NM north of the centreline). Flown along the
+        /// published final, "established" goes to Tower: no re-intercept, no break-off.
+        #[test]
+        fn offset_published_final_is_established() {
+            // East of the threshold (the fixture's ZZ021 is not on the approach side).
+            let faf = destination(
+                destination(THR_27, 90.0, faf_nm() * M_PER_NM),
+                0.0,
+                0.4 * M_PER_NM,
+            );
+            let mut e = engine_with(|set: &mut ProcedureSet| {
+                for p in &mut set.procedures {
+                    if p.procedure.approach == Some(atc_navdata::cifp::ApproachKind::Ils) {
+                        p.procedure.approach = Some(atc_navdata::cifp::ApproachKind::VorDme);
+                        for l in &mut p.legs {
+                            if l.leg.faf {
+                                l.pos = Some(faf);
+                            }
+                        }
+                    }
+                }
+            });
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            p.until(&mut e, 900, cleared);
+            assert!(
+                p.heard_item(|i| matches!(
+                    i,
+                    AtcItem::ClearedApproach {
+                        kind: ApproachKind::VorDme,
+                        ..
+                    }
+                )),
+                "{:#?}",
+                approach_said(&p)
+            );
+            // On the published final 9 NM out (0.7 NM north of the centreline), flying it.
+            p.flies_final = false;
+            p.on_final = None;
+            p.delayed.clear();
+            let course = bearing_deg(faf, THR_27);
+            p.f.pos = destination(faf, course + 180.0, (9.0 - faf_nm()) * M_PER_NM);
+            p.to = Some(THR_27);
+            for _ in 0..20 {
+                p.tick(&mut e);
+            }
+            let out = p.call(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Sierra Tango, established VOR DME approach runway two \
+                 seven",
+            );
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+            assert!(
+                !p.heard_item(|i| matches!(i, AtcItem::ReIntercept(_) | AtcItem::NewApproach)),
+                "{:#?}",
+                approach_said(&p)
+            );
+        }
+
+        /// The missed approach still goes back to Approach and is vectored again from the
+        /// published missed-approach altitude, then cleared and transferred to Tower.
+        #[test]
+        fn missed_approach_is_vectored_again() {
+            let mut e = engine();
+            let mut p = missed_approach_called(&mut e);
+            let said = approach_said(&p);
+            assert!(
+                matches!(
+                    said.last().unwrap().as_slice(),
+                    [
+                        AtcItem::Heading { .. },
+                        AtcItem::ClimbTo(Level::Altitude(4000))
+                    ]
+                ),
+                "{said:#?}"
+            );
+            p.flies_final = true;
+            p.target = 4000.0;
+            let n = p.f.heard.len();
+            p.until(&mut e, 2000, |p| {
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower))
+            });
+            assert!(
+                !p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, new_approach)),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, |i| matches!(
+                        i,
+                        AtcItem::ClearedApproach { .. }
+                    ))),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+        }
+
+        /// Decision 3: on an RNAV approach the course is "the final approach course".
+        #[test]
+        fn rnav_uses_final_approach_course_wording() {
+            // ZZZZ 27 with its ILS published as an RNAV approach.
+            let mut e = engine_with(|set: &mut ProcedureSet| {
+                for p in &mut set.procedures {
+                    if p.procedure.approach == Some(atc_navdata::cifp::ApproachKind::Ils) {
+                        p.procedure.approach = Some(atc_navdata::cifp::ApproachKind::Rnav);
+                    }
+                }
+            });
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            assert!(
+                p.heard_item(|i| matches!(
+                    i,
+                    AtcItem::ClearedApproach {
+                        kind: ApproachKind::Rnav,
+                        ..
+                    }
+                )),
+                "{:#?}",
+                approach_said(&p)
+            );
+            p.until(&mut e, 900, |p| local(p.f.pos).1 >= -0.6);
+            let out = p.call(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Sierra Tango, established RNAV runway two seven",
+            );
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Negative,
+                        AtcItem::OffCourse {
+                            course: CourseName::FinalApproachCourse,
+                            ..
+                        },
+                        AtcItem::Heading { .. },
+                        AtcItem::ReIntercept(CourseName::FinalApproachCourse)
+                    ]
+                ),
+                "{got:#?}"
+            );
+        }
+    }
+
     /// Flight test 14c, C10: no "check heading" while the readback of the heading is
     /// pending, nor until the pilot has had the reaction time and the persistence time
     /// after it was accepted.
@@ -7127,6 +8747,8 @@ mod approach_arrival {
                     _ => None,
                 })
                 .expect("a heading");
+            // The assigned heading is more than 15 degrees from the one it stays on (north).
+            assert!((16..345).contains(&assigned), "{assigned}");
             let qnh = got
                 .iter()
                 .find_map(|i| match i {
@@ -7134,8 +8756,7 @@ mod approach_arrival {
                     _ => None,
                 })
                 .expect("a QNH");
-            // 78 degrees off the assigned heading (262 for 340), never turning.
-            p.hdg = f64::from(assigned) - 78.0;
+            // Never turning: still on its previous heading, well off the assigned one.
             let good = ifr_readback(&got).expect("a readback");
             let wrong = good.replace(&spoken(&qnh.to_string()), &spoken(&(qnh + 5).to_string()));
             assert_ne!(good, wrong);
@@ -7291,7 +8912,8 @@ mod approach_arrival {
                     _ => None,
                 })
                 .expect("a heading");
-            p.hdg = f64::from(assigned) - 78.0;
+            // Never turning: still on its previous heading (north), more than 15 degrees off.
+            assert!((16..345).contains(&assigned), "{assigned}");
             p.until(&mut e, 80, |p| calls(p, check_heading) > 0);
             // Not before the reminder (10 s), the reaction time and the 30 s have run.
             assert!(p.f.t > issued + 10.0 + 10.0 + 30.0, "t = {}", p.f.t);
@@ -7442,8 +9064,9 @@ mod approach_arrival {
                 _ => None,
             })
             .expect("a heading");
+        // Back on its previous heading (north), never turning.
         p.obeys_headings = false;
-        p.hdg = f64::from(assigned) + 60.0;
+        p.hdg = 0.0;
         let n = p.f.heard.len();
         for _ in 0..40 {
             p.tick(&mut e);
@@ -7459,9 +9082,15 @@ mod approach_arrival {
             .collect();
         assert_eq!(calls.len(), 1, "{:?}", &p.f.heard[n..]);
         assert_eq!((calls[0].freq_khz, calls[0].message.lang), (APP, Lang::En));
-        assert_eq!(
-            calls[0].message.items,
-            vec![AtcItem::CheckHeading(assigned)]
+        // On planned vectors the planner calls it (spec 14b, decision 2): "check heading"
+        // with the turn onto the heading of the path planned anew from where it is.
+        assert!(
+            matches!(
+                calls[0].message.items.as_slice(),
+                [AtcItem::CheckHeading(h), AtcItem::Heading { deg, turn: Some(_) }] if h == deg
+            ),
+            "{:?} (assigned {assigned})",
+            calls[0].message.items
         );
     }
 
@@ -7790,6 +9419,9 @@ mod approach_arrival {
     fn far_side_arrival_is_vectored_around_a_pattern() {
         let mut e = engine();
         let (mut p, _) = inbound(&mut e, WEST, 5000.0, 90.0, INBOUND);
+        // Turning at standard rate: an instant turn onto the base ends 0.8 NM inside the
+        // planned base leg (the turn lead), off it by more than the tolerance.
+        p.turn_rate = 3.0;
         p.until(&mut e, 1500, |p| {
             p.heard_item(|i| matches!(i, AtcItem::ClearedApproach { .. }))
         });
@@ -8033,12 +9665,12 @@ mod approach_arrival {
     mod acknowledgements {
         use super::*;
 
-        /// SP-TST inbound on vectors, off its heading until Approach says "check heading";
-        /// returns the assigned heading.
+        /// SP-TST inbound on vectors, still on its heading (not turning) until Approach says
+        /// "check heading"; returns the heading given with it.
         fn checked_heading(e: &mut AtcEngine) -> u16 {
             let (mut p, _) = inbound(e, WEST, 5000.0, 0.0, INBOUND);
             p.obeys_headings = false;
-            p.hdg += 60.0;
+            p.hdg = 0.0;
             p.until(e, 40, |p| {
                 p.heard_item(|i| matches!(i, AtcItem::CheckHeading(_)))
             });
@@ -8055,10 +9687,15 @@ mod approach_arrival {
         #[test]
         fn check_heading_ack_after_garble() {
             let mut e = engine();
-            checked_heading(&mut e);
+            let deg = checked_heading(&mut e);
             let out = say(&mut e, APP, "check heading, now we've missed your papa.");
             assert_eq!(items(&out), [AtcItem::SayAgain], "{out:?}");
-            let out = say(&mut e, APP, "check heading Sierra Sierra Tango.");
+            // "Check heading" comes with the turn (planned vectors): read back with the heading.
+            let text = format!(
+                "check heading, heading {}, Sierra Sierra Tango.",
+                spoken(&format!("{deg:03}"))
+            );
+            let out = say(&mut e, APP, &text);
             assert!(out.is_empty(), "{out:?}");
         }
 
@@ -8067,7 +9704,7 @@ mod approach_arrival {
         #[test]
         fn check_heading_ack_after_callsign_reminder() {
             let mut e = engine();
-            checked_heading(&mut e);
+            let deg = checked_heading(&mut e);
             for _ in 0..2 {
                 let out = say(&mut e, APP, "check heading, now we've missed your papa.");
                 assert_eq!(items(&out), [AtcItem::SayAgain], "{out:?}");
@@ -8078,7 +9715,12 @@ mod approach_arrival {
                 [AtcItem::SayAgain, AtcItem::UseCallsign],
                 "{out:?}"
             );
-            let out = say(&mut e, APP, "check heading Sierra Sierra Tango.");
+            // "Check heading" comes with the turn (planned vectors): read back with the heading.
+            let text = format!(
+                "check heading, heading {}, Sierra Sierra Tango.",
+                spoken(&format!("{deg:03}"))
+            );
+            let out = say(&mut e, APP, &text);
             assert!(out.is_empty(), "{out:?}");
         }
 
@@ -8673,8 +10315,13 @@ mod handover {
             direct: None,
             heading: None,
             approach_cleared: false,
-            pattern: None,
+            vector_plan: None,
+            last_correction_s: None,
+            heading_from: None,
+            deferred_heading: false,
+            deferred_level: false,
             established_check: false,
+            established_reported: false,
         }
     }
 
