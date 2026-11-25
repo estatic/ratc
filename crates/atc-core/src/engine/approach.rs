@@ -474,7 +474,7 @@ impl AtcEngine {
                 let (Some(f), Some(r)) = (self.final_course(&runway, kind), self.radar(i)) else {
                     return vec![AtcItem::Unable(UnableReason::NoIfrData)];
                 };
-                let vp = self.new_vector_plan(&r, level_ft, &f);
+                let mut vp = self.new_vector_plan(&r, level_ft, &f);
                 let v = self.leg_vector(i, vp.leg(), &s);
                 items.push(AtcItem::Heading {
                     deg: v.heading_deg,
@@ -483,6 +483,7 @@ impl AtcEngine {
                 if let Some(ft) = vectoring::descent_due(&vp, &r) {
                     level_ft = level_ft.min(ft);
                 }
+                self.anchor_on_heading(i, &mut vp, v.heading_deg);
                 heading = Some(v.heading_deg);
                 cleared_now = matches!(vp.leg().kind, LegKind::Intercept | LegKind::Final);
                 vector_plan = Some(vp);
@@ -1010,6 +1011,9 @@ impl AtcEngine {
             });
             items.push(AtcItem::ReportEstablished);
         }
+        if say_heading {
+            self.anchor_on_heading(i, &mut vp, v.heading_deg);
+        }
         let now = self.now;
         if let Some(p) = self.strips[i].plan.as_mut() {
             note_vectors(
@@ -1305,7 +1309,7 @@ impl AtcEngine {
         s: &AircraftState,
     ) -> Vec<AtcItem> {
         let alt_ft = (((r.alt_ft / 100.0).round() as i32) * 100).max(f.intercept_alt_ft);
-        let vp = vectoring::plan_pattern(r.pos, f64::from(alt_ft), f);
+        let mut vp = vectoring::plan_pattern(r.pos, f64::from(alt_ft), f);
         let mut v = self.leg_vector(i, vp.leg(), s);
         let frame = RunwayFrame {
             origin: f.thr,
@@ -1339,6 +1343,7 @@ impl AtcEngine {
             },
             AtcItem::NewApproach,
         ];
+        self.anchor_on_heading(i, &mut vp, v.heading_deg);
         let (now, actual) = (self.now, self.magnetic_heading(s));
         if let Some(p) = self.strips[i].plan.as_mut() {
             note_vectors(p, Some(v.heading_deg), actual, vp, Some(now));
@@ -1433,6 +1438,18 @@ impl AtcEngine {
             leg.alt_ft,
             self.procs.magnetic_variation_deg,
         )
+    }
+
+    /// The leg of `vp` being flown by arrival `i`, given `heading` (magnetic, rounded to 5
+    /// degrees), re-anchored on the track that heading makes good: the heading (true) plus
+    /// the drift the radar shows ([`VectorPlan::anchor_leg`]).
+    fn anchor_on_heading(&self, i: usize, vp: &mut VectorPlan, heading: u16) {
+        let drift = self
+            .tracks
+            .get(&self.strips[i].callsign)
+            .map_or(0.0, |t| t.radar.drift_deg());
+        let track = f64::from(heading) + self.procs.magnetic_variation_deg + drift;
+        vp.anchor_leg(track);
     }
 
     /// The side of the final the circuit of `runway` is on: +1 right, -1 left (of the

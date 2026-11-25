@@ -7635,6 +7635,25 @@ mod approach_arrival {
             panic!("not established: {:#?}", approach_said(p));
         }
 
+        /// A base of about 17 NM whose track is 2.4 degrees off the 5-degree heading given for
+        /// it, flown exactly on that heading: the leg is the track the heading makes good, so
+        /// no correction (planned on the exact track it would end 0.7 NM off).
+        #[test]
+        fn long_leg_on_its_rounded_heading_is_not_corrected() {
+            let mut e = engine();
+            let mut p = Pilot::new(at(27.0, -5.165), 3000.0, 270.0);
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            let base = &plan.vector_plan.as_ref().unwrap().legs[0];
+            assert_eq!(base.kind, LegKind::Base);
+            assert!(distance_m(base.from, base.to) / M_PER_NM > 15.0);
+            assert_eq!(plan.heading, Some(285), "{:#?}", approach_said(&p));
+            let said = corrections_while(&mut e, &mut p, 1000, |p| !cleared(p));
+            assert!(said.is_empty(), "{said:#?}");
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+        }
+
         /// The turn onto base made 40 s late: the aircraft overshoots the base leg; Approach
         /// re-plans from where it is and gives the new heading, without a reason (on a base
         /// the offset from the localizer is not the error); at most two corrections, then

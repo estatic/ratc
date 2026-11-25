@@ -5,8 +5,8 @@
 [ 1126.0] PILOT: Descend three thousand feet, Sierra Bravo Charlie
 [ 1285.0] Kraków Approach: Sierra Bravo Charlie, turn right heading one six zero
 [ 1285.0] PILOT: Right heading one six zero, Sierra Bravo Charlie
-[ 1374.0] Kraków Approach: Sierra Bravo Charlie, turn right heading two two zero, one two miles from touchdown, cleared ILS approach runway two five, report established
-[ 1374.0] PILOT: Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
+[ 1373.0] Kraków Approach: Sierra Bravo Charlie, turn right heading two two zero, one two miles from touchdown, cleared ILS approach runway two five, report established
+[ 1373.0] PILOT: Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
 [ 1515.0] Kraków Approach: Sierra Bravo Charlie, you are zero point three miles south of the localizer, turn right heading two eight zero to re-intercept the localizer
 [ 1515.0] PILOT: Right heading two eight zero to re-intercept the localizer, Sierra Bravo Charlie
 [ 1560.0] PILOT: Sierra Bravo Charlie, established ILS runway two five

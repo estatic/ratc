@@ -21,8 +21,10 @@
 //! radius at the radar ground speed, half rate above 250 kt, plus 10 s); off the leg by more
 //! than 0.5 NM (1 NM on downwind) or off the planned altitude by more than 300 ft is a
 //! deviation only when the aircraft is not converging. Legs are ground tracks: the heading
-//! to give is the track corrected for the drift the radar shows ([`RadarTrack`]). After the
-//! approach clearance [`established`] and [`through_course`] judge the final course itself.
+//! to give is the track corrected for the drift the radar shows ([`RadarTrack`]), rounded to
+//! 5 degrees; once given, the leg is the track that heading makes good
+//! ([`VectorPlan::anchor_leg`]). After the approach clearance [`established`] and
+//! [`through_course`] judge the final course itself.
 //!
 //! All bearings are true degrees; distances are metres unless named `_nm` / `_ft`.
 
@@ -182,6 +184,32 @@ impl VectorPlan {
     /// plan has no legs).
     pub fn leg(&self) -> &VectorLeg {
         self.index().map_or(&NO_LEG, |i| &self.legs[i])
+    }
+
+    /// Re-anchors the leg being flown on the heading given for it: along `track_deg`, the
+    /// track that heading makes good (the heading rounded to 5 degrees plus the drift; the
+    /// planned track is exact), so that an aircraft flying the heading as given stays on the
+    /// leg. A first leg keeps its start (where the aircraft was when the path was planned);
+    /// a later one starts abeam the end of the leg before it, on that leg as flown (itself
+    /// re-anchored): the turn onto it, due one turn lead before, rolls out there. The leg's
+    /// end is kept (the next leg absorbs the change in the same way). The final leg, flown on
+    /// the course, is never moved.
+    pub fn anchor_leg(&mut self, track_deg: f64) {
+        let Some(i) = self.index() else {
+            return;
+        };
+        if self.legs[i].kind == LegKind::Final {
+            return;
+        }
+        if let Some(prev) = i.checked_sub(1).map(|k| &self.legs[k]) {
+            let (along, _) = RunwayFrame {
+                origin: prev.from,
+                course_deg: prev.track_deg,
+            }
+            .to_local(prev.to);
+            self.legs[i].from = destination(prev.from, prev.track_deg, along);
+        }
+        self.legs[i].track_deg = track_deg.rem_euclid(360.0);
     }
 
     /// Whether the path joins the final of `f` at least [`JOIN_OUTSIDE_FAF_NM`] outside the
@@ -1188,6 +1216,32 @@ mod tests {
         sparse.push(0.0, p, 10.0, 120.0);
         sparse.push(4.0, destination(p, 10.0, 250.0), 2.0, 120.0);
         assert!((sparse.turn_rate_dps() + 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn anchor_leg_on_the_rounded_heading() {
+        let mut plan = plan_pattern(at(-12.0, 0.0), 5000.0, &fin());
+        let legs = plan.legs.clone();
+        assert_eq!(kinds(&plan)[..2], [LegKind::Downwind, LegKind::Base]);
+        // The first leg keeps its start, on the new track; its end is kept.
+        plan.anchor_leg(legs[0].track_deg + 2.0);
+        assert_eq!(plan.legs[0].from, legs[0].from);
+        assert_eq!(plan.legs[0].to, legs[0].to);
+        assert!(
+            (plan.legs[0].track_deg - (legs[0].track_deg + 2.0).rem_euclid(360.0)).abs() < 1e-9
+        );
+        // The next one starts abeam the first one's end, on the first leg as re-anchored.
+        plan.current = 1;
+        plan.anchor_leg(legs[1].track_deg - 2.0);
+        let len = distance_m(legs[0].from, legs[0].to);
+        let abeam = destination(legs[0].from, plan.legs[0].track_deg, len);
+        assert!(distance_m(plan.legs[1].from, abeam) < 0.01 * len);
+        assert!(distance_m(plan.legs[1].from, legs[0].to) > 0.02 * len);
+        // The final leg is never moved.
+        plan.current = plan.legs.len() - 1;
+        let fin_leg = plan.leg().clone();
+        plan.anchor_leg(fin_leg.track_deg + 3.0);
+        assert_eq!(*plan.leg(), fin_leg);
     }
 
     #[test]

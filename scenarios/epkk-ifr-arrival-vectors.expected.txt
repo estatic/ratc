@@ -5,8 +5,8 @@
 [ 1126.0] PILOT: Descend three thousand feet, Sierra Bravo Charlie
 [ 1285.0] Kraków Approach: Sierra Bravo Charlie, turn right heading one six zero
 [ 1285.0] PILOT: Right heading one six zero, Sierra Bravo Charlie
-[ 1374.0] Kraków Approach: Sierra Bravo Charlie, turn right heading two two zero, one two miles from touchdown, cleared ILS approach runway two five, report established
-[ 1374.0] PILOT: Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
+[ 1373.0] Kraków Approach: Sierra Bravo Charlie, turn right heading two two zero, one two miles from touchdown, cleared ILS approach runway two five, report established
+[ 1373.0] PILOT: Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
 [ 1525.0] PILOT: Sierra Bravo Charlie, established ILS runway two five
 [ 1525.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
 [ 1525.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
