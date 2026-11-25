@@ -288,7 +288,7 @@ Approach (борт уже внутри точек начала STAR, поэто�
 
 > Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
 
-Approach следит за разворотом на курс. Если вы развернулись поздно или пересекли курс, диспетчер скажет, где вы находитесь, и даст курс для повторного перехвата (`you are zero point three miles south of the localizer, turn right heading two eight zero to re-intercept the localizer`); прочитайте его обратно и выполните. Докладывайте «established» только на курсе: если радар этого ещё не показывает, Approach ответит «negative» с такой же поправкой и оставит вас у себя. (`scenarios/epkk-vectoring-late-turn.toml` воспроизводит поздний перехват.)
+Approach следит за разворотом на курс. Если вы развернулись поздно или пересекли курс, диспетчер скажет, где вы находитесь, и даст курс для повторного перехвата (`you are zero point three miles south of the localizer, turn right heading two eight zero to re-intercept the localizer`); прочитайте его обратно и выполните. Докладывайте «established» только на курсе: если радар этого ещё не показывает, Approach ответит «negative» с такой же поправкой и оставит вас у себя. Если вы доложили «established», когда уже разворачиваетесь на курс, Approach ничего не ответит и передаст вас на Tower, как только вы окажетесь на курсе. (`scenarios/epkk-vectoring-late-turn.toml` воспроизводит поздний перехват.)
 
 Держите курс 220, перехватите LOC/GS (в G1000 активируйте заход — **Activate Approach** / **Activate Vector-to-Final**, затем NAV/APR на автопилоте). Когда вы на курсе и глиссаде:
 

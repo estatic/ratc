@@ -58,6 +58,8 @@ freq = "approach"
 text = "Right heading two eight zero to re-intercept the localizer, Sierra Bravo Charlie"
 
 # Reported while still turning onto the localizer: noted, Approach transfers the flight once the radar shows it established.
+# The time (1560 s) is chosen to fall inside the capture turn after the re-intercept heading,
+# one second before the radar shows the aircraft established.
 [[say]]
 t = 1560.0
 freq = "approach"
