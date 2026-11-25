@@ -2116,6 +2116,11 @@ impl AtcEngine {
         let strip = &mut self.strips[i];
         strip.handoff_to = Some(to);
         strip.expect_readback(&items, self.cfg.strictness, self.now);
+        // Checks noted by the planner are not made once the flight is handed over.
+        if let Some(p) = strip.plan.as_mut() {
+            p.deferred_heading = false;
+            p.deferred_level = false;
+        }
         items
     }
 

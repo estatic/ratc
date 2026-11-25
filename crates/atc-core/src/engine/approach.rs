@@ -139,16 +139,18 @@ struct HandOff {
 pub(super) enum Correction {
     /// Off the planned leg and not converging on it, or flying a wrong heading (turned, but
     /// more than 15 degrees off): the reason on a leg nearly parallel to the final
-    /// ([`off_course`]), then the heading.
-    Plain,
+    /// ([`off_course`]), then the heading. With a level call (the monitor's level check due
+    /// at the same time): the call after the heading, the rules of [`Correction::Level`].
+    Plain(Option<AtcItem>),
     /// Still on its previous heading after the reaction time: "check heading", then the
-    /// heading (no approach clearance until it is flown).
-    NotTurned,
+    /// heading (no approach clearance until it is flown); a level call as with `Plain`.
+    NotTurned(Option<AtcItem>),
     /// Above the planned altitude and not descending: the descent (the heading only when it
     /// changes).
     Altitude,
     /// Off its cleared level: the monitor's wording, "check level" / "check altimeter
-    /// setting" (this item), the heading only when it changes.
+    /// setting" (this item, the only level item; the descent instead when the new path needs
+    /// it now), the heading only when it changes, never the approach clearance.
     Level(AtcItem),
 }
 
@@ -830,7 +832,7 @@ impl AtcEngine {
         if intercept || (s.alt_ft_msl - f64::from(plan.cleared_ft)).abs() <= LEVEL_TOLERANCE_FT {
             self.strips[i].missed_climb = false;
         }
-        let mut descend_to = vectoring::descent_due(&vp, &r)
+        let descend_to = vectoring::descent_due(&vp, &r)
             .filter(|&ft| !self.strips[i].missed_climb && ft < plan.cleared_ft);
         let v = self.leg_vector(i, &leg, &s);
         let actual = self.magnetic_heading(&s);
@@ -850,16 +852,20 @@ impl AtcEngine {
         let mut items = Vec::new();
         // Above the cleared level and not descending to it: the descent again.
         let mut descend_again = false;
+        // The monitor's level call said after the heading.
+        let mut level_call = None;
         if let Some(why) = &correction {
             match why {
-                Correction::Plain => {
+                Correction::Plain(call) => {
                     say_heading = true;
                     items.extend(off_leg.and_then(|t| off_course(&f, kind, r.pos, t)));
+                    level_call = call.clone();
                 }
-                Correction::NotTurned => {
+                Correction::NotTurned(call) => {
                     say_heading = true;
                     clear = false;
                     items.push(AtcItem::CheckHeading(v.heading_deg));
+                    level_call = call.clone();
                 }
                 Correction::Altitude => {
                     say_heading = intercept || changed;
@@ -867,15 +873,23 @@ impl AtcEngine {
                         && s.alt_ft_msl - f64::from(plan.cleared_ft) > LEVEL_TOLERANCE_FT;
                 }
                 Correction::Level(item) => {
-                    // The level it is cleared to, said in the call: no descent with it.
                     say_heading = changed;
                     clear = false;
-                    descend_to = None;
-                    items.push(item.clone());
+                    level_call = Some(item.clone());
+                }
+            }
+            // The level call is the only level item and no approach clearance goes with it;
+            // when the new path needs the descent now, the descent is said instead (it
+            // answers the bust as well, and the call would contradict it).
+            if level_call.is_some() {
+                clear = false;
+                if descend_to.is_some() {
+                    level_call = None;
                 }
             }
         }
-        if !(say_heading || clear || descend_to.is_some() || descend_again || !items.is_empty()) {
+        let something = say_heading || clear || descend_to.is_some() || descend_again;
+        if !(something || level_call.is_some() || !items.is_empty()) {
             if correction.is_none()
                 && let Some(why) = self.correction_due(i, &plan, &vp, &r, &s)
             {
@@ -889,6 +903,7 @@ impl AtcEngine {
                 turn: Some(v.turn),
             });
         }
+        items.extend(level_call);
         let mut cleared_ft = descend_to.unwrap_or(plan.cleared_ft);
         if clear && cleared_ft > intercept_ft {
             cleared_ft = intercept_ft;
@@ -921,6 +936,12 @@ impl AtcEngine {
             }
             p.cleared_ft = cleared_ft;
             p.approach_cleared = clear;
+            // Cleared, or vectored anew after a missed approach: checks noted before are
+            // not made.
+            if clear || force {
+                p.deferred_heading = false;
+                p.deferred_level = false;
+            }
             p.vector_plan = Some(vp);
             if correction.is_some() {
                 p.last_correction_s = Some(now);
@@ -962,7 +983,7 @@ impl AtcEngine {
             return None;
         }
         match vectoring::judge(vp, r, Some(plan.cleared_ft)) {
-            Verdict::OffTrack { .. } => Some(Correction::Plain),
+            Verdict::OffTrack { .. } => Some(Correction::Plain(None)),
             Verdict::OffAltitude { ft } if ft > 0.0 => Some(Correction::Altitude),
             _ => None,
         }
@@ -1029,7 +1050,7 @@ impl AtcEngine {
         let level = deferred_level
             && (s.alt_ft_msl - f64::from(plan.cleared_ft)).abs() > LEVEL_TOLERANCE_FT;
         let call = level.then(|| self.level_call(plan.cleared_ft, s.alt_ft_msl.round() as i32));
-        let mut items = match (heading, call.clone()) {
+        let items = match (heading, call.clone()) {
             (Some(_), _) => {
                 let not_turned = plan.heading_from.is_some_and(|from| {
                     vectoring::gap_deg(actual, f64::from(from)) <= vectoring::MIN_HEADING_CHANGE_DEG
@@ -1037,21 +1058,15 @@ impl AtcEngine {
                 self.vector_correction(
                     i,
                     if not_turned {
-                        Correction::NotTurned
+                        Correction::NotTurned(call)
                     } else {
-                        Correction::Plain
+                        Correction::Plain(call)
                     },
                 )
             }
             (None, Some(call)) => self.vector_correction(i, Correction::Level(call)),
             (None, None) => Vec::new(),
         };
-        if heading.is_some()
-            && !items.is_empty()
-            && let Some(call) = call
-        {
-            items.push(call);
-        }
         // Said, or nothing left to say: done; else (nothing could be planned) still due.
         if (!items.is_empty() || (heading.is_none() && !level))
             && let Some(p) = self.strips[i].plan.as_mut()
@@ -1168,6 +1183,11 @@ impl AtcEngine {
         let strip = &mut self.strips[i];
         strip.missed_approach = true;
         strip.missed_climb = true;
+        // Checks noted on the approach just missed are not made after it.
+        if let Some(p) = strip.plan.as_mut() {
+            p.deferred_heading = false;
+            p.deferred_level = false;
+        }
         // Back to Approach, to be identified again; a Tower-kept arrival stays identified.
         if (strip.owner == Role::Tower || strip.handoff_to == Some(Role::Tower))
             && !strip.tower_inbound

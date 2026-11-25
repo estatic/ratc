@@ -7964,6 +7964,82 @@ mod approach_arrival {
             assert_eq!(calls, 1);
         }
 
+        /// The heading and level checks due together (both noted within the window, made as
+        /// it ends): one message, the heading correction with the level call after it as the
+        /// only level item; no descent and no approach clearance with it, though the new
+        /// path starts on the intercept below the cleared level.
+        #[test]
+        fn heading_and_level_checks_due_together() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(25.5, -6.0), 5000.0, 255.0, 100.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            // Turned, but onto a wrong heading, and 600 ft low.
+            p.obeys_headings = false;
+            p.delayed.clear();
+            p.hdg = 230.0;
+            p.until(&mut e, 30, |p| p.f.t >= 40.0);
+            p.f.alt = 4400.0;
+            p.target = 4400.0;
+            // Both checks noted in a window that ends now.
+            let mut v = serde_json::to_value(e.snapshot()).unwrap();
+            let plan = &mut v["strips"][0]["plan"];
+            plan["deferred_heading"] = true.into();
+            plan["deferred_level"] = true.into();
+            plan["last_correction_s"] = (p.f.t - 19.0).into();
+            e.restore(serde_json::from_value(v).unwrap()).unwrap();
+            let said = corrections_while(&mut e, &mut p, 3, |_| true);
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let items = &said[0].1;
+            let levels: Vec<&AtcItem> = items
+                .iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        AtcItem::CheckLevel(_)
+                            | AtcItem::CheckAltimeter { .. }
+                            | AtcItem::DescendTo(_)
+                            | AtcItem::ClimbTo(_)
+                            | AtcItem::MaintainLevel(_)
+                    )
+                })
+                .collect();
+            // One level item, the level the aircraft is now cleared to.
+            let plan = e.strip(&cs()).unwrap().plan.clone().unwrap();
+            let cleared = Level::Altitude(plan.cleared_ft);
+            assert!(
+                matches!(
+                    levels.as_slice(),
+                    [AtcItem::CheckLevel(l) | AtcItem::DescendTo(l)] if *l == cleared
+                ),
+                "{items:#?}"
+            );
+            assert!(
+                has(items, |i| matches!(i, AtcItem::Heading { .. })),
+                "{items:#?}"
+            );
+            assert!(
+                !has(items, |i| matches!(i, AtcItem::ClearedApproach { .. })),
+                "{items:#?}"
+            );
+            assert!(!plan.approach_cleared);
+            assert!(!plan.deferred_heading && !plan.deferred_level);
+            // Nothing contradicting it right after.
+            let n = p.f.heard.len();
+            for _ in 0..5 {
+                p.tick(&mut e);
+            }
+            assert!(
+                !p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, |i| matches!(
+                        i,
+                        AtcItem::DescendTo(_) | AtcItem::ClimbTo(_) | AtcItem::MaintainLevel(_)
+                    ))),
+                "{:#?}",
+                approach_said(&p)
+            );
+        }
+
         /// A heading check that fires within 20 s of a level correction is not lost: it is
         /// made once the 20 s have run.
         #[test]
