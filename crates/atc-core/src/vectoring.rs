@@ -72,10 +72,9 @@ pub const HEADING_TOLERANCE_DEG: f64 = 15.0;
 pub const ALTITUDE_TOLERANCE_FT: f64 = 300.0;
 /// A correction is transmitted when the heading changes by at least this, degrees ...
 pub const MIN_HEADING_CHANGE_DEG: f64 = 10.0;
-/// ... at most once per this per aircraft, s ...
+/// ... at most once per this per aircraft, s (and not while the heading and level checks
+/// are held after a readback: [`crate::compliance::REACTION_S`]).
 pub const CORRECTION_INTERVAL_S: f64 = 20.0;
-/// ... and not for this long after a heading or level readback, s.
-pub const READBACK_HOLD_S: f64 = 10.0;
 /// Established: within this of the course (NM) ...
 pub const ESTABLISHED_NM: f64 = 0.3;
 /// ... tracking within this of it, degrees.
