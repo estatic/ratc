@@ -24,8 +24,7 @@ waypoints = [
   { fix = "KK504", alt = 5000, kt = 110 },
   { fix = "KK503", alt = 5000, kt = 110 },
   { lat = 50.15635, lon = 20.25943, alt = 5000, kt = 100 },
-  # The localizer captured without flying more than 0.3 NM through it (plan 14b).
-  { hdg = 220, nm = 1.6, alt = 4500, kt = 100 },
+  { hdg = 220, nm = 1.8, alt = 4500, kt = 100 },
   { fix = "KK371", alt = 3000, kt = 90 },
 ]
 land = "25"

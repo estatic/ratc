@@ -82,8 +82,13 @@ pub const ESTABLISHED_DEG: f64 = 15.0;
 pub const THROUGH_NM: f64 = 0.3;
 /// ... or converging at more than this (degrees) within [`NEAR_COURSE_NM`] of it.
 pub const THROUGH_CONVERGE_DEG: f64 = 45.0;
+/// Within [`NEAR_COURSE_NM`] of the course, moving away from it at less than this (degrees)
+/// is not flying through it.
+pub const THROUGH_AWAY_DEG: f64 = 3.0;
 /// The radar track and drift are taken over this window, s.
 pub const DRIFT_WINDOW_S: f64 = 30.0;
+/// The rate of turn is taken over this window, s.
+pub const TURN_RATE_WINDOW_S: f64 = 2.0;
 /// Converging: closing the leg at least this many degrees ...
 const CONVERGING_DEG: f64 = 5.0;
 /// ... or climbing / descending towards the planned altitude at least this fast, fpm.
@@ -301,14 +306,27 @@ impl RadarTrack {
         self.drift_deg
     }
 
-    /// Rate of turn between the last two samples, degrees per second, positive to the right;
-    /// 0 with fewer than two samples.
+    /// Rate of turn over the last [`TURN_RATE_WINDOW_S`] (from the oldest sample in it, at
+    /// least the one before the last: heading noise at a high sample rate is not a turn),
+    /// degrees per second, positive to the right; 0 with fewer than two samples.
     pub fn turn_rate_dps(&self) -> f64 {
-        let mut last = self.samples.iter().rev();
-        match (last.next(), last.next()) {
-            (Some(b), Some(a)) if b.0 > a.0 => signed(b.2 - a.2) / (b.0 - a.0),
-            _ => 0.0,
+        let n = self.samples.len();
+        let Some(last) = self.samples.back() else {
+            return 0.0;
+        };
+        let mut k = n.saturating_sub(2);
+        while k > 0 && self.samples[k - 1].0 >= last.0 - TURN_RATE_WINDOW_S {
+            k -= 1;
         }
+        let first = &self.samples[k];
+        if last.0 <= first.0 {
+            return 0.0;
+        }
+        // Summed sample by sample: a turn through north, or of more than 180 degrees.
+        let turned: f64 = (k..n - 1)
+            .map(|j| signed(self.samples[j + 1].2 - self.samples[j].2))
+            .sum();
+        turned / (last.0 - first.0)
     }
 }
 
@@ -725,13 +743,16 @@ pub fn established(r: &Radar, f: &FinalCourse) -> bool {
     x > 0.0 && y.abs() <= ESTABLISHED_NM && gap_deg(r.track_deg, f.course_deg) <= ESTABLISHED_DEG
 }
 
-/// Flying through the final of `f`: more than [`THROUGH_NM`] off it and moving away, or
-/// within [`NEAR_COURSE_NM`] of it converging at more than [`THROUGH_CONVERGE_DEG`].
+/// Flying through the final of `f`: more than [`THROUGH_NM`] off it and moving away (within
+/// [`NEAR_COURSE_NM`] of it, at [`THROUGH_AWAY_DEG`] or more: a capture rolling out just
+/// outside the margin is not flying through), or within [`NEAR_COURSE_NM`] of it
+/// converging at more than [`THROUGH_CONVERGE_DEG`].
 pub fn through_course(r: &Radar, f: &FinalCourse) -> bool {
     let (_, y) = Frame(f).local(r.pos);
     // Rate to the right of the course, per unit of ground speed.
     let rightward = signed(r.track_deg - f.course_deg).to_radians().sin();
-    let away = y * rightward > 0.0;
+    let away = y * rightward > 0.0
+        && (y.abs() > NEAR_COURSE_NM || rightward.abs() >= THROUGH_AWAY_DEG.to_radians().sin());
     (away && y.abs() > THROUGH_NM)
         || (!away
             && rightward != 0.0
@@ -1127,6 +1148,47 @@ mod tests {
     }
 
     #[test]
+    fn turn_rate_is_averaged_over_two_seconds() {
+        let mut rt = RadarTrack::default();
+        let mut p = LatLon {
+            lat: 50.0,
+            lon: 20.0,
+        };
+        // 5 Hz on a steady heading of 359 (across north) with 0.2 degrees of noise.
+        for k in 0..50 {
+            let t = f64::from(k) * 0.2;
+            let hdg = 359.0 + if k % 2 == 0 { 0.1f64 } else { -0.1 };
+            rt.push(t, p, hdg, 120.0);
+            if k >= 10 {
+                assert!(
+                    rt.turn_rate_dps().abs() < 0.2,
+                    "t {t}: {}",
+                    rt.turn_rate_dps()
+                );
+            }
+            p = destination(p, 359.0, 120.0 * M_PER_NM / 3600.0 * 0.2);
+        }
+        // A standard-rate turn to the right through north: 3 degrees per second.
+        let mut hdg = 359.0;
+        for k in 50..70 {
+            let t = f64::from(k) * 0.2;
+            hdg = (hdg + 0.6f64).rem_euclid(360.0);
+            rt.push(t, p, hdg, 120.0);
+            p = destination(p, hdg, 120.0 * M_PER_NM / 3600.0 * 0.2);
+        }
+        assert!(
+            (rt.turn_rate_dps() - 3.0).abs() < 0.01,
+            "{}",
+            rt.turn_rate_dps()
+        );
+        // Samples farther apart than the window: the last two.
+        let mut sparse = RadarTrack::default();
+        sparse.push(0.0, p, 10.0, 120.0);
+        sparse.push(4.0, destination(p, 10.0, 250.0), 2.0, 120.0);
+        assert!((sparse.turn_rate_dps() + 2.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn heading_for_track_wraps() {
         assert!((heading_for_track(5.0, 10.0) - 355.0).abs() < 1e-9);
         assert!((heading_for_track(355.0, -10.0) - 5.0).abs() < 1e-9);
@@ -1231,6 +1293,11 @@ mod tests {
         assert!(!through_course(&radar(at(9.0, 2.0), COURSE - 90.0), &f));
         // Established: not through.
         assert!(!through_course(&radar(at(7.0, 0.1), COURSE), &f));
+        // 0.4 NM left, rolling out of a capture turn (2 degrees away): not through; 4
+        // degrees away: through; beyond 1 NM any angle away is.
+        assert!(!through_course(&radar(at(7.0, -0.4), COURSE - 2.0), &f));
+        assert!(through_course(&radar(at(7.0, -0.4), COURSE - 4.0), &f));
+        assert!(through_course(&radar(at(7.0, -1.2), COURSE - 2.0), &f));
     }
 
     #[test]

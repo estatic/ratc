@@ -1213,10 +1213,11 @@ impl AtcEngine {
     /// Arrival `i` (plan `plan`, radar `r`) is turning the right way, not corrected: at
     /// [`TURNING_DEG_S`] or more onto its assigned heading where that heading takes it back
     /// towards the final `f` from the side it is on (the intercept or re-intercept heading),
-    /// or, converging on the course, turning to align with it (the localizer capture's turn,
-    /// or the turn of an aircraft that has already turned back past the course direction on
-    /// its own). An aircraft moving away from the course and merely turning towards parallel
-    /// is not exempt.
+    /// or turning towards the course direction at [`TURNING_DEG_S`] or more, converging on
+    /// the course (the localizer capture's turn, or the turn of an aircraft that has already
+    /// turned back past the course direction on its own) or moving away from it within
+    /// [`vectoring::NEAR_COURSE_NM`] (a capture that overshoots and is rolling back). Farther
+    /// out, an aircraft moving away and merely turning towards parallel is not exempt.
     fn turning_back(&self, i: usize, plan: &FlightPlan, f: &FinalCourse, r: &Radar) -> bool {
         let Some(t) = self.tracks.get(&self.strips[i].callsign) else {
             return false;
@@ -1238,8 +1239,10 @@ impl AtcEngine {
         let off = (r.track_deg - f.course_deg + 540.0).rem_euclid(360.0) - 180.0;
         let converging = right * off.to_radians().sin() < 0.0;
         let rate = t.radar.turn_rate_dps();
-        let aligning = converging && rate.abs() >= TURNING_DEG_S && rate * off < 0.0;
-        onto_assigned || aligning
+        let towards_course = rate.abs() >= TURNING_DEG_S && rate * off < 0.0;
+        // Moving away within NEAR_COURSE_NM but already turning back: a capture overshoot.
+        let rolling_back = right.abs() < vectoring::NEAR_COURSE_NM * M_PER_NM;
+        onto_assigned || (towards_course && (converging || rolling_back))
     }
 
     /// The correction of arrival `i`, cleared for the approach and off its final (watched,

@@ -8438,6 +8438,46 @@ mod approach_arrival {
             );
         }
 
+        /// A localizer capture that overshoots by about 0.4 NM, already turning back (a fast
+        /// aircraft rolling at less than standard rate): no call while it turns back, then
+        /// established and, reported so, transferred to Tower.
+        #[test]
+        fn capture_overshoot_turning_back_is_not_corrected() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 205.0);
+            p.flies_final = false;
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.until(&mut e, 900, |p| local(p.f.pos).1 >= 0.05);
+            // The capture turn starts just past the course, at 1.2 degrees per second.
+            p.turn_rate = 1.2;
+            p.on_final = Some(true);
+            let mut worst = 0.0f64;
+            let n = p.f.heard.len();
+            for _ in 0..300 {
+                if on_course(&p) && local(p.f.pos).1 < 0.1 {
+                    break;
+                }
+                p.tick(&mut e);
+                worst = worst.max(local(p.f.pos).1);
+            }
+            assert!((0.31..=0.5).contains(&worst), "{worst:.2} NM overshoot");
+            assert!(on_course(&p), "{:?}", local(p.f.pos));
+            assert!(
+                p.f.heard[n..].iter().all(|o| o.freq_khz != APP),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+            assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        }
+
         /// A watched flight flying through the final between the FAF and the threshold: the
         /// break-off alone in that sample, never with "check established".
         #[test]
