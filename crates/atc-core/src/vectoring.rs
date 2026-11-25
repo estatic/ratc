@@ -417,17 +417,7 @@ pub fn plan_path(pos: LatLon, track_deg: f64, alt_ft: f64, f: &FinalCourse) -> V
         gap_deg(track_deg, course - g.own * INTERCEPT_ANGLE_DEG) <= PATTERN_GAP_DEG;
     let joins = |angle_deg: f64| x - y.abs() / angle_deg.to_radians().tan();
     let first = if x > 0.0 && y.abs() <= NEAR_COURSE_NM && onto_intercept {
-        let angle = if joins(INTERCEPT_ANGLE_DEG) >= g.x_min {
-            INTERCEPT_ANGLE_DEG
-        } else if x > g.x_min {
-            (y.abs() / (x - g.x_min))
-                .atan()
-                .to_degrees()
-                .clamp(INTERCEPT_ANGLE_DEG, REINTERCEPT_MAX_DEG)
-        } else {
-            REINTERCEPT_MAX_DEG
-        };
-        Some(g.plan(vec![g.intercept_from_here(angle)], alt_ft))
+        Some(g.plan(vec![g.intercept_from_here(g.steepened_angle())], alt_ft))
     } else if x > 0.0
         && onto_intercept
         && (g.x_min..=g.x_join + JOIN_BEYOND_NM).contains(&(x - y.abs() / tan30))
@@ -453,6 +443,17 @@ pub fn plan_path(pos: LatLon, track_deg: f64, alt_ft: f64, f: &FinalCourse) -> V
 /// [`plan_path`].
 pub fn plan_pattern(pos: LatLon, alt_ft: f64, f: &FinalCourse) -> VectorPlan {
     Setup::new(pos, f).stretched_pattern(alt_ft)
+}
+
+/// The re-intercept from `pos` (altitude `alt_ft`) onto the final `f` after the approach
+/// clearance, whatever the aircraft's track: an intercept from the present position, from
+/// the side of the final it is on, at [`INTERCEPT_ANGLE_DEG`], steepened up to
+/// [`REINTERCEPT_MAX_DEG`] to join outside the FAF margin, then the final. A join inside the
+/// margin is still planned: the caller checks [`VectorPlan::joins_in_time`] (if not, the
+/// aircraft is taken off the approach).
+pub fn plan_reintercept(pos: LatLon, alt_ft: f64, f: &FinalCourse) -> VectorPlan {
+    let g = Setup::new(pos, f);
+    g.plan(vec![g.intercept_from_here(g.steepened_angle())], alt_ft)
 }
 
 /// The aircraft's place relative to the final, for [`plan_path`].
@@ -502,6 +503,22 @@ impl<'a> Setup<'a> {
 
     fn point(&self, x_nm: f64, y_nm: f64) -> LatLon {
         Frame(self.f).point(x_nm, y_nm)
+    }
+
+    /// The angle of an intercept from the present position: [`INTERCEPT_ANGLE_DEG`],
+    /// steepened up to [`REINTERCEPT_MAX_DEG`] to join outside the FAF margin.
+    fn steepened_angle(&self) -> f64 {
+        let at_30 = self.x - self.y.abs() / INTERCEPT_ANGLE_DEG.to_radians().tan();
+        if at_30 >= self.x_min {
+            INTERCEPT_ANGLE_DEG
+        } else if self.x > self.x_min {
+            (self.y.abs() / (self.x - self.x_min))
+                .atan()
+                .to_degrees()
+                .clamp(INTERCEPT_ANGLE_DEG, REINTERCEPT_MAX_DEG)
+        } else {
+            REINTERCEPT_MAX_DEG
+        }
     }
 
     /// The intercept from the present position at `angle_deg` onto the course.
@@ -795,6 +812,21 @@ mod tests {
 
     fn kinds(p: &VectorPlan) -> Vec<LegKind> {
         p.legs.iter().map(|l| l.kind).collect()
+    }
+
+    /// Flown through the course (north of a final from the east-north-east, whatever its
+    /// track): the intercept back at 30 degrees from its side; near the FAF steepened to 45
+    /// degrees, and too late to join 2 NM outside it.
+    #[test]
+    fn reintercept_from_the_far_side() {
+        let f = fin();
+        let p = plan_reintercept(at(12.0, 0.5), 2500.0, &f);
+        assert_eq!(kinds(&p), vec![LegKind::Intercept, LegKind::Final]);
+        assert!(gap_deg(p.legs[0].track_deg, COURSE - 30.0) < 0.5);
+        assert!(p.joins_in_time(&f));
+        let p = plan_reintercept(at(6.3, 0.5), 2500.0, &f);
+        assert!(gap_deg(p.legs[0].track_deg, COURSE - 45.0) < 0.5);
+        assert!(!p.joins_in_time(&f));
     }
 
     fn out_nm(p: LatLon) -> f64 {

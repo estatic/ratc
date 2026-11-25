@@ -7,12 +7,12 @@
 [  556.0] PILOT: Descend three thousand feet, Sierra Bravo Charlie
 [  796.0] Kraków Approach: Sierra Bravo Charlie, turn left heading one zero zero, one two miles from touchdown, cleared VOR D M E approach runway zero seven, report established
 [  796.0] PILOT: Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie
-[  969.0] PILOT: Sierra Bravo Charlie, established VOR DME approach runway zero seven
-[  969.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
-[  969.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
-[  969.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven
-[  969.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, wind zero seven zero degrees, one zero knots, runway zero seven, cleared to land
-[  969.0] PILOT: Runway zero seven, cleared to land, Sierra Bravo Charlie
+[  960.0] PILOT: Sierra Bravo Charlie, established VOR DME approach runway zero seven
+[  960.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
+[  960.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
+[  960.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven
+[  960.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, wind zero seven zero degrees, one zero knots, runway zero seven, cleared to land
+[  960.0] PILOT: Runway zero seven, cleared to land, Sierra Bravo Charlie
 [ 1268.0] PILOT: Sierra Bravo Charlie, going around
 [ 1268.0] Kraków Tower: Sierra Bravo Charlie, follow published missed approach, contact Kraków Approach one two one decimal zero seven five
 [ 1268.0] PILOT: Follow published missed approach, Approach one two one decimal zero seven five, Sierra Bravo Charlie
@@ -23,18 +23,18 @@
 [ 1727.0] PILOT: Descend three thousand feet, Sierra Bravo Charlie
 [ 1753.0] Kraków Approach: Sierra Bravo Charlie, turn left heading one six zero
 [ 1753.0] PILOT: Left heading one six zero, Sierra Bravo Charlie
-[ 1877.0] Kraków Approach: Sierra Bravo Charlie, turn left heading one zero zero, one two miles from touchdown, cleared VOR D M E approach runway zero seven, report established
-[ 1877.0] PILOT: Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie
-[ 1998.0] PILOT: Sierra Bravo Charlie, established VOR DME approach runway zero seven
-[ 1998.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
-[ 1998.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
-[ 2007.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven
-[ 2007.0] Kraków Tower: Sierra Bravo Charlie, wind zero seven zero degrees, one zero knots, runway zero seven, cleared to land
-[ 2007.0] PILOT: Runway zero seven, cleared to land, Sierra Bravo Charlie
-[ 2517.0] Kraków Tower: Sierra Bravo Charlie, vacate, contact Kraków Ground one one eight decimal one zero five, good day
-[ 2517.0] PILOT: Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie
-[ 2624.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five
-[ 2624.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, taxi to stand three five via Delta, Bravo three, Bravo four
-[ 2624.0] PILOT: Taxi to stand three five via Delta, Bravo three, Bravo four, Sierra Bravo Charlie
-[ 2926.0] PILOT: Sierra Bravo Charlie, on stand three five
-[ 2926.0] Kraków Ground: Sierra Bravo Charlie, good day
+[ 1878.0] Kraków Approach: Sierra Bravo Charlie, turn left heading one zero zero, one two miles from touchdown, cleared VOR D M E approach runway zero seven, report established
+[ 1878.0] PILOT: Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie
+[ 2065.0] PILOT: Sierra Bravo Charlie, established VOR DME approach runway zero seven
+[ 2065.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
+[ 2065.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
+[ 2074.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven
+[ 2074.0] Kraków Tower: Sierra Bravo Charlie, wind zero seven zero degrees, one zero knots, runway zero seven, cleared to land
+[ 2074.0] PILOT: Runway zero seven, cleared to land, Sierra Bravo Charlie
+[ 2484.0] Kraków Tower: Sierra Bravo Charlie, vacate, contact Kraków Ground one one eight decimal one zero five, good day
+[ 2484.0] PILOT: Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie
+[ 2586.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five
+[ 2586.0] Kraków Ground: Sierra Papa Alpha Bravo Charlie, taxi to stand three five via Delta, Bravo three, Bravo four
+[ 2586.0] PILOT: Taxi to stand three five via Delta, Bravo three, Bravo four, Sierra Bravo Charlie
+[ 2888.0] PILOT: Sierra Bravo Charlie, on stand three five
+[ 2888.0] Kraków Ground: Sierra Bravo Charlie, good day

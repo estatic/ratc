@@ -7267,7 +7267,7 @@ mod approach_arrival {
     /// instruction"), flown by a pilot that reacts after 5 s and turns at standard rate.
     mod planned_vectors {
         use atc_core::vectoring::LegKind;
-        use atc_phraseology::{Compass8, CourseName};
+        use atc_phraseology::{Compass8, CourseName, Turn};
 
         use super::*;
 
@@ -8115,6 +8115,326 @@ mod approach_arrival {
             assert!(*th >= tl + 20.0, "{tl} -> {th}");
             // The monitor's heading check fired inside the window (30 s after the hold).
             assert!(*th <= 12.0 + 30.0 + 20.0 + 4.0, "{tl} -> {th}");
+        }
+
+        /// Plan 14b, after the approach clearance (spec goal 5, decisions 1, 3, 5).
+        const ESTABLISHED: &str =
+            "Zeta Approach, Sierra Sierra Tango, established ILS runway two seven";
+
+        fn re_intercept(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::ReIntercept(_))
+        }
+
+        fn new_approach(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::NewApproach)
+        }
+
+        fn contact_tower(i: &AtcItem) -> bool {
+            matches!(i, AtcItem::Contact { khz, .. } if *khz == TWR)
+        }
+
+        /// Within 0.3 NM of the final and heading within 15 degrees of it, outside the
+        /// threshold.
+        fn on_course(p: &Pilot) -> bool {
+            let (x, y) = local(p.f.pos);
+            let gap = (p.hdg - 270.0 + 540.0).rem_euclid(360.0) - 180.0;
+            x > 0.0 && y.abs() <= 0.3 && gap.abs() <= 15.0
+        }
+
+        fn approach_cleared(e: &AtcEngine) -> bool {
+            e.strip(&cs())
+                .unwrap()
+                .plan
+                .as_ref()
+                .unwrap()
+                .approach_cleared
+        }
+
+        /// South of the final 18 NM out, on the 30-degree intercept: cleared in the first
+        /// reply, joining about 13 NM out.
+        const ON_INTERCEPT: (f64, f64) = (18.0, -3.0);
+
+        /// Flight test C13: a 90-degree base, the intercept heading (with the approach
+        /// clearance) flown about 40 s late. Approach corrects it to re-intercept, and it ends
+        /// established outside the FAF without the pilot correcting on its own.
+        #[test]
+        fn late_intercept_turn_gets_correction() {
+            let mut e = engine();
+            let (x, y) = NORTH;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 180.0, 160.0);
+            assert_eq!(leg_kind(&e), Some(LegKind::Base));
+            // Slow on the intercept turn only.
+            p.until(&mut e, 100, |p| p.f.t >= 20.0);
+            assert!(!cleared(&p), "{:#?}", approach_said(&p));
+            p.reaction_s = 40.0;
+            p.until(&mut e, 1000, cleared);
+            p.reaction_s = 5.0;
+            let said = corrections_while(&mut e, &mut p, 600, |p| !on_course(p));
+            assert!(!said.is_empty(), "{:#?}", approach_said(&p));
+            assert!(said.len() <= 2, "{said:#?}");
+            for (_, items) in &said {
+                assert!(
+                    has(items, |i| *i == AtcItem::ReIntercept(CourseName::Localizer)),
+                    "{said:#?}"
+                );
+                assert!(!has(items, new_approach), "{said:#?}");
+            }
+            let (x, _) = local(p.f.pos);
+            assert!(x > faf_nm(), "established {x:.1} NM out");
+            assert!(approach_cleared(&e));
+        }
+
+        /// Flight test B8: the localizer flown through on the intercept heading (the pilot
+        /// does not capture it, and is slow to turn back): "you are ... north of the
+        /// localizer, turn left heading ... to re-intercept the localizer", then established
+        /// and transferred to Tower inside the FAF.
+        #[test]
+        fn overshoot_gets_reintercept() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 180.0);
+            p.flies_final = false;
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.reaction_s = 15.0;
+            let said = corrections_while(&mut e, &mut p, 600, |p| !p.heard_item(re_intercept));
+            assert_eq!(said.len(), 1, "{said:#?}");
+            assert!(
+                matches!(
+                    said[0].1.as_slice(),
+                    [
+                        AtcItem::OffCourse {
+                            side: Compass8::North,
+                            course: CourseName::Localizer,
+                            ..
+                        },
+                        AtcItem::Heading {
+                            turn: Some(Turn::Left),
+                            ..
+                        },
+                        AtcItem::ReIntercept(CourseName::Localizer)
+                    ]
+                ),
+                "{said:#?}"
+            );
+            // Its localizer capture armed now; flown back, the worst overshoot noted.
+            p.on_final = Some(false);
+            p.reaction_s = 5.0;
+            let mut worst = 0.0f64;
+            let n = p.f.heard.len();
+            for _ in 0..900 {
+                if p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower))
+                {
+                    break;
+                }
+                p.tick(&mut e);
+                worst = worst.max(local(p.f.pos).1);
+            }
+            assert!(worst >= 0.7, "{worst:.2} NM overshoot");
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower)),
+                "{:#?}",
+                approach_said(&p)
+            );
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .filter(|o| o.freq_khz == APP)
+                    .all(|o| has(&o.message.items, contact_tower)),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+            assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        }
+
+        /// Decision 1: the pilot reports established 0.6 NM off the localizer: "negative",
+        /// the correction, and the flight stays with Approach; reported again on the course,
+        /// it goes to Tower.
+        #[test]
+        fn early_established_report_is_checked() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.until(&mut e, 900, |p| local(p.f.pos).1 >= -0.6);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Negative,
+                        AtcItem::OffCourse {
+                            tenths_nm: 5..=7,
+                            side: Compass8::South,
+                            course: CourseName::Localizer,
+                        },
+                        AtcItem::Heading { .. },
+                        AtcItem::ReIntercept(CourseName::Localizer)
+                    ]
+                ),
+                "{got:#?}"
+            );
+            let strip = e.strip(&cs()).unwrap();
+            assert_eq!((strip.owner, strip.handoff_to), (Role::Approach, None));
+            assert!(approach_cleared(&e));
+            p.until(&mut e, 300, on_course);
+            p.tick(&mut e);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+            assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
+        }
+
+        /// Decision 5: the localizer flown through near the FAF, where no re-intercept can
+        /// join 2 NM outside it: just north of the centreline, the turn is left, towards the
+        /// circuit side (south) where the new pattern is flown, not through the heading to
+        /// the north: "turn left heading ..., maintain three thousand feet, I will
+        /// vector you for a new approach"; the approach clearance cancelled (not a missed
+        /// approach), then a new pattern and a new intercept, established outside the FAF.
+        #[test]
+        fn late_overshoot_breaks_off() {
+            let mut e = engine();
+            let mut p = called_in(&mut e, at(8.5, -1.0), 3000.0, 300.0, 100.0);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.flies_final = false;
+            p.on_final = None;
+            p.delayed
+                .retain(|(_, i)| !matches!(i, AtcItem::ClearedApproach { .. }));
+            let said = corrections_while(&mut e, &mut p, 300, |p| !p.heard_item(new_approach));
+            let (_, items) = said.last().expect("a break-off");
+            assert!(
+                matches!(
+                    items.as_slice(),
+                    [
+                        AtcItem::Heading {
+                            turn: Some(Turn::Left),
+                            ..
+                        },
+                        AtcItem::MaintainLevel(Level::Altitude(3000)),
+                        AtcItem::NewApproach
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert!(!has(items, re_intercept), "{said:#?}");
+            let strip = e.strip(&cs()).unwrap();
+            assert!(!strip.missed_approach);
+            assert_eq!((strip.owner, strip.handoff_to), (Role::Approach, None));
+            assert!(!approach_cleared(&e));
+            assert_eq!(leg_kind(&e), Some(LegKind::Downwind));
+            // Around again: a new intercept with the approach clearance, then established.
+            p.flies_final = true;
+            let n = p.f.heard.len();
+            p.until(&mut e, 2000, |p| {
+                p.f.heard[n..].iter().any(|o| {
+                    has(&o.message.items, |i| {
+                        matches!(i, AtcItem::ClearedApproach { .. })
+                    })
+                })
+            });
+            assert_eq!(leg_kind(&e), Some(LegKind::Intercept));
+            let out = established_out(&mut e, &mut p);
+            assert!(out > faf_nm() + 1.0, "established {out:.1} NM out");
+        }
+
+        /// The missed approach still goes back to Approach and is vectored again from the
+        /// published missed-approach altitude, then cleared and transferred to Tower.
+        #[test]
+        fn missed_approach_is_vectored_again() {
+            let mut e = engine();
+            let mut p = missed_approach_called(&mut e);
+            let said = approach_said(&p);
+            assert!(
+                matches!(
+                    said.last().unwrap().as_slice(),
+                    [
+                        AtcItem::Heading { .. },
+                        AtcItem::ClimbTo(Level::Altitude(4000))
+                    ]
+                ),
+                "{said:#?}"
+            );
+            p.flies_final = true;
+            p.target = 4000.0;
+            let n = p.f.heard.len();
+            p.until(&mut e, 2000, |p| {
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower))
+            });
+            assert!(
+                !p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, new_approach)),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+            assert!(
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, |i| matches!(
+                        i,
+                        AtcItem::ClearedApproach { .. }
+                    ))),
+                "{:#?}",
+                &p.f.heard[n..]
+            );
+        }
+
+        /// Decision 3: on an RNAV approach the course is "the final approach course".
+        #[test]
+        fn rnav_uses_final_approach_course_wording() {
+            // ZZZZ 27 with its ILS published as an RNAV approach.
+            let mut e = engine_with(|set: &mut ProcedureSet| {
+                for p in &mut set.procedures {
+                    if p.procedure.approach == Some(atc_navdata::cifp::ApproachKind::Ils) {
+                        p.procedure.approach = Some(atc_navdata::cifp::ApproachKind::Rnav);
+                    }
+                }
+            });
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            assert!(
+                p.heard_item(|i| matches!(
+                    i,
+                    AtcItem::ClearedApproach {
+                        kind: ApproachKind::Rnav,
+                        ..
+                    }
+                )),
+                "{:#?}",
+                approach_said(&p)
+            );
+            p.until(&mut e, 900, |p| local(p.f.pos).1 >= -0.6);
+            let out = p.call(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Sierra Tango, established RNAV runway two seven",
+            );
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Negative,
+                        AtcItem::OffCourse {
+                            course: CourseName::FinalApproachCourse,
+                            ..
+                        },
+                        AtcItem::Heading { .. },
+                        AtcItem::ReIntercept(CourseName::FinalApproachCourse)
+                    ]
+                ),
+                "{got:#?}"
+            );
         }
     }
 

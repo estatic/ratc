@@ -49,8 +49,15 @@ at = "heard:cleared ils"
 freq = "approach"
 text = "Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie"
 
+# Reported while still turning onto the localizer: not established by radar yet (plan 14b),
+# reported again once on it.
 [[say]]
 at = "phase:Final"
+freq = "approach"
+text = "Sierra Bravo Charlie, established ILS runway two five"
+
+[[say]]
+t = 1525.0
 freq = "approach"
 text = "Sierra Bravo Charlie, established ILS runway two five"
 
@@ -60,7 +67,7 @@ freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
 [[say]]
-at = "phase:Final"
+t = 1525.0
 freq = "tower"
 text = "Krakow Tower, Papa Alpha Bravo Charlie, established ILS runway two five"
 

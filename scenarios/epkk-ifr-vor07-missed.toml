@@ -21,15 +21,18 @@ waypoints = [
   { hdg = 170, nm = 5, alt = 3000, kt = 100 },
   { hdg = 170, nm = 1.7, alt = 3000, kt = 100 },
   { hdg = 100, nm = 2.2, alt = 3000, kt = 90 },
-  { fix = "FD07", alt = 3000, kt = 90 },
+  # Onto the final approach course 8.5 NM out and along it (established by radar, plan 14b).
+  { lat = 50.04519, lon = 19.55259, alt = 3000, kt = 90 },
+  { lat = 50.05767, lon = 19.64127, alt = 3000, kt = 90 },
   { lat = 50.06831, lon = 19.71731, alt = 1400, kt = 80 },
   { lat = 50.07185, lon = 19.74267, alt = 1350, kt = 80 },
   { hdg = 72, nm = 0.3, alt = 1450, kt = 75 },
   { hdg = 270, nm = 3, alt = 4000, kt = 90 },
   { hdg = 270, nm = 9.5, alt = 4000, kt = 90 },
   { hdg = 160, nm = 3.3, alt = 3000, kt = 90 },
-  { hdg = 100, nm = 3.4, alt = 3000, kt = 90 },
-  { fix = "FD07", alt = 3000, kt = 90 },
+  { hdg = 100, nm = 1.8, alt = 3000, kt = 90 },
+  { lat = 50.04519, lon = 19.55259, alt = 3000, kt = 90 },
+  { lat = 50.05767, lon = 19.64127, alt = 3000, kt = 90 },
 ]
 land = "07"
 
@@ -59,7 +62,7 @@ freq = "approach"
 text = "Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
 
 [[say]]
-at = "phase:Final"
+t = 960.0
 freq = "approach"
 text = "Sierra Bravo Charlie, established VOR DME approach runway zero seven"
 
@@ -69,7 +72,7 @@ freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
 [[say]]
-at = "phase:Final"
+t = 960.0
 freq = "tower"
 text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven"
 
@@ -114,7 +117,7 @@ freq = "approach"
 text = "Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
 
 [[say]]
-t = 1998.0
+t = 2065.0
 freq = "approach"
 text = "Sierra Bravo Charlie, established VOR DME approach runway zero seven"
 
@@ -124,7 +127,7 @@ freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
 [[say]]
-t = 2007.0
+t = 2074.0
 freq = "tower"
 text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven"
 

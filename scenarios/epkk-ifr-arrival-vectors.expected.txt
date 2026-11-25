@@ -7,12 +7,12 @@
 [ 1285.0] PILOT: Right heading one six zero, Sierra Bravo Charlie
 [ 1374.0] Kraków Approach: Sierra Bravo Charlie, turn right heading two two zero, one two miles from touchdown, cleared ILS approach runway two five, report established
 [ 1374.0] PILOT: Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie
-[ 1510.0] PILOT: Sierra Bravo Charlie, established ILS runway two five
-[ 1510.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
-[ 1510.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
-[ 1510.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, established ILS runway two five
-[ 1510.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared to land
-[ 1510.0] PILOT: Runway two five, cleared to land, Sierra Bravo Charlie
+[ 1525.0] PILOT: Sierra Bravo Charlie, established ILS runway two five
+[ 1525.0] Kraków Approach: Sierra Bravo Charlie, contact Kraków Tower one two three decimal two five five
+[ 1525.0] PILOT: Tower one two three decimal two five five, Sierra Bravo Charlie
+[ 1525.0] PILOT: Krakow Tower, Sierra Papa Alpha Bravo Charlie, established ILS runway two five
+[ 1525.0] Kraków Tower: Sierra Papa Alpha Bravo Charlie, wind two five zero degrees, eight knots, runway two five, cleared to land
+[ 1525.0] PILOT: Runway two five, cleared to land, Sierra Bravo Charlie
 [ 1996.0] Kraków Tower: Sierra Bravo Charlie, vacate, contact Kraków Ground one one eight decimal one zero five, good day
 [ 1996.0] PILOT: Vacating, Ground one one eight decimal one zero five, Sierra Bravo Charlie
 [ 2095.0] PILOT: Krakow Ground, Sierra Papa Alpha Bravo Charlie, runway vacated, request taxi to stand three five
