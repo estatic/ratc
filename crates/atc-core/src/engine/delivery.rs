@@ -199,6 +199,9 @@ impl AtcEngine {
                 approach_cleared: false,
                 vector_plan: None,
                 last_correction_s: None,
+                heading_from: None,
+                deferred_heading: false,
+                deferred_level: false,
                 established_check: false,
             };
             (exit.into_iter().collect(), plan)
@@ -265,6 +268,9 @@ impl AtcEngine {
             approach_cleared: false,
             vector_plan: None,
             last_correction_s: None,
+            heading_from: None,
+            deferred_heading: false,
+            deferred_level: false,
             established_check: false,
         };
         Some((items, plan))

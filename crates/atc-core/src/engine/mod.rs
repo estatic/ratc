@@ -1884,42 +1884,47 @@ impl AtcEngine {
     /// must be read back; it replaces any open readback and cancels an open handover.
     /// Always in English, whatever the aircraft's language: the spec ("Язык") keeps urgent
     /// instructions in English; the aircraft's language is left as it is. An arrival on
-    /// planned vectors (spec 14b, decision 2): a heading deviation is the planner's "check
-    /// heading" correction ([`AtcEngine::vector_correction`]), and a heading or level call is
-    /// made at most once per 20 s of corrections (dropped within it).
-    fn deviation_replies(&mut self, i: usize, deviations: Vec<Deviation>) -> Vec<AtcOutput> {
+    /// planned vectors (spec 14b, decision 2): its heading and level checks are the
+    /// planner's ([`AtcEngine::planned_checks`]), never called here.
+    fn deviation_replies(&mut self, i: usize, mut deviations: Vec<Deviation>) -> Vec<AtcOutput> {
         // Handed off to an adjacent unit: nobody here watches it any more. Radio failure
         // (7600): no deviation calls (AIP AD 2.22 §2.1, the airspace is kept clear instead).
         if self.strips[i].handed_off.is_some() || self.strips[i].radio_failure {
             return Vec::new();
         }
+        let owned = |d: &Deviation| {
+            matches!(
+                d,
+                Deviation::HeadingDeviation { .. } | Deviation::AltitudeDeviation { .. }
+            )
+        };
+        let heading_off = deviations
+            .iter()
+            .any(|d| matches!(d, Deviation::HeadingDeviation { .. }));
+        let level_off = deviations
+            .iter()
+            .any(|d| matches!(d, Deviation::AltitudeDeviation { .. }));
+        let mut items = Vec::new();
+        if let Some(planned) = self.planned_checks(i, heading_off, level_off) {
+            deviations.retain(|d| !owned(d));
+            items = planned;
+        }
         let off_circuit = self.strips[i].phase == FlightPhase::Airborne;
-        // Spec 14b, one owner while a plan is active: the planner answers the monitor's
-        // heading and level checks of an arrival on planned vectors, at most once per 20 s
-        // ("check heading" with the path planned anew; the level call as below).
-        let planned = self
-            .arrival(i)
-            .filter(|p| p.vector_plan.is_some() && !p.approach_cleared);
-        let planned_due = planned.map(|p| self.correction_allowed(p));
-        let mut heading_off = false;
         let levels: Vec<_> = deviations
             .iter()
             .map(|d| match d {
-                Deviation::AltitudeDeviation { assigned, .. } => Some(self.level(*assigned)),
+                Deviation::AltitudeDeviation { assigned, actual } if off_circuit => {
+                    Some(self.level_call(*assigned, *actual))
+                }
                 _ => None,
             })
             .collect();
-        let qnh = self.atis.as_ref().map(|a| a.current().weather.qnh_hpa);
         let strip = &mut self.strips[i];
         if deviations.contains(&Deviation::LandingWithoutClearance) {
             strip.uncleared_landing = true;
         }
-        let mut items = Vec::new();
         for (d, level) in deviations.into_iter().zip(levels) {
             match d {
-                Deviation::HeadingDeviation { .. } | Deviation::AltitudeDeviation { .. }
-                    if planned_due == Some(false) => {}
-                Deviation::HeadingDeviation { .. } if planned_due.is_some() => heading_off = true,
                 Deviation::RunwayIncursion { runway } => {
                     if !strip.uncleared_landing {
                         items.push(AtcItem::HoldPosition);
@@ -1928,25 +1933,9 @@ impl AtcEngine {
                 }
                 Deviation::TakeoffWithoutClearance => items.push(AtcItem::TakenOffWithoutClearance),
                 Deviation::LandingWithoutClearance => items.push(AtcItem::LandedWithoutClearance),
-                Deviation::AltitudeDeviation { assigned, actual } => match level {
-                    // The error is what standard pressure at this QNH would give: the
-                    // pilot has not set the altimeter.
-                    Some(level @ Level::Altitude(_))
-                        if off_circuit
-                            && let Some(qnh) = qnh
-                            && {
-                                let err = altimeter_error_ft(f64::from(qnh));
-                                err.abs() >= 200.0
-                                    && (f64::from(actual - assigned) - err).abs() <= 100.0
-                            } =>
-                    {
-                        items.push(AtcItem::CheckAltimeter {
-                            qnh_hpa: qnh,
-                            level,
-                        })
-                    }
-                    Some(level) if off_circuit => items.push(AtcItem::CheckLevel(level)),
-                    _ => items.push(AtcItem::CheckAltitude {
+                Deviation::AltitudeDeviation { assigned, .. } => match level {
+                    Some(call) => items.push(call),
+                    None => items.push(AtcItem::CheckAltitude {
                         circuit_ft: assigned.unsigned_abs(),
                     }),
                 },
@@ -1962,21 +1951,32 @@ impl AtcEngine {
             strip.handoff_to = None;
             strip.expect_readback(&items, self.cfg.strictness, self.now);
         }
-        if planned_due == Some(true) {
-            if heading_off {
-                let correction = self.vector_correction(i, approach::Correction::Heading);
-                self.strips[i].expect_readback(&correction, self.cfg.strictness, self.now);
-                items.splice(0..0, correction);
-            }
-            if !items.is_empty()
-                && let Some(p) = self.strips[i].plan.as_mut()
-            {
-                p.last_correction_s = Some(self.now);
-            }
-        }
-        let owner = self.strips[i].owner;
+        let owner = strip.owner;
         // Spec, "Язык": urgent instructions are always English.
         self.transmit_in(i, owner, items, Lang::En)
+    }
+
+    /// The call for an aircraft off the circuit at `actual` ft, off its cleared level
+    /// `assigned` ft: "check altimeter setting, QNH <q>, maintain <level>" when the error is
+    /// what standard pressure at this QNH would give (the pilot has not set the altimeter),
+    /// else "check level, maintain <level>".
+    pub(super) fn level_call(&self, assigned: i32, actual: i32) -> AtcItem {
+        let level = self.level(assigned);
+        let qnh = self.atis.as_ref().map(|a| a.current().weather.qnh_hpa);
+        match (level, qnh) {
+            (Level::Altitude(_), Some(qnh))
+                if {
+                    let err = altimeter_error_ft(f64::from(qnh));
+                    err.abs() >= 200.0 && (f64::from(actual - assigned) - err).abs() <= 100.0
+                } =>
+            {
+                AtcItem::CheckAltimeter {
+                    qnh_hpa: qnh,
+                    level,
+                }
+            }
+            _ => AtcItem::CheckLevel(level),
+        }
     }
 
     /// Ground -> Tower once holding short. Tower -> Approach for an IFR flight once airborne

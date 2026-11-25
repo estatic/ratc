@@ -44,10 +44,24 @@ fn render_en(msg: &AtcMessage, first_contact: bool) -> String {
     if let Some(cs) = &msg.to {
         parts.push(callsign_words(cs, first_contact));
     }
-    for item in &msg.items {
-        item_parts(item, &mut parts);
+    for (k, item) in msg.items.iter().enumerate() {
+        if check_heading_then_turn(&msg.items, k) {
+            parts.push("check heading".into());
+        } else {
+            item_parts(item, &mut parts);
+        }
     }
     parts.join(", ")
+}
+
+/// Item `k` of `items` is "check heading" to `h` followed by the turn onto `h`: said as
+/// "check heading, turn left heading <h>" (the heading once), not "check heading, fly
+/// heading <h>, turn left heading <h>".
+pub(crate) fn check_heading_then_turn(items: &[AtcItem], k: usize) -> bool {
+    match (items.get(k), items.get(k + 1)) {
+        (Some(AtcItem::CheckHeading(h)), Some(AtcItem::Heading { deg, .. })) => h == deg,
+        _ => false,
+    }
 }
 
 /// The callsign as said on the radio in `lang`, in full or abbreviated
@@ -407,15 +421,10 @@ pub(crate) fn item_parts(item: &AtcItem, out: &mut Vec<String>) {
                 Some(Turn::Right) => "turn right ",
                 None => "fly ",
             };
-            let heading = format!("heading {}", digits_words(u32::from(*deg), 3));
-            // After "check heading, fly heading <h>" the turn to the same heading replaces
-            // the "fly heading": "check heading, turn left heading <h>".
-            if let Some(last) = out.last_mut()
-                && *last == format!("check heading, fly {heading}")
-            {
-                *last = "check heading".into();
-            }
-            out.push(format!("{turn}{heading}"));
+            out.push(format!(
+                "{turn}heading {}",
+                digits_words(u32::from(*deg), 3)
+            ));
         }
         AtcItem::DirectTo { fix } => out.push(format!("proceed direct {fix}")),
         AtcItem::ExpectApproach { kind, runway } => out.push(format!(

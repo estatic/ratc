@@ -88,6 +88,16 @@ pub struct FlightPlan {
     /// When the last unsolicited vectoring correction was transmitted, seconds.
     #[serde(default)]
     pub last_correction_s: Option<f64>,
+    /// The aircraft's heading (magnetic) when `heading` was given: still on it after the
+    /// reaction time, it has not turned ("check heading").
+    #[serde(default)]
+    pub heading_from: Option<u16>,
+    /// A heading or level check of a planned flight that fell within the 20 s after a
+    /// correction: made when that window has run, if the aircraft is still off.
+    #[serde(default)]
+    pub deferred_heading: bool,
+    #[serde(default)]
+    pub deferred_level: bool,
     /// "Check established" has been said for the current approach clearance.
     pub established_check: bool,
 }
