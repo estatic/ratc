@@ -80,8 +80,10 @@ pub const ESTABLISHED_NM: f64 = 0.3;
 pub const ESTABLISHED_DEG: f64 = 15.0;
 /// Through the course: past it by more than this, NM ...
 pub const THROUGH_NM: f64 = 0.3;
-/// ... or converging at more than this (degrees) within [`NEAR_COURSE_NM`] of it.
-pub const THROUGH_CONVERGE_DEG: f64 = 45.0;
+/// ... or converging at more than this (degrees) within [`NEAR_COURSE_NM`] of it: the
+/// steepest re-intercept plus the margin of a heading rounded to 5 degrees and the drift (a
+/// re-intercept flown as given is not a flight through the course).
+pub const THROUGH_CONVERGE_DEG: f64 = REINTERCEPT_MAX_DEG + 5.0;
 /// Within [`NEAR_COURSE_NM`] of the course, moving away from it at less than this (degrees)
 /// is not flying through it.
 pub const THROUGH_AWAY_DEG: f64 = 3.0;

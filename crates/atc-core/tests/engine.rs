@@ -8478,6 +8478,46 @@ mod approach_arrival {
             assert_eq!(e.strip(&cs()).unwrap().owner, Role::Tower);
         }
 
+        /// A re-intercept planned at about 45 degrees (the steepest), its heading rounded to
+        /// 5 degrees and flown with a crosswind: the radar shows it converging at a little
+        /// more than 45, which is the planned re-intercept, not another flight through the
+        /// course: one call, then established.
+        #[test]
+        fn steep_reintercept_is_called_once() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 100.0);
+            p.flies_final = false;
+            // From the north-west: the drift is to the left on the re-intercept heading.
+            p.wind = Some((315.0, 3.0));
+            p.tick(&mut e);
+            p.call(&mut e, APP, INBOUND);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.until(&mut e, 30, |p| p.f.t >= 30.0);
+            // Through the localizer near the FAF margin, moving away to the north.
+            p.f.pos = at(faf_nm() + 2.97, 0.95);
+            p.hdg = 300.0;
+            (p.turn_rate, p.reaction_s) = (f64::INFINITY, 0.0);
+            let said = corrections_while(&mut e, &mut p, 30, |p| !p.heard_item(re_intercept));
+            assert_eq!(said.len(), 1, "{said:#?}");
+            let heading = said[0].1.iter().find_map(|i| match i {
+                AtcItem::Heading { deg, .. } => Some(*deg),
+                _ => None,
+            });
+            assert_eq!(heading, Some(225), "{said:#?}");
+            // Its localizer capture armed now.
+            p.on_final = Some(false);
+            let said = corrections_while(&mut e, &mut p, 300, |p| !on_course(p));
+            assert!(said.is_empty(), "{said:#?}");
+            assert!(local(p.f.pos).0 > faf_nm() + 1.0, "{:?}", local(p.f.pos));
+            p.tick(&mut e);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+        }
+
         /// A watched flight flying through the final between the FAF and the threshold: the
         /// break-off alone in that sample, never with "check established".
         #[test]
