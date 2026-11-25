@@ -100,6 +100,10 @@ pub struct FlightPlan {
     pub deferred_level: bool,
     /// "Check established" has been said for the current approach clearance.
     pub established_check: bool,
+    /// "Established" was reported while still turning onto the final (spec 14b, decision
+    /// 1): transferred to Tower as soon as the radar shows it established.
+    #[serde(default)]
+    pub established_reported: bool,
 }
 
 /// Where a VFR flight is in its entry to, or exit from, the control zone via the published

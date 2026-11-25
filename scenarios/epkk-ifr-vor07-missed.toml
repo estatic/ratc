@@ -15,24 +15,25 @@ track = "path"
 start = { lat = 50.43794, lon = 19.45792, alt = 5000, hdg = 150 }
 # Open loop: the legs fly the headings Approach gives (magnetic, `hdg`). Heading 175 (the
 # planned base rounded to 5 degrees) takes the aircraft 0.5 NM off the base: corrected to 170.
+# Cleared on the intercept heading, it joins the published final (offset from the runway's
+# centreline) at KK379 and flies it through FD07.
 waypoints = [
-  { hdg = 175, nm = 13.3, alt = 5000, kt = 100 },
-  { hdg = 170, nm = 2.2, alt = 5000, kt = 100 },
+  { hdg = 175, nm = 13.6, alt = 5000, kt = 100 },
+  { hdg = 170, nm = 1.9, alt = 5000, kt = 100 },
   { hdg = 170, nm = 5, alt = 3000, kt = 100 },
-  { hdg = 170, nm = 1.7, alt = 3000, kt = 100 },
-  { hdg = 100, nm = 2.2, alt = 3000, kt = 90 },
-  # Onto the final approach course 8.5 NM out and along it (established by radar, plan 14b).
-  { lat = 50.04519, lon = 19.55259, alt = 3000, kt = 90 },
-  { lat = 50.05767, lon = 19.64127, alt = 3000, kt = 90 },
+  { hdg = 170, nm = 1.0, alt = 3000, kt = 100 },
+  { hdg = 105, nm = 2.2, alt = 3000, kt = 90 },
+  { fix = "KK379", alt = 3000, kt = 90 },
+  { fix = "FD07", alt = 3000, kt = 90 },
   { lat = 50.06831, lon = 19.71731, alt = 1400, kt = 80 },
   { lat = 50.07185, lon = 19.74267, alt = 1350, kt = 80 },
   { hdg = 72, nm = 0.3, alt = 1450, kt = 75 },
   { hdg = 270, nm = 3, alt = 4000, kt = 90 },
   { hdg = 270, nm = 9.5, alt = 4000, kt = 90 },
-  { hdg = 160, nm = 3.3, alt = 3000, kt = 90 },
-  { hdg = 100, nm = 1.8, alt = 3000, kt = 90 },
-  { lat = 50.04519, lon = 19.55259, alt = 3000, kt = 90 },
-  { lat = 50.05767, lon = 19.64127, alt = 3000, kt = 90 },
+  { hdg = 165, nm = 2.5, alt = 3000, kt = 90 },
+  { hdg = 105, nm = 3.4, alt = 3000, kt = 90 },
+  { fix = "KK379", alt = 3000, kt = 90 },
+  { fix = "FD07", alt = 3000, kt = 90 },
 ]
 land = "07"
 
@@ -59,10 +60,10 @@ text = "Descend three thousand feet, Sierra Bravo Charlie"
 [[say]]
 at = "heard:cleared vor"
 freq = "approach"
-text = "Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
+text = "Left heading one zero five, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
 
 [[say]]
-t = 960.0
+at = "phase:Final"
 freq = "approach"
 text = "Sierra Bravo Charlie, established VOR DME approach runway zero seven"
 
@@ -71,8 +72,10 @@ at = "heard:contact kraków tower"
 freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
+# Called once transferred: Approach transfers the flight when the radar shows it established
+# (plan 14b; an earlier "established" is noted and answered by the transfer).
 [[say]]
-t = 960.0
+t = 950.0
 freq = "tower"
 text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven"
 
@@ -107,17 +110,17 @@ freq = "approach"
 text = "Descend three thousand feet, Sierra Bravo Charlie"
 
 [[say]]
-at = "heard:heading one six zero"
+at = "heard:heading one six five"
 freq = "approach"
-text = "Left heading one six zero, Sierra Bravo Charlie"
+text = "Left heading one six five, Sierra Bravo Charlie"
 
 [[say]]
 at = "heard:cleared vor"
 freq = "approach"
-text = "Left heading one zero zero, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
+text = "Left heading one zero five, cleared VOR DME approach runway zero seven, wilco, Sierra Bravo Charlie"
 
 [[say]]
-t = 2065.0
+t = 1998.0
 freq = "approach"
 text = "Sierra Bravo Charlie, established VOR DME approach runway zero seven"
 
@@ -127,7 +130,7 @@ freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
 [[say]]
-t = 2074.0
+t = 2007.0
 freq = "tower"
 text = "Krakow Tower, Sierra Papa Alpha Bravo Charlie, established VOR DME approach runway zero seven"
 

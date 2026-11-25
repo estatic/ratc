@@ -49,15 +49,8 @@ at = "heard:cleared ils"
 freq = "approach"
 text = "Right heading two two zero, cleared ILS approach runway two five, wilco, Sierra Bravo Charlie"
 
-# Reported while still turning onto the localizer: not established by radar yet (plan 14b),
-# reported again once on it.
 [[say]]
 at = "phase:Final"
-freq = "approach"
-text = "Sierra Bravo Charlie, established ILS runway two five"
-
-[[say]]
-t = 1525.0
 freq = "approach"
 text = "Sierra Bravo Charlie, established ILS runway two five"
 
@@ -66,8 +59,10 @@ at = "heard:contact kraków tower"
 freq = "approach"
 text = "Tower one two three decimal two five five, Sierra Bravo Charlie"
 
+# Called once transferred: Approach transfers the flight when the radar shows it established
+# (plan 14b; an earlier "established" is noted and answered by the transfer).
 [[say]]
-t = 1525.0
+t = 1520.0
 freq = "tower"
 text = "Krakow Tower, Papa Alpha Bravo Charlie, established ILS runway two five"
 

@@ -6349,6 +6349,7 @@ mod approach_arrival {
                 deferred_heading: false,
                 deferred_level: false,
                 established_check: false,
+                established_reported: false,
             }),
             squawk: Some(4601),
             cleared_ft: Some(cleared_ft).filter(|&ft| ft > 0),
@@ -6394,6 +6395,7 @@ mod approach_arrival {
             deferred_heading: false,
             deferred_level: false,
             established_check: false,
+            established_reported: false,
         });
         e.import_flight(h);
         let mut p = Pilot::new(WEST, 5000.0, 90.0);
@@ -8185,19 +8187,19 @@ mod approach_arrival {
         }
 
         /// Flight test B8: the localizer flown through on the intercept heading (the pilot
-        /// does not capture it, and is slow to turn back): "you are ... north of the
+        /// does not capture it, and is slow to turn back: 1 NM through): "you are ... north of the
         /// localizer, turn left heading ... to re-intercept the localizer", then established
         /// and transferred to Tower inside the FAF.
         #[test]
         fn overshoot_gets_reintercept() {
             let mut e = engine();
             let (x, y) = ON_INTERCEPT;
-            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 180.0);
+            let mut p = Pilot::realistic(at(x, y), 3000.0, 300.0, 205.0);
             p.flies_final = false;
             p.tick(&mut e);
             p.call(&mut e, APP, INBOUND);
             assert!(cleared(&p), "{:#?}", approach_said(&p));
-            p.reaction_s = 15.0;
+            p.reaction_s = 18.0;
             let said = corrections_while(&mut e, &mut p, 600, |p| !p.heard_item(re_intercept));
             assert_eq!(said.len(), 1, "{said:#?}");
             assert!(
@@ -8233,7 +8235,7 @@ mod approach_arrival {
                 p.tick(&mut e);
                 worst = worst.max(local(p.f.pos).1);
             }
-            assert!(worst >= 0.7, "{worst:.2} NM overshoot");
+            assert!(worst >= 1.0, "{worst:.2} NM overshoot");
             assert!(
                 p.f.heard[n..]
                     .iter()
@@ -8302,12 +8304,7 @@ mod approach_arrival {
         #[test]
         fn late_overshoot_breaks_off() {
             let mut e = engine();
-            let mut p = called_in(&mut e, at(8.5, -1.0), 3000.0, 300.0, 100.0);
-            assert!(cleared(&p), "{:#?}", approach_said(&p));
-            p.flies_final = false;
-            p.on_final = None;
-            p.delayed
-                .retain(|(_, i)| !matches!(i, AtcItem::ClearedApproach { .. }));
+            let mut p = near_faf_not_capturing(&mut e, 3000.0);
             let said = corrections_while(&mut e, &mut p, 300, |p| !p.heard_item(new_approach));
             let (_, items) = said.last().expect("a break-off");
             assert!(
@@ -8343,6 +8340,197 @@ mod approach_arrival {
             assert_eq!(leg_kind(&e), Some(LegKind::Intercept));
             let out = established_out(&mut e, &mut p);
             assert!(out > faf_nm() + 1.0, "established {out:.1} NM out");
+        }
+
+        /// Cleared at `alt` on a steep intercept 8.5 NM out, 1 NM south of the final (it
+        /// joins at the FAF margin), flown by a pilot that does not capture the localizer.
+        fn near_faf_not_capturing(e: &mut AtcEngine, alt: f64) -> Pilot {
+            let mut p = called_in(e, at(8.5, -1.0), alt, 300.0, 100.0);
+            assert!(cleared(&p), "{:#?}", approach_said(&p));
+            p.flies_final = false;
+            p.on_final = None;
+            p.delayed
+                .retain(|(_, i)| !matches!(i, AtcItem::ClearedApproach { .. }));
+            p
+        }
+
+        /// Broken off below the intercept altitude: the climb to it.
+        #[test]
+        fn break_off_below_intercept_altitude_climbs() {
+            let mut e = engine();
+            let mut p = near_faf_not_capturing(&mut e, 2500.0);
+            let said = corrections_while(&mut e, &mut p, 300, |p| !p.heard_item(new_approach));
+            let (_, items) = said.last().expect("a break-off");
+            assert!(
+                matches!(
+                    items.as_slice(),
+                    [
+                        AtcItem::Heading { .. },
+                        AtcItem::ClimbTo(Level::Altitude(3000)),
+                        AtcItem::NewApproach
+                    ]
+                ),
+                "{said:#?}"
+            );
+            assert_eq!(
+                e.strip(&cs()).unwrap().plan.as_ref().unwrap().cleared_ft,
+                3000
+            );
+        }
+
+        /// "Established" reported crossing the localizer near the FAF on a steep heading: no
+        /// re-intercept can join in time, so "negative" and the break-off.
+        #[test]
+        fn established_report_can_break_off() {
+            let mut e = engine();
+            let mut p = near_faf_not_capturing(&mut e, 3000.0);
+            p.until(&mut e, 300, |p| local(p.f.pos).1 >= -0.1);
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            let got = items(&out);
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [
+                        AtcItem::Negative,
+                        AtcItem::Heading { .. },
+                        AtcItem::MaintainLevel(Level::Altitude(3000)),
+                        AtcItem::NewApproach
+                    ]
+                ),
+                "{got:#?}"
+            );
+            assert!(!approach_cleared(&e));
+            assert_eq!(e.strip(&cs()).unwrap().handoff_to, None);
+        }
+
+        /// "Established" reported during the localizer capture turn: no reply now (never a
+        /// bare "negative", nor a heading that would undo the turn); the Tower contact as
+        /// soon as the radar shows it established.
+        #[test]
+        fn report_during_capture_is_transferred_once_established() {
+            let mut e = engine();
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            p.until(&mut e, 900, |p| {
+                p.on_final == Some(true) && p.turning_to.is_some() && !on_course(p)
+            });
+            let out = p.call(&mut e, APP, ESTABLISHED);
+            assert!(items(&out).is_empty(), "{out:#?}");
+            let strip = e.strip(&cs()).unwrap();
+            assert_eq!(strip.handoff_to, None);
+            assert!(strip.plan.as_ref().unwrap().established_reported);
+            let n = p.f.heard.len();
+            p.until(&mut e, 60, |p| {
+                p.f.heard[n..]
+                    .iter()
+                    .any(|o| has(&o.message.items, contact_tower))
+            });
+            // Transferred once on the course, well before the FAF.
+            assert!(on_course(&p), "{:?}", local(p.f.pos));
+            assert!(local(p.f.pos).0 > faf_nm() + 1.0);
+            assert!(
+                !p.heard_item(|i| matches!(
+                    i,
+                    AtcItem::Negative | AtcItem::ReIntercept(_) | AtcItem::OffCourse { .. }
+                )),
+                "{:#?}",
+                approach_said(&p)
+            );
+        }
+
+        /// A watched flight flying through the final between the FAF and the threshold: the
+        /// break-off alone in that sample, never with "check established".
+        #[test]
+        fn no_check_established_with_a_break_off() {
+            let mut e = engine();
+            let mut p = near_faf_not_capturing(&mut e, 3000.0);
+            p.until(&mut e, 30, |p| p.f.t >= 20.0);
+            // Inside the FAF, through the localizer to the north and moving away.
+            p.f.pos = at(faf_nm() - 1.0, 0.5);
+            p.hdg = 300.0;
+            let n = p.f.heard.len();
+            p.tick(&mut e);
+            let said: Vec<AtcItem> = p.f.heard[n..]
+                .iter()
+                .flat_map(|o| o.message.items.clone())
+                .collect();
+            assert!(has(&said, new_approach), "{said:#?}");
+            assert!(
+                !has(&said, |i| matches!(i, AtcItem::CheckEstablished { .. })),
+                "{said:#?}"
+            );
+            for _ in 0..30 {
+                p.tick(&mut e);
+            }
+            assert!(
+                !p.heard_item(|i| matches!(i, AtcItem::CheckEstablished { .. })),
+                "{:#?}",
+                approach_said(&p)
+            );
+        }
+
+        /// Decision 3 with an offset final: a non-ILS final published about 4 degrees off the
+        /// runway's course (its FAF 0.4 NM north of the centreline). Flown along the
+        /// published final, "established" goes to Tower: no re-intercept, no break-off.
+        #[test]
+        fn offset_published_final_is_established() {
+            // East of the threshold (the fixture's ZZ021 is not on the approach side).
+            let faf = destination(
+                destination(THR_27, 90.0, faf_nm() * M_PER_NM),
+                0.0,
+                0.4 * M_PER_NM,
+            );
+            let mut e = engine_with(|set: &mut ProcedureSet| {
+                for p in &mut set.procedures {
+                    if p.procedure.approach == Some(atc_navdata::cifp::ApproachKind::Ils) {
+                        p.procedure.approach = Some(atc_navdata::cifp::ApproachKind::VorDme);
+                        for l in &mut p.legs {
+                            if l.leg.faf {
+                                l.pos = Some(faf);
+                            }
+                        }
+                    }
+                }
+            });
+            let (x, y) = ON_INTERCEPT;
+            let mut p = called_in(&mut e, at(x, y), 3000.0, 300.0, 100.0);
+            p.until(&mut e, 900, cleared);
+            assert!(
+                p.heard_item(|i| matches!(
+                    i,
+                    AtcItem::ClearedApproach {
+                        kind: ApproachKind::VorDme,
+                        ..
+                    }
+                )),
+                "{:#?}",
+                approach_said(&p)
+            );
+            // On the published final 9 NM out (0.7 NM north of the centreline), flying it.
+            p.flies_final = false;
+            p.on_final = None;
+            p.delayed.clear();
+            let course = bearing_deg(faf, THR_27);
+            p.f.pos = destination(faf, course + 180.0, (9.0 - faf_nm()) * M_PER_NM);
+            p.to = Some(THR_27);
+            for _ in 0..20 {
+                p.tick(&mut e);
+            }
+            let out = p.call(
+                &mut e,
+                APP,
+                "Zeta Approach, Sierra Sierra Tango, established VOR DME approach runway two \
+                 seven",
+            );
+            assert!(
+                matches!(items(&out).as_slice(), [i] if contact_tower(i)),
+                "{out:#?}"
+            );
+            assert!(
+                !p.heard_item(|i| matches!(i, AtcItem::ReIntercept(_) | AtcItem::NewApproach)),
+                "{:#?}",
+                approach_said(&p)
+            );
         }
 
         /// The missed approach still goes back to Approach and is vectored again from the
@@ -10034,6 +10222,7 @@ mod handover {
             deferred_heading: false,
             deferred_level: false,
             established_check: false,
+            established_reported: false,
         }
     }
 

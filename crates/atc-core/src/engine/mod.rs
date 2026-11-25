@@ -805,8 +805,13 @@ impl AtcEngine {
         out.extend(self.tower_call(i));
         out.extend(self.landing_unprompted(i, prev));
         out.extend(self.vfr_exit_update(i));
-        out.extend(self.establish_check(i));
-        out.extend(self.approach_update(i));
+        // Approach's watch of the final first (spec 14b): a correction or break-off is not
+        // joined by "check established" in the same sample.
+        let approach = self.approach_update(i);
+        if approach.is_empty() {
+            out.extend(self.establish_check(i));
+        }
+        out.extend(approach);
         out
     }
 
@@ -1140,6 +1145,18 @@ impl AtcEngine {
         }
         // A "ready for departure" after Tower already gave the departure is not answered.
         if items.is_empty() && role == Role::Tower && self.repeated_ready(i, &msg.intent) {
+            return Vec::new();
+        }
+        // "Established" reported during the turn onto the final: noted, answered by the
+        // transfer to Tower once the radar shows it established (spec 14b, decision 1).
+        if items.is_empty()
+            && role == Role::Approach
+            && msg.intent == PilotIntent::ReportEstablished
+            && self.strips[i]
+                .plan
+                .as_ref()
+                .is_some_and(|p| p.established_reported)
+        {
             return Vec::new();
         }
         // A request this position does not serve, made to another open position: sent there.

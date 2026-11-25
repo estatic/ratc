@@ -201,8 +201,32 @@ fn course_name(kind: ApproachKind) -> CourseName {
     }
 }
 
+/// A published non-ILS final more than this off the runway's course is not taken as the
+/// final (PANS-OPS straight-in alignment is within 30 degrees).
+const STRAIGHT_IN_MAX_DEG: f64 = 30.0;
+
 /// A re-intercept heading within this of the one flown is "fly heading", without a turn.
 const SAME_HEADING_DEG: f64 = 5.0;
+
+/// Notes a vector given to the arrival of plan `p` (magnetic heading `actual` when it was
+/// given): the heading said (if any) and the heading it was flying, the planned path, and
+/// the time of a correction (`corrected_at`).
+fn note_vectors(
+    p: &mut FlightPlan,
+    heading: Option<u16>,
+    actual: f64,
+    vp: VectorPlan,
+    corrected_at: Option<f64>,
+) {
+    if heading.is_some() {
+        p.heading = heading;
+        p.heading_from = Some(actual.round() as u16 % 360);
+    }
+    p.vector_plan = Some(vp);
+    if corrected_at.is_some() {
+        p.last_correction_s = corrected_at;
+    }
+}
 
 /// Climbing: a vertical speed above this, or still this far below the cleared level.
 const CLIMBING_FPM: f64 = 100.0;
@@ -513,6 +537,7 @@ impl AtcEngine {
             deferred_heading: false,
             deferred_level: false,
             established_check: false,
+            established_reported: false,
         };
         let strip = &mut self.strips[i];
         strip.plan = Some(plan);
@@ -556,6 +581,7 @@ impl AtcEngine {
             plan.approach = Some((new_kind, runway));
             plan.approach_cleared = false;
             plan.established_check = false;
+            plan.established_reported = false;
             // Another final (FAF, intercept altitude): planned again.
             plan.vector_plan = None;
             // AIP AD 2.22: VOR approaches are not linked to STARs.
@@ -720,7 +746,9 @@ impl AtcEngine {
             // Vectored onto the final: watched until established (spec 14b goal 5).
             let items = match self.watched_final(i) {
                 Some((f, r)) if vectoring::established(&r, &f) => {
-                    if !on_final {
+                    // On the final inside the FAF, or reported established while turning
+                    // onto it ([`AtcEngine::established_report`]).
+                    if !(on_final || plan.established_reported) {
                         return Vec::new();
                     }
                     self.hand_over(i, Role::Tower)
@@ -984,10 +1012,13 @@ impl AtcEngine {
         }
         let now = self.now;
         if let Some(p) = self.strips[i].plan.as_mut() {
-            if say_heading {
-                p.heading = Some(v.heading_deg);
-                p.heading_from = Some(actual.round() as u16 % 360);
-            }
+            note_vectors(
+                p,
+                say_heading.then_some(v.heading_deg),
+                actual,
+                vp,
+                correction.is_some().then_some(now),
+            );
             p.cleared_ft = cleared_ft;
             p.approach_cleared = clear;
             // Cleared, or vectored anew after a missed approach: checks noted before are
@@ -995,10 +1026,7 @@ impl AtcEngine {
             if clear || force {
                 p.deferred_heading = false;
                 p.deferred_level = false;
-            }
-            p.vector_plan = Some(vp);
-            if correction.is_some() {
-                p.last_correction_s = Some(now);
+                p.established_reported = false;
             }
         }
         items
@@ -1156,32 +1184,39 @@ impl AtcEngine {
     /// Decision 1: "established" reported by arrival `i`, cleared for the approach. Tower
     /// takes it when the radar agrees ([`vectoring::established`]), or when its final is not
     /// watched ([`AtcEngine::watched_final`]); otherwise "negative" and the correction
-    /// ([`AtcEngine::reintercept`]), the flight kept. Already turning back onto the course
-    /// ([`AtcEngine::turning_back`]): "negative" and where it is, no heading (it would undo
-    /// the turn); Tower takes it on a later report or on the final inside the FAF.
+    /// ([`AtcEngine::reintercept`], or the break-off), the flight kept. Already turning onto
+    /// the course ([`AtcEngine::turning_back`]): no reply now (a heading would undo the
+    /// turn); the report is noted and Tower takes the flight as soon as the radar shows it
+    /// established ([`AtcEngine::arrival_update`]).
     fn established_report(&mut self, i: usize) -> Vec<AtcItem> {
         let plan = self.arrival(i).cloned();
-        match (self.watched_final(i), plan) {
-            (Some((f, r)), Some(plan)) if !vectoring::established(&r, &f) => {
-                let mut items = vec![AtcItem::Negative];
-                if self.turning_back(i, &plan, &f, &r) {
-                    let kind = plan.approach.map_or(ApproachKind::Ils, |(k, _)| k);
-                    items.extend(off_course(&f, kind, r.pos, f.course_deg));
-                    return items;
+        if let (Some((f, r)), Some(plan)) = (self.watched_final(i), plan)
+            && !vectoring::established(&r, &f)
+        {
+            if self.turning_back(i, &plan, &f, &r) {
+                if let Some(p) = self.strips[i].plan.as_mut() {
+                    p.established_reported = true;
                 }
-                items.extend(self.reintercept(i));
-                self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
-                items
+                return Vec::new();
             }
-            _ => self.hand_over(i, Role::Tower),
+            let correction = self.reintercept(i);
+            if !correction.is_empty() {
+                let mut items = vec![AtcItem::Negative];
+                items.extend(correction);
+                self.strips[i].expect_readback(&items, self.cfg.strictness, self.now);
+                return items;
+            }
         }
+        self.hand_over(i, Role::Tower)
     }
 
     /// Arrival `i` (plan `plan`, radar `r`) is turning the right way, not corrected: at
     /// [`TURNING_DEG_S`] or more onto its assigned heading where that heading takes it back
     /// towards the final `f` from the side it is on (the intercept or re-intercept heading),
-    /// or towards the direction of the course (the localizer capture's turn, or back after
-    /// flying through).
+    /// or, converging on the course, turning to align with it (the localizer capture's turn,
+    /// or the turn of an aircraft that has already turned back past the course direction on
+    /// its own). An aircraft moving away from the course and merely turning towards parallel
+    /// is not exempt.
     fn turning_back(&self, i: usize, plan: &FlightPlan, f: &FinalCourse, r: &Radar) -> bool {
         let Some(t) = self.tracks.get(&self.strips[i].callsign) else {
             return false;
@@ -1199,20 +1234,23 @@ impl AtcEngine {
             right * rightward < 0.0
                 && self.turning_onto(i, self.magnetic_heading(&t.last), assigned)
         });
-        // Towards the course's direction: aligning when converging, back when not.
+        // Converging: its rate to the right of the course has the other sign than its side.
+        let off = (r.track_deg - f.course_deg + 540.0).rem_euclid(360.0) - 180.0;
+        let converging = right * off.to_radians().sin() < 0.0;
         let rate = t.radar.turn_rate_dps();
-        let towards = (f.course_deg - r.track_deg + 540.0).rem_euclid(360.0) - 180.0;
-        onto_assigned || (rate.abs() >= TURNING_DEG_S && rate * towards > 0.0)
+        let aligning = converging && rate.abs() >= TURNING_DEG_S && rate * off < 0.0;
+        onto_assigned || aligning
     }
 
     /// The correction of arrival `i`, cleared for the approach and off its final (watched,
     /// [`AtcEngine::watched_final`]): the re-intercept from where it is
     /// ([`vectoring::plan_reintercept`], at most [`vectoring::REINTERCEPT_MAX_DEG`] onto the
     /// course): "you are <tenths> <side> of the <course>", the heading ("fly heading" when
-    /// it is the one flown) "to re-intercept the <course>"; the approach clearance kept.
-    /// When it cannot join [`vectoring::JOIN_OUTSIDE_FAF_NM`] outside the FAF, the break-off
-    /// instead ([`AtcEngine::break_off`]). Applied to the plan, with the time of the
-    /// correction; the caller expects the readback.
+    /// it is the one flown) "to re-intercept the <course>"; the approach clearance kept, and
+    /// no "check established" for it after the correction. When it cannot join
+    /// [`vectoring::JOIN_OUTSIDE_FAF_NM`] outside the FAF, the break-off instead
+    /// ([`AtcEngine::break_off`]). Applied to the plan, with the time of the correction; the
+    /// caller expects the readback.
     fn reintercept(&mut self, i: usize) -> Vec<AtcItem> {
         let Some((kind, _)) = self.arrival(i).and_then(|p| p.approach.clone()) else {
             return Vec::new();
@@ -1243,10 +1281,8 @@ impl AtcEngine {
         items.push(AtcItem::ReIntercept(course_name(kind)));
         let now = self.now;
         if let Some(p) = self.strips[i].plan.as_mut() {
-            p.heading = Some(v.heading_deg);
-            p.heading_from = Some(actual.round() as u16 % 360);
-            p.vector_plan = Some(vp);
-            p.last_correction_s = Some(now);
+            note_vectors(p, Some(v.heading_deg), actual, vp, Some(now));
+            p.established_check = true;
         }
         items
     }
@@ -1302,29 +1338,75 @@ impl AtcEngine {
         ];
         let (now, actual) = (self.now, self.magnetic_heading(s));
         if let Some(p) = self.strips[i].plan.as_mut() {
+            note_vectors(p, Some(v.heading_deg), actual, vp, Some(now));
             p.approach_cleared = false;
             p.established_check = false;
-            p.heading = Some(v.heading_deg);
-            p.heading_from = Some(actual.round() as u16 % 360);
+            p.established_reported = false;
             p.cleared_ft = alt_ft;
-            p.vector_plan = Some(vp);
-            p.last_correction_s = Some(now);
             p.deferred_heading = false;
             p.deferred_level = false;
         }
         items
     }
 
-    /// The final approach course radar vectors lead to on `runway` for approach `kind`.
+    /// The final approach course radar vectors lead to on `runway` for approach `kind`: the
+    /// runway's course from its threshold for an ILS (the localizer); for another approach
+    /// the published final, the line from its FAF to its missed-approach point
+    /// ([`AtcEngine::published_final`]), else the runway's course.
     fn final_course(&self, runway: &str, kind: ApproachKind) -> Option<FinalCourse> {
         let (thr, course_deg) = self.final_geometry(runway)?;
-        Some(FinalCourse {
+        let (origin, course_deg, faf_m) = self.published_final(runway, kind, thr).unwrap_or((
             thr,
             course_deg,
-            faf_m: self.faf_m(runway, kind, thr),
+            self.faf_m(runway, kind, thr),
+        ));
+        Some(FinalCourse {
+            thr: origin,
+            course_deg,
+            faf_m,
             intercept_alt_ft: self.intercept_alt_ft(runway, kind),
             circuit_side: self.circuit_side(runway),
         })
+    }
+
+    /// The final of a non-ILS approach of `kind` to `runway` (threshold `thr`) as published,
+    /// when its course differs from the runway's (an offset VOR/DME final): the point of the
+    /// line from the FAF to the missed-approach point abeam the threshold, the course of
+    /// that line (true) and the FAF's distance from that point. `None` for an ILS, or without
+    /// the FAF and the missed-approach point, or when the line is more than
+    /// [`STRAIGHT_IN_MAX_DEG`] off the runway's course (not a straight-in final: data that
+    /// does not fit).
+    fn published_final(
+        &self,
+        runway: &str,
+        kind: ApproachKind,
+        thr: LatLon,
+    ) -> Option<(LatLon, f64, f64)> {
+        if kind == ApproachKind::Ils {
+            return None;
+        }
+        let p = self
+            .procedure_set
+            .as_ref()?
+            .approach(runway, navdata_approach_kind(kind))?;
+        let faf = p.legs.iter().find(|l| l.leg.faf).and_then(|l| l.pos)?;
+        let map = p.legs.iter().find(|l| l.leg.map).and_then(|l| l.pos)?;
+        let course_deg = bearing_deg(faf, map);
+        let (_, runway_deg) = self.final_geometry(runway)?;
+        if vectoring::gap_deg(course_deg, runway_deg) > STRAIGHT_IN_MAX_DEG {
+            return None;
+        }
+        let (along, _) = RunwayFrame {
+            origin: map,
+            course_deg,
+        }
+        .to_local(thr);
+        let origin = atc_geo::destination(
+            map,
+            course_deg + if along < 0.0 { 180.0 } else { 0.0 },
+            along.abs(),
+        );
+        Some((origin, course_deg, distance_m(faf, origin)))
     }
 
     /// The planned path from radar `r` to the final `f`, for an aircraft cleared to
@@ -1442,6 +1524,7 @@ impl AtcEngine {
         if let Some(p) = strip.plan.as_mut() {
             p.approach_cleared = false;
             p.established_check = false;
+            p.established_reported = false;
             p.heading = None;
             p.direct = None;
             p.star = None;
@@ -1559,6 +1642,7 @@ impl AtcEngine {
             deferred_heading: false,
             deferred_level: false,
             established_check: false,
+            established_reported: false,
         });
         strip.identified = true;
         strip.expect_readback(&items, self.cfg.strictness, self.now);

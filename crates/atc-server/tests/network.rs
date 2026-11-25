@@ -345,6 +345,7 @@ fn ifr_to_testville(c: &Callsign) -> FlightHandover {
             deferred_heading: false,
             deferred_level: false,
             established_check: false,
+            established_reported: false,
         }),
         squawk: Some(4601),
         cleared_ft: Some(2000),

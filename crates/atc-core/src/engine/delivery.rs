@@ -203,6 +203,7 @@ impl AtcEngine {
                 deferred_heading: false,
                 deferred_level: false,
                 established_check: false,
+                established_reported: false,
             };
             (exit.into_iter().collect(), plan)
         };
@@ -272,6 +273,7 @@ impl AtcEngine {
             deferred_heading: false,
             deferred_level: false,
             established_check: false,
+            established_reported: false,
         };
         Some((items, plan))
     }

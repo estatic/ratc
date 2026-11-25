@@ -449,6 +449,7 @@ mod tests {
                 deferred_heading: false,
                 deferred_level: false,
                 established_check: false,
+                established_reported: false,
             }),
             squawk: Some(7000),
             cleared_ft,
